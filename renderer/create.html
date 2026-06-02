@@ -378,7 +378,7 @@
 </template>
 </div>
 <h1 class="text-3xl font-bold text-text-dark" x-text="isReopenMode ? __t('create.reopening_workspace') : __t('create.creating_workspace')"></h1>
-<p class="text-muted-dark text-base mt-1" x-text="isReopenMode ? __t('create.reopening_subtitle') : __t('create.creating_subtitle')"></p>
+<p class="text-muted-dark text-base mt-1 whitespace-pre-line" x-text="isReopenMode ? __t('create.reopening_subtitle') : __t('create.creating_subtitle')"></p>
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
 <template :key="step.id" x-for="(step, index) in steps">
@@ -441,7 +441,7 @@
             <span class="material-symbols-outlined text-yellow-500 text-2xl">warning</span>
             <h3 class="text-lg font-medium text-text-dark" x-text="__t('create.cancel_creation_title')"></h3>
         </div>
-        <p class="text-sm text-muted-dark mb-6" x-text="__t('create.cancel_creation_desc')"></p>
+        <p class="text-sm text-muted-dark mb-6 whitespace-pre-line" x-text="__t('create.cancel_creation_desc')"></p>
         
         <div class="space-y-3">
             <button id="confirm-delete-btn" 

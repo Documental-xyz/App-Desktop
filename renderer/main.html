@@ -2042,7 +2042,7 @@ clearingCache: false,
       <p class="text-sm text-muted-dark mb-4" x-show="pullCurrentBranch"><span x-text="__t('main.pull_branch')"></span><span class="text-green-400 font-mono" x-text="pullCurrentBranch"></span></p>
       <div x-show="pullIsDirty" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded">
         <p class="text-yellow-400 text-sm font-medium mb-1" x-text="__t('main.pull_unsaved')"></p>
-        <p class="text-muted-dark text-xs mb-2" x-text="__t('main.pull_files_modified', {count: pullDirtyFiles.length})"></p>
+        <p class="text-muted-dark text-xs mb-2 whitespace-pre-line" x-text="__t('main.pull_files_modified', {count: pullDirtyFiles.length})"></p>
         <label class="block text-sm text-text-dark mb-1"><span x-text="__t('main.pull_commit_message')"></span> <span class="text-red-400">*</span></label>
         <textarea x-model="pullCommitMessage"
           class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-green-500 focus:outline-none p-2 resize-none"
@@ -2125,7 +2125,7 @@ clearingCache: false,
       </div>
       <div x-show="pushIsDirty" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded">
         <p class="text-yellow-400 text-sm font-medium mb-1" x-text="__t('main.push_unsaved')"></p>
-        <p class="text-muted-dark text-xs mb-2" x-text="__t('main.push_files_modified', {count: pushDirtyFiles.length})"></p>
+        <p class="text-muted-dark text-xs mb-2 whitespace-pre-line" x-text="__t('main.push_files_modified', {count: pushDirtyFiles.length})"></p>
         <label class="block text-sm text-text-dark mb-1"><span x-text="__t('main.push_commit_message')"></span> <span class="text-red-400">*</span></label>
         <textarea x-model="pushCommitMessage"
           class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-green-500 focus:outline-none p-2 resize-none"
@@ -2244,7 +2244,7 @@ clearingCache: false,
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="clearCacheModalOpen">
 <div @click.outside="clearCacheModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.clear_cache_title')"></h3>
-<p class="mt-2 text-sm text-muted-dark" x-text="__t('main.clear_cache_desc')"></p>
+<p class="mt-2 text-sm text-muted-dark whitespace-pre-line" x-text="__t('main.clear_cache_desc')"></p>
 <div class="mt-4 flex justify-end space-x-2">
 <button @click="clearCacheModalOpen = false" class="px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-muted-dark" x-text="__t('common.cancel')"></button>
 <button @click="confirmClearCache()" class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-500" x-text="__t('main.clear_btn')"></button>
@@ -2255,14 +2255,14 @@ clearingCache: false,
 <div @click.outside="helpModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-lg">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.help_title')"></h3>
 <div class="mt-2 space-y-4 text-sm text-muted-dark">
-<p x-text="__t('main.help_welcome')"></p>
+<p class="whitespace-pre-line" x-text="__t('main.help_welcome')"></p>
 <ul class="list-disc list-inside space-y-2">
-<li x-text="__t('main.help_tip_1')"></li>
-<li x-text="__t('main.help_tip_2')"></li>
-<li x-text="__t('main.help_tip_3')"></li>
-<li x-text="__t('main.help_tip_4')"></li>
+<li class="whitespace-pre-line" x-text="__t('main.help_tip_1')"></li>
+<li class="whitespace-pre-line" x-text="__t('main.help_tip_2')"></li>
+<li class="whitespace-pre-line" x-text="__t('main.help_tip_3')"></li>
+<li class="whitespace-pre-line" x-text="__t('main.help_tip_4')"></li>
 </ul>
-<p x-text="__t('main.help_docs')"></p>
+<p class="whitespace-pre-line" x-text="__t('main.help_docs')"></p>
 </div>
 <div class="mt-6 flex justify-end">
 <button @click="helpModalOpen = false" class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary-hover" x-text="__t('common.understand')"></button>
@@ -2298,7 +2298,7 @@ clearingCache: false,
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="closeProjectModalOpen">
   <div @click.outside="closeProjectModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.close_project_title')"></h3>
-    <p class="mt-2 text-sm text-muted-dark" x-text="__t('main.close_project_desc')"></p>
+    <p class="mt-2 text-sm text-muted-dark whitespace-pre-line" x-text="__t('main.close_project_desc')"></p>
     <div class="mt-4 flex justify-end space-x-2">
       <button @click="cancelCloseProject()" class="px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-muted-dark" x-text="__t('common.cancel')"></button>
       <button @click="confirmCloseProject()" class="px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-500" x-text="__t('main.close_project_confirm')"></button>

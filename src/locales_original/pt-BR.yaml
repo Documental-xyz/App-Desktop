@@ -28,12 +28,11 @@ common:
 welcome:
   page_title: "Documental - Bem-vindo"
   # Step 1
-  title: "Documental"
+  title: "Bem-vindo ao Documental"
   subtitle: |
-    Bem vindo ao aplicativo da Documental.
-    Sou sua principal ferramenta para gerir e editar histórias na plataforma.
-
-    Siga os passos para configurar o aplicativo
+    Seu ambiente de documentação centralizado está pronto.
+    
+    Transforme a forma como você cria e gerencia seus projetos.
   quick_start: "Início Rápido"
   quick_start_desc: "Configure em minutos e comece a documentar"
   git_integration: "Integração Git"
@@ -43,9 +42,7 @@ welcome:
   start_setup: "Começar Configuração"
   # Step 2
   connect_github_title: "Conecte com o GitHub"
-  connect_github_subtitle: |
-    O GitHub é utilizado para gerar as histórias da Documental.
-    Para usar a plataforma é necessário ter uma conta no GitHub.
+  connect_github_subtitle: "Para oferecer a melhor experiência de controle de versão,\nprecisamos conectar sua conta GitHub."
   secure_auth: "Autenticação Segura"
   secure_auth_desc: "Usamos OAuth 2.0 padrão do GitHub para proteger suas credenciais"
   controlled_access: "Acesso Controlado"
@@ -53,8 +50,8 @@ welcome:
   automatic_data: "Dados Automáticos"
   automatic_data_desc: "Seu nome e email serão configurados automaticamente para commits"
   # Step 3
-  auth_github_title: "Conecte com o GitHub"
-  auth_github_subtitle: "Clique no botão abaixo\npara abrir uma página de login e autenticação do GitHub:"
+  auth_github_title: "Autentique com GitHub"
+  auth_github_subtitle: "Clique no botão abaixo\npara abrir a página de autenticação do GitHub em uma nova janela."
   redirect_info: "Você será redirecionado para o GitHub para autorizar o acesso"
   connecting: "Conectando..."
   connect_with_github: "Conectar com GitHub"
@@ -74,10 +71,8 @@ welcome:
   error_setup_api: "API para completar configuração não disponível"
   error_finish_setup: "Erro ao finalizar configuração: {error}"
   # Step 4
-  download_nodejs_title: "Instalar Dependência (Node.js)"
-  download_nodejs_subtitle: |
-    Baixe e instale o Node.js 20 LTS, utilizado para clonar
-    repositórios e instalar dependencias de forma segura
+  download_nodejs_title: "Baixar Node.js 20 LTS"
+  download_nodejs_subtitle: "O Documental utiliza um Node.js portátil próprio\npara clonar repositórios e instalar dependências de forma segura."
   nodejs_lts: "Node.js 20.x LTS oficial"
   nodejs_lts_desc: "Ao confirmar o download, o Documental obtém diretamente do nodejs.org\nos binários para o seu sistema, instala em uma pasta segura do usuário\ne valida as versões do Node e npm automaticamente."
   no_prompts: "Sem prompts externos ou privilégios administrativos"
@@ -196,7 +191,7 @@ config:
 
 index:
   page_title: "Documental - Selecionar Projeto"
-  subtitle: ""
+  subtitle: "Seu ambiente de documentação centralizado."
   create_new: "Criar Novo Projeto"
   create_new_desc: "Comece do zero com um novo projeto de documentação."
   open_folder: "Abrir Pasta"
@@ -213,22 +208,22 @@ index:
 
 new:
   page_title: "Documental - Novo Projeto"
-  title: "Criar Novo Ambiente de Trabalho"
-  subtitle: "Preencha os detalhes abaixo para definir seu novo workspace"
+  title: "Criar Novo Projeto"
+  subtitle: "Preencha os detalhes abaixo para criar seu novo projeto."
   back_home: "Voltar para tela inicial"
-  project_name: "Nome do ambiente de trabalho:"
+  project_name: "Nome do Projeto"
   project_name_placeholder: "Ex: Meu Incrível Projeto"
-  github_url: "URL do repositório do GitHub que você criou ou já possui"
+  github_url: "URL do Repositório Git"
   github_url_placeholder: "https://github.com/usuario/repositorio.git"
-  folder_path: "Pasta onde o novo ambiente de trabalho será salvo"
-  create_project: "Criar Ambiente"
+  folder_path: "Caminho da Pasta"
+  create_project: "Criar Projeto"
   # script.js alerts
   fill_all_fields: "Por favor, preencha todos os campos."
   error_create_project: "Erro ao criar projeto: {error}"
 
 create:
   page_title: "Documental - Criando Espaço de Trabalho"
-  creating_workspace: "Criando Ambiente de Trabalho"
+  creating_workspace: "Criando Espaço de Trabalho"
   reopening_workspace: "Reabrindo Espaço de Trabalho"
   creating_subtitle: "Aguarde enquanto preparamos tudo para você."
   reopening_subtitle: "Aguarde enquanto preparamos seu projeto novamente."
