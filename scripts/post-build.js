@@ -10,18 +10,6 @@ class PostBuildProcessor {
     this.distBasePath = path.join(this.projectRoot, 'dist');
     this.sourceModulesPath = path.join(this.projectRoot, 'node_modules');
     this.criticalModules = [
-      'call-bind-apply-helpers',
-      'es-errors',
-      'gopd',
-      'has-proto',
-      'has-symbols',
-      'call-bind',
-      'get-intrinsic',
-      'get-proto',
-      'dunder-proto',
-      'call-bound'
-    ];
-    this.nativeModules = [
       'sqlite3',
       'keytar'
     ];
@@ -293,17 +281,9 @@ class PostBuildProcessor {
         fs.mkdirSync(distPath, { recursive: true });
       }
 
-      // Copy critical modules
+      // Copy critical modules (native modules that need unpacking)
       console.log('📦 Copying critical modules...');
       this.criticalModules.forEach(moduleName => {
-        if (!this.copyModule(moduleName, distPath)) {
-          overallSuccess = false;
-        }
-      });
-
-      // Copy native modules
-      console.log('🔧 Copying native modules...');
-      this.nativeModules.forEach(moduleName => {
         if (!this.copyModule(moduleName, distPath)) {
           overallSuccess = false;
         }
@@ -317,8 +297,7 @@ class PostBuildProcessor {
 
       // Verify all modules were copied correctly
       console.log('🔍 Verifying copied modules...');
-      const allModules = [...this.criticalModules, ...this.nativeModules];
-      const verificationResults = allModules.map(moduleName => ({
+      const verificationResults = this.criticalModules.map(moduleName => ({
         name: moduleName,
         verified: this.verifyModule(moduleName, distPath)
       }));

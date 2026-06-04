@@ -22,16 +22,6 @@ files:
   - "!node_modules/**/LICENSE*"
   - "!node_modules/**/README*"
 asarUnpack:
-  - node_modules/call-bind-apply-helpers/**/*
-  - node_modules/es-errors/**/*
-  - node_modules/gopd/**/*
-  - node_modules/has-proto/**/*
-  - node_modules/has-symbols/**/*
-  - node_modules/call-bind/**/*
-  - node_modules/get-intrinsic/**/*
-  - node_modules/get-proto/**/*
-  - node_modules/dunder-proto/**/*
-  - node_modules/call-bound/**/*
   - node_modules/sqlite3/**/*
   - node_modules/keytar/**/*
 extraResources:

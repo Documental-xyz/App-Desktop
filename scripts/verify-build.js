@@ -9,16 +9,6 @@ class BuildVerifier {
     this.projectRoot = path.join(__dirname, '..');
     this.distBasePath = path.join(this.projectRoot, 'dist');
     this.criticalModules = [
-      'call-bind-apply-helpers',
-      'es-errors',
-      'gopd',
-      'has-proto',
-      'has-symbols',
-      'call-bind',
-      'get-intrinsic',
-      'get-proto',
-      'dunder-proto',
-      'call-bound',
       'sqlite3',
       'keytar'
     ];
