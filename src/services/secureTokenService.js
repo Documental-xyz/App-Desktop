@@ -4,18 +4,20 @@
  * @since 1.0.0
  * 
  * Provides secure storage and validation of GitHub OAuth tokens
- * using keytar for encrypted storage
+ * using Electron's safeStorage API for encryption with file-based persistence
  */
 
 'use strict';
 
-const keytar = require('keytar');
+const { safeStorage, app } = require('electron');
+const fs = require('fs').promises;
+const path = require('path');
 const { getLogger } = require('../main/logging/logger');
 
 const logger = getLogger('SecureTokenService');
 
 /**
- * Service name for keytar storage
+ * Service name for storage
  */
 const SERVICE_NAME = 'documental-app';
 
@@ -45,6 +47,15 @@ const MIN_TOKEN_LENGTH = 20;
  */
 class SecureTokenService {
   /**
+   * Get the path to the encrypted token file
+   * @returns {string} Path to encrypted token file
+   * @private
+   */
+  _getTokenFilePath() {
+    return path.join(app.getPath('userData'), 'github-token.enc.json');
+  }
+
+  /**
    * Store GitHub token securely
    * @param {string} token - GitHub OAuth token
    * @returns {Promise<boolean>} Success status
@@ -56,7 +67,18 @@ class SecureTokenService {
         return false;
       }
 
-      await keytar.setPassword(SERVICE_NAME, GITHUB_ACCOUNT, token);
+      if (!safeStorage.isEncryptionAvailable()) {
+        logger.error('❌ safeStorage encryption is not available on this system');
+        return false;
+      }
+
+      const encrypted = safeStorage.encryptString(token);
+      const data = {
+        encrypted: encrypted.toString('base64'),
+        updatedAt: new Date().toISOString()
+      };
+
+      await fs.writeFile(this._getTokenFilePath(), JSON.stringify(data, null, 2), 'utf8');
       logger.info('✅ GitHub token stored securely');
       return true;
     } catch (error) {
@@ -71,19 +93,27 @@ class SecureTokenService {
    */
   async getToken() {
     try {
-      const token = await keytar.getPassword(SERVICE_NAME, GITHUB_ACCOUNT);
-      
-      if (token) {
-        if (this.isValidToken(token)) {
-          logger.info('✅ GitHub token retrieved from secure storage');
-          return token;
-        } else {
-          logger.warn('⚠️ Stored token has invalid format, removing it');
-          await this.deleteToken();
-          return null;
+      const filePath = this._getTokenFilePath();
+
+      try {
+        const fileContent = await fs.readFile(filePath, 'utf8');
+        const data = JSON.parse(fileContent);
+        const token = safeStorage.decryptString(Buffer.from(data.encrypted, 'base64'));
+
+        if (token) {
+          if (this.isValidToken(token)) {
+            logger.info('✅ GitHub token retrieved from secure storage');
+            return token;
+          } else {
+            logger.warn('⚠️ Stored token has invalid format, removing it');
+            await this.deleteToken();
+            return null;
+          }
         }
+      } catch (readError) {
+        // File doesn't exist or can't be read
       }
-      
+
       logger.info('ℹ️ No GitHub token found in secure storage');
       return null;
     } catch (error) {
@@ -98,14 +128,14 @@ class SecureTokenService {
    */
   async deleteToken() {
     try {
-      const result = await keytar.deletePassword(SERVICE_NAME, GITHUB_ACCOUNT);
-      if (result) {
-        logger.info('✅ GitHub token deleted from secure storage');
-      } else {
-        logger.info('ℹ️ No GitHub token found to delete');
-      }
-      return result;
+      await fs.unlink(this._getTokenFilePath());
+      logger.info('✅ GitHub token deleted from secure storage');
+      return true;
     } catch (error) {
+      if (error.code === 'ENOENT') {
+        logger.info('ℹ️ No GitHub token found to delete');
+        return false;
+      }
       logger.error('❌ Failed to delete GitHub token:', error.message);
       return false;
     }

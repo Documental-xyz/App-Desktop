@@ -9,11 +9,10 @@
 const git = require('isomorphic-git');
 const fs = require('fs');
 const path = require('path');
-const keytar = require('keytar');
+const { secureTokenService } = require('../services/secureTokenService.js');
 
 // Dynamic import for ESM module - will be loaded when needed
 let Octokit = null;
-const { GITHUB_CONFIG } = require('../config/github-config.js');
 
 /**
  * Git Operations Class
@@ -32,12 +31,12 @@ class GitOperations {
   }
 
   /**
-   * Get GitHub token from keytar
+   * Get GitHub token from secure storage
    * @returns {Promise<string|null>} GitHub token or null
    */
   async getGitHubToken() {
     try {
-      return await keytar.getPassword(GITHUB_CONFIG.SERVICE_NAME, 'github-token');
+      return await secureTokenService.getToken();
     } catch (error) {
       this.logger.error('Error getting GitHub token:', error);
       return null;

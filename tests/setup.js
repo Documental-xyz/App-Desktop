@@ -42,6 +42,11 @@ global.mockElectron = {
   contextBridge: {
     exposeInMainWorld: vi.fn()
   },
+  safeStorage: {
+    encryptString: vi.fn(() => Buffer.from('encrypted')),
+    decryptString: vi.fn(() => ''),
+    isEncryptionAvailable: vi.fn(() => true)
+  },
   dialog: {
     showOpenDialog: vi.fn((...args) => global.dialogMockImpl(...args)),
     showSaveDialog: vi.fn()
@@ -52,7 +57,12 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   existsSync: vi.fn(),
-  mkdirSync: vi.fn()
+  mkdirSync: vi.fn(),
+  promises: {
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    unlink: vi.fn()
+  }
 }));
 
 vi.mock('path', () => ({

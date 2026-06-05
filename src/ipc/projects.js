@@ -11,8 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const git = require('isomorphic-git');
 const http = require('isomorphic-git/http/node');
-const keytar = require('keytar');
-const { GITHUB_CONFIG } = require('../config/github-config.js');
+const { secureTokenService } = require('../services/secureTokenService.js');
 
 /**
  * @typedef {Object} ProjectDetails
@@ -38,12 +37,12 @@ const { GITHUB_CONFIG } = require('../config/github-config.js');
  */
 
 /**
- * Get GitHub token from keytar
+ * Get GitHub token from secure storage
  * @returns {Promise<string|null>} GitHub token or null
  */
 async function getGitHubToken() {
   try {
-    return await keytar.getPassword(GITHUB_CONFIG.SERVICE_NAME, 'github-token');
+    return await secureTokenService.getToken();
   } catch (error) {
     console.error('Error getting GitHub token:', error);
     return null;

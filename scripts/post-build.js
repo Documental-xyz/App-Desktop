@@ -10,8 +10,7 @@ class PostBuildProcessor {
     this.distBasePath = path.join(this.projectRoot, 'dist');
     this.sourceModulesPath = path.join(this.projectRoot, 'node_modules');
     this.criticalModules = [
-      'sqlite3',
-      'keytar'
+      'sqlite3'
     ];
   }
 

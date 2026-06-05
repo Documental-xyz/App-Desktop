@@ -9,8 +9,7 @@ class BuildVerifier {
     this.projectRoot = path.join(__dirname, '..');
     this.distBasePath = path.join(this.projectRoot, 'dist');
     this.criticalModules = [
-      'sqlite3',
-      'keytar'
+      'sqlite3'
     ];
   }
 
