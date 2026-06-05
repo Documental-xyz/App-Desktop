@@ -4,7 +4,8 @@
  * @since 1.0.0
  * 
  * Provides secure storage and validation of GitHub OAuth tokens
- * using Electron's safeStorage API for encryption with file-based persistence
+ * using Electron's safeStorage API (preferred) or Node.js crypto (fallback)
+ * with file-based persistence
  */
 
 'use strict';
@@ -12,6 +13,8 @@
 const { safeStorage, app } = require('electron');
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
 const { getLogger } = require('../main/logging/logger');
 
 const logger = getLogger('SecureTokenService');
@@ -25,6 +28,11 @@ const SERVICE_NAME = 'documental-app';
  * Account name for GitHub tokens
  */
 const GITHUB_ACCOUNT = 'github-token';
+
+/**
+ * Algorithm used for fallback encryption
+ */
+const FALLBACK_ALGORITHM = 'aes-256-gcm';
 
 /**
  * GitHub token validation patterns
@@ -43,6 +51,62 @@ const GITHUB_TOKEN_PATTERNS = {
 const MIN_TOKEN_LENGTH = 20;
 
 /**
+ * Derive an encryption key from machine-specific data.
+ * This is used as a fallback when safeStorage is not available.
+ * @returns {string} Hex-encoded 32-byte key
+ */
+function _getMachineKey() {
+  const machineId = [
+    os.hostname(),
+    os.userInfo().username,
+    app.getPath('userData'),
+    'documental-token-encryption-v1'
+  ].join(':');
+  return crypto.createHash('sha256').update(machineId).digest('hex');
+}
+
+/**
+ * Encrypt text using AES-256-GCM with a machine-derived key
+ * @param {string} text - Plain text to encrypt
+ * @returns {object} Encrypted payload with iv, tag, encrypted
+ */
+function _fallbackEncrypt(text) {
+  const key = _getMachineKey();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(FALLBACK_ALGORITHM, Buffer.from(key, 'hex'), iv);
+  
+  let encrypted = cipher.update(text, 'utf8', 'base64');
+  encrypted += cipher.final('base64');
+  
+  const authTag = cipher.getAuthTag();
+  
+  return {
+    iv: iv.toString('base64'),
+    tag: authTag.toString('base64'),
+    encrypted: encrypted
+  };
+}
+
+/**
+ * Decrypt text using AES-256-GCM with a machine-derived key
+ * @param {object} data - Object with iv, tag, encrypted fields
+ * @returns {string} Decrypted plain text
+ */
+function _fallbackDecrypt(data) {
+  const key = _getMachineKey();
+  const iv = Buffer.from(data.iv, 'base64');
+  const tag = Buffer.from(data.tag, 'base64');
+  
+  const decipher = crypto.createDecipheriv(FALLBACK_ALGORITHM, Buffer.from(key, 'hex'), iv);
+  decipher.setAuthTag(tag);
+  
+  let decrypted = decipher.update(data.encrypted, 'base64', 'utf8');
+  decrypted += decipher.final('utf8');
+  
+  return decrypted;
+}
+
+/**
  * Secure Token Service class
  */
 class SecureTokenService {
@@ -53,6 +117,19 @@ class SecureTokenService {
    */
   _getTokenFilePath() {
     return path.join(app.getPath('userData'), 'github-token.enc.json');
+  }
+
+  /**
+   * Check if safeStorage encryption is available
+   * @returns {boolean}
+   * @private
+   */
+  _isSafeStorageAvailable() {
+    try {
+      return safeStorage && safeStorage.isEncryptionAvailable();
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -67,16 +144,24 @@ class SecureTokenService {
         return false;
       }
 
-      if (!safeStorage.isEncryptionAvailable()) {
-        logger.error('❌ safeStorage encryption is not available on this system');
-        return false;
-      }
-
-      const encrypted = safeStorage.encryptString(token);
+      const useSafeStorage = this._isSafeStorageAvailable();
       const data = {
-        encrypted: encrypted.toString('base64'),
         updatedAt: new Date().toISOString()
       };
+
+      if (useSafeStorage) {
+        const encrypted = safeStorage.encryptString(token);
+        data.method = 'safeStorage';
+        data.encrypted = encrypted.toString('base64');
+        logger.info('🔐 Using Electron safeStorage for encryption');
+      } else {
+        logger.warn('⚠️ safeStorage unavailable, using fallback encryption (AES-256-GCM)');
+        const fallback = _fallbackEncrypt(token);
+        data.method = 'fallback';
+        data.encrypted = fallback.encrypted;
+        data.iv = fallback.iv;
+        data.tag = fallback.tag;
+      }
 
       await fs.writeFile(this._getTokenFilePath(), JSON.stringify(data, null, 2), 'utf8');
       logger.info('✅ GitHub token stored securely');
@@ -98,7 +183,22 @@ class SecureTokenService {
       try {
         const fileContent = await fs.readFile(filePath, 'utf8');
         const data = JSON.parse(fileContent);
-        const token = safeStorage.decryptString(Buffer.from(data.encrypted, 'base64'));
+        let token;
+
+        if (data.method === 'safeStorage') {
+          token = safeStorage.decryptString(Buffer.from(data.encrypted, 'base64'));
+        } else if (data.method === 'fallback') {
+          token = _fallbackDecrypt(data);
+        } else {
+          // Legacy format (no method field) — try safeStorage first, then fallback
+          try {
+            token = safeStorage.decryptString(Buffer.from(data.encrypted, 'base64'));
+          } catch {
+            logger.warn('⚠️ Could not decrypt legacy token, removing it');
+            await this.deleteToken();
+            return null;
+          }
+        }
 
         if (token) {
           if (this.isValidToken(token)) {
