@@ -76,6 +76,30 @@ class GithubForkService {
   }
 
   /**
+   * Check whether the authenticated user already has a repository with the given name.
+   * @param {string} repoName - Repository name to check.
+   * @returns {Promise<{ exists: boolean, owner?: string, error?: string }>}
+   */
+  async checkRepoExists(repoName) {
+    try {
+      const token = await secureTokenService.getToken();
+      if (!token) {
+        return { exists: false, error: 'Not authenticated' };
+      }
+      const { Octokit } = await import('@octokit/rest');
+      const octokit = new Octokit({ auth: token });
+      const { data: user } = await octokit.users.getAuthenticated();
+      await octokit.repos.get({ owner: user.login, repo: repoName });
+      return { exists: true, owner: user.login };
+    } catch (error) {
+      if (error && error.status === 404) {
+        return { exists: false };
+      }
+      return { exists: false, error: error?.message || 'Unknown error' };
+    }
+  }
+
+  /**
    * Create a fork of the given repository and poll until it is ready.
    *
    * @param {string} owner - Source repository owner (e.g. "documental").
@@ -167,10 +191,22 @@ class GithubForkService {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    // g. Return result
+    // g. Rename fork if GitHub assigned a different name than requested
+    if (forkName && data && data.name && data.name !== forkName) {
+      try {
+        this.logger?.info?.('Renaming fork from', data.name, 'to', forkName);
+        await octokit.repos.update({ owner: pollOwner, repo: data.name, name: forkName });
+        const updated = await octokit.repos.get({ owner: pollOwner, repo: forkName });
+        data = updated.data;
+      } catch (renameError) {
+        this.logger?.error?.('Failed to rename fork:', renameError?.message);
+      }
+    }
+
+    // h. Return result
     return {
       success: true,
-      forkCloneUrl: 'https://github.com/' + pollOwner + '/' + pollRepo + '.git',
+      forkCloneUrl: 'https://github.com/' + pollOwner + '/' + (data?.name || pollRepo) + '.git',
       fork: data
     };
   }

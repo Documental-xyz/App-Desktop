@@ -827,6 +827,19 @@ class ProjectCreationHandler {
     });
 
     /**
+     * Check if a repository with the given name already exists for the authenticated user
+     */
+    ipcMain.handle('check-repo-exists', async (event, repoName) => {
+      try {
+        const { githubForkService } = require('../services/githubForkService.js');
+        return await githubForkService.checkRepoExists(repoName);
+      } catch (error) {
+        this.logger.error('Error in check-repo-exists handler:', error);
+        return { exists: false, error: error.message };
+      }
+    });
+
+    /**
      * Open project with preview branch check and dev server only
      */
     ipcMain.handle('open-project-only-preview-and-server', async (event, projectId, projectPath, repoUrl, repoFolderName) => {

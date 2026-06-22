@@ -125,6 +125,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
+      const isForkMode = sessionStorage.getItem('repoSelectMode') === 'fork';
+      if (isForkMode && window.electronAPI && window.electronAPI.checkRepoExists) {
+        const slug = projectName.toLowerCase()
+          .replace(/\s+/g, '-')
+          .replace(/[^\w\-]+/g, '')
+          .replace(/\-\-+/g, '-')
+          .replace(/^-+/, '')
+          .replace(/-+$/, '');
+        if (slug) {
+          const result = await window.electronAPI.checkRepoExists(slug);
+          if (result.exists) {
+            alert(__t('new.repo_exists_alert', { name: slug }));
+            return;
+          }
+        }
+      }
+
       try {
         // Check if this is an existing git repo or empty folder
         let isExistingGitRepo = false;

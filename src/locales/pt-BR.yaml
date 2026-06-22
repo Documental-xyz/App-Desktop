@@ -230,6 +230,7 @@ new:
   create_project: "Criar Ambiente"
   # script.js alerts
   fill_all_fields: "Por favor, preencha todos os campos."
+  repo_exists_alert: "Você já possui um repositório chamado '{name}'. Por favor, escolha outro nome para o projeto."
   error_create_project: "Erro ao criar projeto: {error}"
 
 repo_select:

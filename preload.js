@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFolderInfo: (folderPath) => ipcRenderer.invoke('getFolderInfo', folderPath),
   startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') =>
     ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName),
+  checkRepoExists: (repoName) => ipcRenderer.invoke('check-repo-exists', repoName),
   reopenProject: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('reopen-project', projectId, projectPath, githubUrl, repoFolderName),
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),
   cancelProjectCreation: (projectId, projectPath, repoFolderName, shouldDeleteFiles = false) =>

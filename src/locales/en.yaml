@@ -222,6 +222,7 @@ new:
   create_project: "Create Project"
   # script.js alerts
   fill_all_fields: "Please fill in all fields."
+  repo_exists_alert: "You already have a repository named '{name}'. Please choose a different project name."
   error_create_project: "Error creating project: {error}"
 
 repo_select:
