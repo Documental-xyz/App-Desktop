@@ -13,8 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeProject: (projectId) => ipcRenderer.invoke('remove-project', projectId),
   checkProjectExists: (folderPath) => ipcRenderer.invoke('checkProjectExists', folderPath),
   getFolderInfo: (folderPath) => ipcRenderer.invoke('getFolderInfo', folderPath),
-  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') =>
-    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName),
+  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) =>
+    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages),
   checkRepoExists: (repoName) => ipcRenderer.invoke('check-repo-exists', repoName),
   reopenProject: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('reopen-project', projectId, projectPath, githubUrl, repoFolderName),
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),

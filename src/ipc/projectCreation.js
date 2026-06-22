@@ -279,7 +279,7 @@ class ProjectCreationHandler {
    * @param {string} [projectName] - User-provided project name (for folder slug)
    * @returns {Promise<Object>} Result object
    */
-  async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') {
+   async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -379,6 +379,30 @@ class ProjectCreationHandler {
           step0Output(t('create.fork_error', { error: error.message }) + '\n');
           step0Status('failure');
           throw error;
+        }
+      }
+
+      // GitHub Pages step (stepId 6) — after fork, before clone
+      if (enablePages) {
+        const step6Output = getStepOutput(6);
+        const step6Status = getStepStatusSender(6);
+
+        const pagesMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
+        if (pagesMatch) {
+          step6Output(t('create.pages_starting') + '\n');
+          step6Status('active');
+
+          const [, pagesOwner, pagesRepo] = pagesMatch;
+          const { githubForkService } = require('../services/githubForkService.js');
+          const pagesResult = await githubForkService.enableGitHubPages(pagesOwner, pagesRepo);
+          if (pagesResult.success) {
+            step6Output(t('create.pages_success') + '\n');
+          } else {
+            step6Output(t('create.pages_error', { error: pagesResult.error || 'Unknown' }) + '\n');
+          }
+          step6Status('success');
+        } else {
+          this.logger?.info?.('Skipping GitHub Pages: URL is not github.com');
         }
       }
 
@@ -817,9 +841,9 @@ class ProjectCreationHandler {
     /**
      * Start complete project creation
      */
-    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') => {
+    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;

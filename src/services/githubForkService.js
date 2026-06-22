@@ -100,6 +100,45 @@ class GithubForkService {
   }
 
   /**
+   * Enable GitHub Pages on a repository using workflow build type.
+   * @param {string} owner - Repository owner.
+   * @param {string} repo - Repository name.
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  async enableGitHubPages(owner, repo) {
+    try {
+      const token = await secureTokenService.getToken();
+      if (!token) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const { Octokit } = await import('@octokit/rest');
+      const octokit = new Octokit({ auth: token });
+
+      try {
+        await octokit.repos.createPagesSite({ owner, repo, build_type: 'workflow' });
+        this.logger?.info?.('GitHub Pages enabled for', owner + '/' + repo);
+      } catch (error) {
+        // 409 = Pages already enabled — update build_type instead
+        if (error && error.status === 409) {
+          this.logger?.info?.('GitHub Pages already enabled for', owner + '/' + repo);
+          try {
+            await octokit.repos.updateInformationAboutPagesSite({ owner, repo, build_type: 'workflow' });
+          } catch (updateError) {
+            this.logger?.debug?.('Pages update returned:', updateError?.message);
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      this.logger?.error?.('Failed to enable GitHub Pages:', error?.message);
+      return { success: false, error: error?.message || 'Unknown error' };
+    }
+  }
+
+  /**
    * Create a fork of the given repository and poll until it is ready.
    *
    * @param {string} owner - Source repository owner (e.g. "documental").
