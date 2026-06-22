@@ -101,6 +101,11 @@ welcome:
   preparing_download: "Preparando download..."
   install_complete: "Instalação concluída"
   error_install_node: "Falha ao instalar Node.js"
+  has_account_question: "Você já possui uma conta GitHub?"
+  has_account_yes: "Sim, já tenho"
+  has_account_no: "Não, preciso criar"
+  create_account_instructions: "Crie sua conta gratuita no GitHub. Demora menos de 2 minutos."
+  create_github_account_button: "Criar conta GitHub"
   # Footer
   step_of: "Passo {current} de {total}"
 
@@ -226,6 +231,19 @@ new:
   fill_all_fields: "Por favor, preencha todos os campos."
   error_create_project: "Erro ao criar projeto: {error}"
 
+repo_select:
+  page_title: "Documental - Selecionar Repositório"
+  title: "Escolha um Repositório"
+  subtitle: "Você precisa de um repositório GitHub para salvar e publicar sua documentação."
+  loading_repos: "Carregando seus repositórios..."
+  repos_error: "Falha ao carregar repositórios. Tente novamente."
+  empty_repos: "Você ainda não tem repositórios. Crie um fork para começar."
+  documental_badge: "Documental"
+  private_repo_label: "Privado"
+  button_continue: "Continuar"
+  button_create_fork: "Criar novo fork"
+  select_prompt: "Selecione um repositório para continuar"
+
 create:
   page_title: "Documental - Criando Espaço de Trabalho"
   creating_workspace: "Criando Ambiente de Trabalho"
@@ -243,6 +261,10 @@ create:
   step_completed_previously: "Passo concluído anteriormente."
   process_cancelled: "Processo cancelado pelo usuário."
   finished: "Finalizado!"
+  step_fork: "Preparando repositório (fork)..."
+  fork_success: "Fork criado com sucesso!"
+  fork_failed: "Fork falhou"
+  fork_timeout: "Tempo limite do fork excedido"
   # Cancel modal
   cancel_creation_title: "Cancelar Criação do Projeto"
   cancel_creation_desc: "O processo de criação está em andamento. Deseja realmente cancelar?"

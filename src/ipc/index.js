@@ -15,6 +15,7 @@ const { FileHandlers } = require('./file.js');
 const { ProjectCreationHandler } = require('./projectCreation.js');
 const { registerNodeDetectionHandlers } = require('./nodeDetection.js');
 const { I18nHandlers } = require('./i18n.js');
+const { GithubReposHandlers } = require('./githubRepos.js');
 
 /**
  * IPC Registry - Central point for registering all IPC handlers
@@ -59,7 +60,9 @@ class IpcRegistry {
       logger: this.logger,
       databaseManager: dependencies.databaseManager
     });
-    
+
+    this.githubReposHandlers = new GithubReposHandlers(dependencies);
+
     this.isRegistered = false;
   }
 
@@ -85,6 +88,7 @@ class IpcRegistry {
       this.fileHandlers.registerHandlers();
       this.projectCreationHandler.registerHandlers();
       this.i18nHandlers.registerHandlers();
+      this.githubReposHandlers.registerHandlers();
 
       this.isRegistered = true;
       this.logger.info('✅ All IPC handlers registered successfully');
@@ -114,6 +118,7 @@ class IpcRegistry {
       // Unregister handlers in reverse order
       this.projectCreationHandler.unregisterHandlers();
       this.i18nHandlers.unregisterHandlers();
+      this.githubReposHandlers.unregisterHandlers();
       this.fileHandlers.unregisterHandlers();
       this.browserHandlers.unregisterHandlers();
       this.gitHandlers.unregisterHandlers();

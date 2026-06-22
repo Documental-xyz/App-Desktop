@@ -93,6 +93,11 @@ welcome:
   preparing_download: "Preparing download..."
   install_complete: "Installation complete"
   error_install_node: "Failed to install Node.js"
+  has_account_question: "Do you already have a GitHub account?"
+  has_account_yes: "Yes, I have one"
+  has_account_no: "No, I need to create one"
+  create_account_instructions: "Create your free GitHub account. It takes less than 2 minutes."
+  create_github_account_button: "Create GitHub Account"
   # Footer
   step_of: "Step {current} of {total}"
 
@@ -218,6 +223,19 @@ new:
   fill_all_fields: "Please fill in all fields."
   error_create_project: "Error creating project: {error}"
 
+repo_select:
+  page_title: "Documental - Select Repository"
+  title: "Choose a Repository"
+  subtitle: "You need a GitHub repository to save and publish your documentation."
+  loading_repos: "Loading your repositories..."
+  repos_error: "Failed to load repositories. Please try again."
+  empty_repos: "You don't have any repositories yet. Create a fork to get started."
+  documental_badge: "Documental"
+  private_repo_label: "Private"
+  button_continue: "Continue"
+  button_create_fork: "Create New Fork"
+  select_prompt: "Select a repository to continue"
+
 create:
   page_title: "Documental - Creating Workspace"
   creating_workspace: "Creating Workspace"
@@ -235,6 +253,10 @@ create:
   step_completed_previously: "Step completed previously."
   process_cancelled: "Process cancelled by user."
   finished: "Finished!"
+  step_fork: "Preparing repository (fork)..."
+  fork_success: "Fork created successfully!"
+  fork_failed: "Fork failed"
+  fork_timeout: "Fork timed out"
   # Cancel modal
   cancel_creation_title: "Cancel Project Creation"
   cancel_creation_desc: "The creation process is in progress. Do you really want to cancel?"

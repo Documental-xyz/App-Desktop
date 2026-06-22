@@ -121,8 +121,13 @@ class ProjectCreationHandler {
         await this.cleanPartialGit(dir);
       }
       
-      const token = await this.gitOps.getGitHubToken();
+      const isGithubUrl = /^https:\/\/github\.com\//i.test(url);
+      const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+      if (!isGithubUrl) {
+        this.logger.warn('Clone URL is not a GitHub URL — proceeding without token auth');
+        sendOutput('⚠️ URL não é github.com — clone sem credenciais OAuth\n');
+      }
       
       const git = require('isomorphic-git');
       const http = require('isomorphic-git/http/node');

@@ -13,8 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeProject: (projectId) => ipcRenderer.invoke('remove-project', projectId),
   checkProjectExists: (folderPath) => ipcRenderer.invoke('checkProjectExists', folderPath),
   getFolderInfo: (folderPath) => ipcRenderer.invoke('getFolderInfo', folderPath),
-  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false) =>
-    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder),
+  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false) =>
+    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst),
   reopenProject: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('reopen-project', projectId, projectPath, githubUrl, repoFolderName),
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),
   cancelProjectCreation: (projectId, projectPath, repoFolderName, shouldDeleteFiles = false) =>
@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listRemoteBranches: (projectId) => ipcRenderer.invoke('git:list-remote-branches', projectId),
   cancelGitOperation: () => ipcRenderer.invoke('git:cancel-operation'),
   openInFileExplorer: (path) => ipcRenderer.invoke('open-file-explorer', path),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  listUserRepos: () => ipcRenderer.invoke('github:list-user-repos'),
   // Path utility functions
   joinPath: (...segments) => ipcRenderer.invoke('join-path', ...segments),
   normalizePath: (filePath) => ipcRenderer.invoke('normalizePath', filePath),

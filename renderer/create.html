@@ -143,7 +143,7 @@
                 if (!normalized.message) {
                     return;
                 }
-                const targetIndex = normalized.stepId
+                const targetIndex = normalized.stepId !== null && normalized.stepId !== undefined
                     ? this.steps.findIndex(s => s.id === normalized.stepId)
                     : this.steps.findIndex(s => s.status === 'active');
                 if (targetIndex !== -1) {
@@ -155,7 +155,7 @@
                 const normalized = typeof payload === 'object' && payload !== null
                     ? { stepId: payload.stepId || null, status: payload.status || '' }
                     : { stepId: null, status: payload };
-                const targetIndex = normalized.stepId
+                const targetIndex = normalized.stepId !== null && normalized.stepId !== undefined
                     ? this.steps.findIndex(s => s.id === normalized.stepId)
                     : this.steps.findIndex(s => s.status === 'active');
                 if (targetIndex !== -1) {
