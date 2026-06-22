@@ -169,7 +169,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         sessionStorage.setItem('isEmptyFolder', isEmptyFolder.toString());
         sessionStorage.setItem('shouldForkFirst', shouldForkFirst.toString());
         sessionStorage.setItem('projectName', projectName);
-        sessionStorage.removeItem('folderInfo'); // Clean up
+        const enablePagesToggle = document.getElementById('enable-pages-toggle');
+        const enablePages = enablePagesToggle ? enablePagesToggle.checked : false;
+        sessionStorage.setItem('enableGitHubPages', enablePages.toString());
+        sessionStorage.removeItem('folderInfo');
         sessionStorage.removeItem('repoSelectMode');
         sessionStorage.removeItem('selectedRepo');
         navigateToPage('create.html'); // Navigate to create page after creation

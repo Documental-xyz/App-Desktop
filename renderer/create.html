@@ -65,8 +65,10 @@
         processFinished: false,
         processFailed: false,
         processPaused: false,
+        enablePages: false,
         steps: [
             { id: 0, title: __t('create.step_fork'), status: 'pending', log: '', expanded: false },
+            { id: 6, title: __t('create.step_pages'), status: 'pending', log: '', expanded: false },
             { id: 1, title: __t('create.step_git_clone'), status: 'pending', log: '', expanded: false },
             { id: 2, title: __t('create.step_branch_preview'), status: 'pending', log: '', expanded: false },
             { id: 3, title: __t('create.step_dependencies'), status: 'pending', log: '', expanded: false },
@@ -93,6 +95,7 @@
             this.isEmptyFolder = sessionStorage.getItem('isEmptyFolder') === 'true';
             this.shouldForkFirst = sessionStorage.getItem('shouldForkFirst') === 'true';
             this.projectName = sessionStorage.getItem('projectName') || '';
+            this.enablePages = sessionStorage.getItem('enableGitHubPages') === 'true';
             
             if (!this.projectId) {
                 console.error('No project ID found in session storage.');
@@ -108,31 +111,43 @@
                 this.steps[1].status = 'success';
                 this.steps[2].status = 'success';
                 this.steps[3].status = 'success';
-                this.steps[4].status = 'active';
+                this.steps[4].status = 'success';
+                this.steps[5].status = 'active';
                 this.activeStepId = 4;
             } else if (this.isExistingGitRepo) {
                 this.steps[0].status = 'success';
                 this.steps[1].status = 'success';
-                this.steps[1].title = __t('create.step_git_found');
-                this.steps[2].status = 'active';
+                this.steps[2].status = 'success';
+                this.steps[2].title = __t('create.step_git_found');
+                this.steps[3].status = 'active';
                 this.activeStepId = 2;
             } else if (this.isEmptyFolder) {
                 if (this.shouldForkFirst) {
                     this.steps[0].status = 'active';
                     this.activeStepId = 0;
+                } else if (this.enablePages) {
+                    this.steps[0].status = 'success';
+                    this.steps[1].status = 'active';
+                    this.activeStepId = 6;
                 } else {
                     this.steps[0].status = 'success';
-                    this.steps[1].title = __t('create.step_cloning_folder');
-                    this.steps[1].status = 'active';
+                    this.steps[1].status = 'success';
+                    this.steps[2].title = __t('create.step_cloning_folder');
+                    this.steps[2].status = 'active';
                     this.activeStepId = 1;
                 }
             } else {
                 if (this.shouldForkFirst) {
                     this.steps[0].status = 'active';
                     this.activeStepId = 0;
-                } else {
+                } else if (this.enablePages) {
                     this.steps[0].status = 'success';
                     this.steps[1].status = 'active';
+                    this.activeStepId = 6;
+                } else {
+                    this.steps[0].status = 'success';
+                    this.steps[1].status = 'success';
+                    this.steps[2].status = 'active';
                     this.activeStepId = 1;
                 }
             }
@@ -276,7 +291,7 @@
                         await window.electronAPI.reopenProject(this.projectId, this.projectPath, this.githubUrl, this.repoFolderName);
                     } else {
                         // For new projects, run full creation process
-                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '');
+                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '', this.enablePages || false);
                     }
                 }
             } catch (error) {
@@ -361,13 +376,13 @@
             
             if (this.isReopenMode) {
                 this.activeStepId = 4;
-                this.steps.forEach((step, index) => {
-                    if (index < 4) {
-                        step.status = 'success';
-                        step.log = __t('create.step_completed_previously');
-                    } else if (index === 4) {
+                this.steps.forEach((step) => {
+                    if (step.id === 4) {
                         step.status = 'active';
                         step.log = '';
+                    } else if (step.id < 4 || step.id === 6) {
+                        step.status = 'success';
+                        step.log = __t('create.step_completed_previously');
                     } else {
                         step.status = 'pending';
                         step.log = '';
@@ -376,14 +391,20 @@
             } else {
                 if (this.shouldForkFirst) {
                     this.activeStepId = 0;
-                    this.steps.forEach((step, index) => {
-                        step.status = index === 0 ? 'active' : 'pending';
+                    this.steps.forEach((step) => {
+                        step.status = step.id === 0 ? 'active' : 'pending';
+                        step.log = '';
+                    });
+                } else if (this.enablePages) {
+                    this.activeStepId = 6;
+                    this.steps.forEach((step) => {
+                        step.status = (step.id === 0) ? 'success' : (step.id === 6 ? 'active' : 'pending');
                         step.log = '';
                     });
                 } else {
                     this.activeStepId = 1;
-                    this.steps.forEach((step, index) => {
-                        step.status = index === 0 ? 'success' : (index === 1 ? 'active' : 'pending');
+                    this.steps.forEach((step) => {
+                        step.status = (step.id === 0 || step.id === 6) ? 'success' : (step.id === 1 ? 'active' : 'pending');
                         step.log = '';
                     });
                 }
@@ -407,7 +428,7 @@
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
 <template :key="step.id" x-for="(step, index) in steps">
-<div x-show="step.id !== 0 || shouldForkFirst" :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
+<div x-show="(step.id !== 0 || shouldForkFirst) && (step.id !== 6 || enablePages)" :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
 <div :class="{'cursor-pointer': step.status !== 'active'}" @click="step.expanded = !step.expanded" class="flex items-center justify-between p-3">
 <div class="flex items-center gap-3">
 <div class="flex items-center justify-center w-6 h-6">

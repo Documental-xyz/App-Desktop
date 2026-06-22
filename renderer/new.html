@@ -15,6 +15,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.placeholder = __t(el.dataset.i18nPlaceholder);
   });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = __t(el.dataset.i18nTitle);
+  });
 });
 </script>
 <script src="script.js" defer></script>
@@ -171,6 +174,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 <span class="material-symbols-outlined text-xl">folder_open</span>
 <span data-i18n="select"></span>
 </button>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-3 pt-2">
+<label class="relative inline-flex items-center cursor-pointer">
+<input type="checkbox" id="enable-pages-toggle" class="sr-only peer" checked=""/>
+<div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
+<div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
+</label>
+<div class="flex items-center gap-1">
+<span class="text-sm text-text-dark" data-i18n="new.enable_github_pages"></span>
+<span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.github_pages_tooltip" title="">help</span>
 </div>
 </div>
 </div>
