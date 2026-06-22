@@ -126,18 +126,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const isForkMode = sessionStorage.getItem('repoSelectMode') === 'fork';
-      if (isForkMode && window.electronAPI && window.electronAPI.checkRepoExists) {
-        const slug = projectName.toLowerCase()
-          .replace(/\s+/g, '-')
-          .replace(/[^\w\-]+/g, '')
-          .replace(/\-\-+/g, '-')
-          .replace(/^-+/, '')
-          .replace(/-+$/, '');
-        if (slug) {
-          const result = await window.electronAPI.checkRepoExists(slug);
-          if (result.exists) {
-            alert(__t('new.repo_exists_alert', { name: slug }));
-            return;
+      console.log('[fork-check] isForkMode:', isForkMode, 'checkRepoExists available:', !!window.electronAPI?.checkRepoExists);
+      if (isForkMode) {
+        if (!window.electronAPI || !window.electronAPI.checkRepoExists) {
+          console.warn('[fork-check] checkRepoExists IPC not available — preload may need app restart');
+        } else {
+          const slug = projectName.toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^\w\-]+/g, '')
+            .replace(/\-\-+/g, '-')
+            .replace(/^-+/, '')
+            .replace(/-+$/, '');
+          console.log('[fork-check] project name:', projectName, '→ slug:', slug);
+          if (slug) {
+            const result = await window.electronAPI.checkRepoExists(slug);
+            console.log('[fork-check] checkRepoExists result:', result);
+            if (result.exists) {
+              alert(__t('new.repo_exists_alert', { name: slug }));
+              return;
+            }
           }
         }
       }
