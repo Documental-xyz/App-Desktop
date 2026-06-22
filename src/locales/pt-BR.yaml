@@ -106,6 +106,7 @@ welcome:
   has_account_no: "Não, preciso criar"
   create_account_instructions: "Crie sua conta gratuita no GitHub. Demora menos de 2 minutos."
   create_github_account_button: "Criar conta GitHub"
+  create_account_return: "Após criar, volte e clique em \"Sim\""
   # Footer
   step_of: "Passo {current} de {total}"
 

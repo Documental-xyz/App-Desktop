@@ -98,6 +98,7 @@ welcome:
   has_account_no: "No, I need to create one"
   create_account_instructions: "Create your free GitHub account. It takes less than 2 minutes."
   create_github_account_button: "Create GitHub Account"
+  create_account_return: "After creating, come back and click \"Yes\""
   # Footer
   step_of: "Step {current} of {total}"
 
