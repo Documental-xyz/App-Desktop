@@ -359,8 +359,17 @@ class ProjectCreationHandler {
         const [, forkOwner, forkRepo] = forkMatch;
         const { githubForkService } = require('../services/githubForkService.js');
 
+        const forkSlug = projectName
+          ? projectName.toString().toLowerCase()
+              .replace(/\s+/g, '-')
+              .replace(/[^\w\-]+/g, '')
+              .replace(/\-\-+/g, '-')
+              .replace(/^-+/, '')
+              .replace(/-+$/, '')
+          : null;
+
         try {
-          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output);
+          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output, forkSlug);
           if (result.success) {
             repoUrl = result.forkCloneUrl;
             step0Output(t('create.fork_ready') + '\n');

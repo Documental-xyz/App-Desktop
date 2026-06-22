@@ -81,10 +81,11 @@ class GithubForkService {
    * @param {string} owner - Source repository owner (e.g. "documental").
    * @param {string} repo - Source repository name (e.g. "template").
    * @param {(message: string) => void} [onProgress] - Optional progress callback.
+   * @param {string} [forkName] - Optional custom name for the fork (slug of project name).
    * @returns {Promise<{ success: boolean, forkCloneUrl: string, fork: Object }>}
    * @throws {Error} When not authenticated, fork creation fails, or polling times out.
    */
-  async forkAndPoll(owner, repo, onProgress) {
+  async forkAndPoll(owner, repo, onProgress, forkName = null) {
     // a. Retrieve token
     const token = await secureTokenService.getToken();
     if (!token) {
@@ -112,10 +113,18 @@ class GithubForkService {
     // d. Progress
     if (onProgress) onProgress(t('create.fork_creating'));
 
+    // The fork repo name: use custom forkName if provided, otherwise keep original
+    const actualRepoName = forkName || repo;
+
     // e. Create fork (202 accepted; GitHub processes async).
-    //    If the fork already exists, GitHub returns 202 silently — treat as success.
+    //    If forkName is provided, the fork is renamed (avoids name conflicts).
     try {
-      await octokit.repos.createFork({ owner, repo });
+      const forkParams = { owner, repo };
+      if (forkName) {
+        forkParams.name = forkName;
+      }
+      const response = await octokit.repos.createFork(forkParams);
+      this.logger?.info?.('createFork response:', response?.status, 'fork name:', actualRepoName);
     } catch (error) {
       // If the error indicates the fork already exists, we can proceed to polling.
       const status = error && error.status;
@@ -134,7 +143,7 @@ class GithubForkService {
 
     for (;;) {
       try {
-        const response = await octokit.repos.get({ owner: userLogin, repo });
+        const response = await octokit.repos.get({ owner: userLogin, repo: actualRepoName });
         if (response.status === 200 && response.data && response.data.parent) {
           data = response.data;
           break;
@@ -156,7 +165,7 @@ class GithubForkService {
     // g. Return result
     return {
       success: true,
-      forkCloneUrl: 'https://github.com/' + userLogin + '/' + repo + '.git',
+      forkCloneUrl: 'https://github.com/' + userLogin + '/' + actualRepoName + '.git',
       fork: data
     };
   }
