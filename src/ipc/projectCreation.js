@@ -209,9 +209,10 @@ class ProjectCreationHandler {
    * @param {string} repoUrl - Repository URL
    * @param {boolean} isExistingGitRepo - Whether using an existing repo
    * @param {boolean} isEmptyFolder - Whether cloning into an empty folder
+   * @param {string} [projectName] - User-provided project name (slugified for folder)
    * @returns {{ repoDirPath: string, repoFolderName: string, shouldClone: boolean }}
    */
-  determineRepositoryTarget(projectPath, repoUrl, isExistingGitRepo, isEmptyFolder) {
+  determineRepositoryTarget(projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, projectName = '') {
     const ensureDirectory = (targetPath) => {
       if (!fs.existsSync(targetPath)) {
         fs.mkdirSync(targetPath, { recursive: true });
@@ -240,11 +241,20 @@ class ProjectCreationHandler {
 
     const fallbackName = 'documental-project';
     const repoName = repoUrl ? repoUrl.split('/').pop().replace('.git', '') : fallbackName;
-    let finalRepoFolderName = repoName || fallbackName;
+    const slug = projectName
+      ? projectName.toString().toLowerCase()
+          .replace(/\s+/g, '-')
+          .replace(/[^\w\-]+/g, '')
+          .replace(/\-\-+/g, '-')
+          .replace(/^-+/, '')
+          .replace(/-+$/, '')
+      : '';
+    const baseName = slug || repoName || fallbackName;
+    let finalRepoFolderName = baseName;
     let counter = 0;
     while (fs.existsSync(path.join(projectPath, finalRepoFolderName))) {
       counter += 1;
-      finalRepoFolderName = `${repoName}-${counter}`;
+      finalRepoFolderName = `${baseName}-${counter}`;
     }
 
     const repoDirPath = path.join(projectPath, finalRepoFolderName);
@@ -265,9 +275,11 @@ class ProjectCreationHandler {
    * @param {string} repoUrl - Repository URL
    * @param {boolean} isExistingGitRepo - Whether it's an existing git repo
    * @param {boolean} isEmptyFolder - Whether it's an empty folder
+   * @param {boolean} [shouldForkFirst] - Whether to fork before cloning
+   * @param {string} [projectName] - User-provided project name (for folder slug)
    * @returns {Promise<Object>} Result object
    */
-  async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false) {
+  async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -365,7 +377,8 @@ class ProjectCreationHandler {
         projectPath,
         repoUrl,
         isExistingGitRepo,
-        isEmptyFolder
+        isEmptyFolder,
+        projectName
       );
 
       const step1Output = getStepOutput(1);
@@ -795,9 +808,9 @@ class ProjectCreationHandler {
     /**
      * Start complete project creation
      */
-    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false) => {
+    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '') => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;

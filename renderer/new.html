@@ -126,11 +126,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.classList.add('bg-gray-800', 'opacity-70', 'cursor-not-allowed');
     }
   } else if (repoSelectMode === 'fork') {
-    const nameInput = document.getElementById('project-name');
+    // Fork mode: fields remain editable — user enters the repo URL to fork
     const urlInput = document.getElementById('github-url');
-    if (nameInput) nameInput.value = 'Meu-Documental';
-    if (urlInput) urlInput.value = 'https://github.com/Documental-xyz/Documental.git';
-    // NO readonly — these are editable in fork mode
+    if (urlInput) urlInput.focus();
   }
 });
 </script>

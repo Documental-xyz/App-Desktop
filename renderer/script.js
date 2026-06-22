@@ -144,6 +144,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         sessionStorage.setItem('isExistingGitRepo', isExistingGitRepo.toString());
         sessionStorage.setItem('isEmptyFolder', isEmptyFolder.toString());
         sessionStorage.setItem('shouldForkFirst', shouldForkFirst.toString());
+        sessionStorage.setItem('projectName', projectName);
         sessionStorage.removeItem('folderInfo'); // Clean up
         sessionStorage.removeItem('repoSelectMode');
         sessionStorage.removeItem('selectedRepo');

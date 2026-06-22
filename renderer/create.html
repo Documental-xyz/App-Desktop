@@ -59,6 +59,7 @@
         projectId: null,
         projectPath: '',
         githubUrl: '',
+        projectName: '',
         repoFolderName: '',
         activeStepId: 1,
         processFinished: false,
@@ -91,6 +92,7 @@
             this.isExistingGitRepo = sessionStorage.getItem('isExistingGitRepo') === 'true';
             this.isEmptyFolder = sessionStorage.getItem('isEmptyFolder') === 'true';
             this.shouldForkFirst = sessionStorage.getItem('shouldForkFirst') === 'true';
+            this.projectName = sessionStorage.getItem('projectName') || '';
             
             if (!this.projectId) {
                 console.error('No project ID found in session storage.');
@@ -274,7 +276,7 @@
                         await window.electronAPI.reopenProject(this.projectId, this.projectPath, this.githubUrl, this.repoFolderName);
                     } else {
                         // For new projects, run full creation process
-                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false);
+                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '');
                     }
                 }
             } catch (error) {
@@ -405,7 +407,7 @@
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
 <template :key="step.id" x-for="(step, index) in steps">
-<div :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
+<div x-show="step.id !== 0 || shouldForkFirst" :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
 <div :class="{'cursor-pointer': step.status !== 'active'}" @click="step.expanded = !step.expanded" class="flex items-center justify-between p-3">
 <div class="flex items-center gap-3">
 <div class="flex items-center justify-center w-6 h-6">
