@@ -12,6 +12,7 @@
 
 const { GITHUB_CONFIG } = require('../config/github-config');
 const { secureTokenService } = require('./secureTokenService');
+const { t } = require('../utils/mainI18n');
 
 /**
  * Default polling configuration used when GITHUB_CONFIG.FORK_POLLING is absent.
@@ -109,7 +110,7 @@ class GithubForkService {
     }
 
     // d. Progress
-    if (onProgress) onProgress('Criando fork...');
+    if (onProgress) onProgress(t('create.fork_creating'));
 
     // e. Create fork (202 accepted; GitHub processes async).
     //    If the fork already exists, GitHub returns 202 silently — treat as success.
@@ -148,7 +149,7 @@ class GithubForkService {
         throw new Error('Fork polling timed out after ' + timeoutMs + 'ms');
       }
 
-      if (onProgress) onProgress('Aguardando fork ficar pronto...');
+      if (onProgress) onProgress(t('create.fork_waiting'));
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 

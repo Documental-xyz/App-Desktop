@@ -206,10 +206,9 @@ describe('GithubForkService', () => {
       await vi.advanceTimersByTimeAsync(2000);
       const result = await promise;
 
-      // "Criando fork..." is called before createFork
-      expect(onProgress).toHaveBeenCalledWith('Criando fork...');
-      // "Aguardando fork ficar pronto..." is called during each polling cycle
-      expect(onProgress).toHaveBeenCalledWith('Aguardando fork ficar pronto...');
+      // i18n defaults to 'en' in test environment
+      expect(onProgress).toHaveBeenCalledWith('Creating fork...');
+      expect(onProgress).toHaveBeenCalledWith('Waiting for fork to be ready...');
       expect(result.success).toBe(true);
     });
   });

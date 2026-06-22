@@ -258,6 +258,13 @@ create:
   fork_success: "¡Fork creado con éxito!"
   fork_failed: "Fork fallido"
   fork_timeout: "Tiempo de espera del fork agotado"
+  fork_creating: "Creando fork..."
+  fork_waiting: "Esperando a que el fork esté listo..."
+  fork_starting: "🍴 Creando fork..."
+  fork_ready: "✅ Fork listo"
+  fork_error: "❌ Fork falló: {error}"
+  fork_invalid_url: "❌ URL de GitHub no válida para fork"
+  non_github_warning: "⚠️ La URL no es github.com — clonando sin credenciales OAuth"
   # Cancel modal
   cancel_creation_title: "Cancelar Creación del Proyecto"
   cancel_creation_desc: "El proceso de creación está en progreso. ¿Realmente desea cancelar?"

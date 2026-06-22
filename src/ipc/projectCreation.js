@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const { GitOperations } = require('./gitOperations.js');
 const { ProcessManager } = require('./processManager.js');
+const { t } = require('../utils/mainI18n');
 
 /**
  * Project Creation Handler Class
@@ -126,7 +127,7 @@ class ProjectCreationHandler {
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
       if (!isGithubUrl) {
         this.logger.warn('Clone URL is not a GitHub URL — proceeding without token auth');
-        sendOutput('⚠️ URL não é github.com — clone sem credenciais OAuth\n');
+        sendOutput(t('create.non_github_warning') + '\n');
       }
       
       const git = require('isomorphic-git');
@@ -333,12 +334,12 @@ class ProjectCreationHandler {
         const step0Output = getStepOutput(0);
         const step0Status = getStepStatusSender(0);
 
-        step0Output('🍴 Creating fork...\n');
+        step0Output(t('create.fork_starting') + '\n');
         step0Status('active');
 
         const forkMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
         if (!forkMatch) {
-          step0Output('❌ Invalid GitHub URL for fork\n');
+          step0Output(t('create.fork_invalid_url') + '\n');
           step0Status('failure');
           throw new Error('Invalid GitHub URL for fork: ' + repoUrl);
         }
@@ -350,11 +351,11 @@ class ProjectCreationHandler {
           const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output);
           if (result.success) {
             repoUrl = result.forkCloneUrl;
-            step0Output('✅ Fork ready\n');
+            step0Output(t('create.fork_ready') + '\n');
             step0Status('success');
           }
         } catch (error) {
-          step0Output('❌ Fork failed: ' + error.message + '\n');
+          step0Output(t('create.fork_error', { error: error.message }) + '\n');
           step0Status('failure');
           throw error;
         }
