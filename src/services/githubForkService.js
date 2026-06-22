@@ -113,20 +113,22 @@ class GithubForkService {
     // d. Progress
     if (onProgress) onProgress(t('create.fork_creating'));
 
-    // The fork repo name: use custom forkName if provided, otherwise keep original
     const actualRepoName = forkName || repo;
+    let forkFullName = null;
 
     // e. Create fork (202 accepted; GitHub processes async).
-    //    If forkName is provided, the fork is renamed (avoids name conflicts).
     try {
       const forkParams = { owner, repo };
       if (forkName) {
         forkParams.name = forkName;
       }
       const response = await octokit.repos.createFork(forkParams);
-      this.logger?.info?.('createFork response:', response?.status, 'fork name:', actualRepoName);
+      this.logger?.info?.('createFork response status:', response?.status);
+      if (response?.data?.full_name) {
+        forkFullName = response.data.full_name;
+        this.logger?.info?.('createFork full_name:', forkFullName);
+      }
     } catch (error) {
-      // If the error indicates the fork already exists, we can proceed to polling.
       const status = error && error.status;
       const message = (error && error.message) || '';
       if (status === 202 || /already exist/i.test(message)) {
@@ -136,6 +138,10 @@ class GithubForkService {
       }
     }
 
+    // Use the actual fork name from the API response when available
+    const pollOwner = forkFullName ? forkFullName.split('/')[0] : userLogin;
+    const pollRepo = forkFullName ? forkFullName.split('/')[1] : actualRepoName;
+
     // f. Poll until ready or timeout
     const { intervalMs, timeoutMs } = this._resolvePollingConfig();
     const startedAt = Date.now();
@@ -143,14 +149,13 @@ class GithubForkService {
 
     for (;;) {
       try {
-        const response = await octokit.repos.get({ owner: userLogin, repo: actualRepoName });
+        const response = await octokit.repos.get({ owner: pollOwner, repo: pollRepo });
         if (response.status === 200 && response.data && response.data.parent) {
           data = response.data;
           break;
         }
       } catch (error) {
-        // 404 expected while fork is being created; keep polling unless we time out.
-        this.logger?.debug?.('Polling repos.get error:', error && error.message);
+        this.logger?.debug?.('Polling repos.get:', pollOwner + '/' + pollRepo, '→', error && error.message);
       }
 
       const elapsed = Date.now() - startedAt;
@@ -165,7 +170,7 @@ class GithubForkService {
     // g. Return result
     return {
       success: true,
-      forkCloneUrl: 'https://github.com/' + userLogin + '/' + actualRepoName + '.git',
+      forkCloneUrl: 'https://github.com/' + pollOwner + '/' + pollRepo + '.git',
       fork: data
     };
   }
