@@ -232,6 +232,8 @@ new:
   fill_all_fields: "Por favor, preencha todos os campos."
   repo_exists_alert: "Você já possui um repositório chamado '{name}'. Por favor, escolha outro nome para o projeto."
   error_create_project: "Erro ao criar projeto: {error}"
+  enable_github_pages: "Ativar GitHub Pages"
+  github_pages_tooltip: "Ativa o GitHub Pages no seu repositório para hospedagem web"
 
 repo_select:
   page_title: "Documental - Selecionar Repositório"
@@ -274,6 +276,11 @@ create:
   fork_error: "❌ Fork falhou: {error}"
   fork_invalid_url: "❌ URL do GitHub inválida para fork"
   non_github_warning: "⚠️ URL não é github.com — clone sem credenciais OAuth"
+  step_pages: "Ativando GitHub Pages..."
+  pages_starting: "🌐 Ativando GitHub Pages..."
+  pages_success: "✅ GitHub Pages ativado"
+  pages_error: "❌ Falha ao ativar GitHub Pages: {error}"
+  pages_skipped: "⏭️ GitHub Pages não ativado"
   # Cancel modal
   cancel_creation_title: "Cancelar Criação do Projeto"
   cancel_creation_desc: "O processo de criação está em andamento. Deseja realmente cancelar?"

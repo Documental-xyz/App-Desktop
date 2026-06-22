@@ -224,6 +224,8 @@ new:
   fill_all_fields: "Please fill in all fields."
   repo_exists_alert: "You already have a repository named '{name}'. Please choose a different project name."
   error_create_project: "Error creating project: {error}"
+  enable_github_pages: "Enable GitHub Pages"
+  github_pages_tooltip: "Activates GitHub Pages on your repository for web hosting"
 
 repo_select:
   page_title: "Documental - Select Repository"
@@ -266,6 +268,11 @@ create:
   fork_error: "❌ Fork failed: {error}"
   fork_invalid_url: "❌ Invalid GitHub URL for fork"
   non_github_warning: "⚠️ URL is not github.com — cloning without OAuth credentials"
+  step_pages: "Enabling GitHub Pages..."
+  pages_starting: "🌐 Enabling GitHub Pages..."
+  pages_success: "✅ GitHub Pages enabled"
+  pages_error: "❌ Failed to enable GitHub Pages: {error}"
+  pages_skipped: "⏭️ GitHub Pages not enabled"
   # Cancel modal
   cancel_creation_title: "Cancel Project Creation"
   cancel_creation_desc: "The creation process is in progress. Do you really want to cancel?"
