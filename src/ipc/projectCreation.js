@@ -266,7 +266,7 @@ class ProjectCreationHandler {
    * @param {boolean} isEmptyFolder - Whether it's an empty folder
    * @returns {Promise<Object>} Result object
    */
-  async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false) {
+  async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false) {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -328,6 +328,37 @@ class ProjectCreationHandler {
       const getStepOutput = (stepId) => (message) => sendOutput(stepId, message);
       const getStepServerOutput = (stepId) => (message) => sendServerOutput(stepId, message);
       const getStepStatusSender = (stepId) => (status) => sendStatus(stepId, status);
+
+      if (shouldForkFirst) {
+        const step0Output = getStepOutput(0);
+        const step0Status = getStepStatusSender(0);
+
+        step0Output('🍴 Creating fork...\n');
+        step0Status('active');
+
+        const forkMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
+        if (!forkMatch) {
+          step0Output('❌ Invalid GitHub URL for fork\n');
+          step0Status('failure');
+          throw new Error('Invalid GitHub URL for fork: ' + repoUrl);
+        }
+
+        const [, forkOwner, forkRepo] = forkMatch;
+        const { githubForkService } = require('../services/githubForkService.js');
+
+        try {
+          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output);
+          if (result.success) {
+            repoUrl = result.forkCloneUrl;
+            step0Output('✅ Fork ready\n');
+            step0Status('success');
+          }
+        } catch (error) {
+          step0Output('❌ Fork failed: ' + error.message + '\n');
+          step0Status('failure');
+          throw error;
+        }
+      }
 
       const { repoDirPath, repoFolderName, shouldClone } = this.determineRepositoryTarget(
         projectPath,
@@ -763,9 +794,9 @@ class ProjectCreationHandler {
     /**
      * Start complete project creation
      */
-    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false) => {
+    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false) => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;

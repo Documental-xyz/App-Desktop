@@ -138,11 +138,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Normalize project path before saving
         const normalizedProjectPath = await PathUtils.normalize(projectPath);
+        const shouldForkFirst = sessionStorage.getItem('repoSelectMode') === 'fork';
         const projectId = await window.electronAPI.saveProject({ projectName, repoUrl: githubUrl, projectPath: normalizedProjectPath });
         sessionStorage.setItem('currentProjectId', projectId);
         sessionStorage.setItem('isExistingGitRepo', isExistingGitRepo.toString());
         sessionStorage.setItem('isEmptyFolder', isEmptyFolder.toString());
+        sessionStorage.setItem('shouldForkFirst', shouldForkFirst.toString());
         sessionStorage.removeItem('folderInfo'); // Clean up
+        sessionStorage.removeItem('repoSelectMode');
+        sessionStorage.removeItem('selectedRepo');
         navigateToPage('create.html'); // Navigate to create page after creation
       } catch (error) {
         alert(__t('new.error_create_project', {error}));

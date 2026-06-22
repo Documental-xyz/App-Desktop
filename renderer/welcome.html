@@ -170,7 +170,20 @@
                         </p>
                     </div>
 
-                    <div x-show="!isAuthenticated" class="space-y-6">
+                    <!-- Question: Do you already have a GitHub account? -->
+                    <div x-show="!isAuthenticated && hasAccountChoice === null" class="space-y-6">
+                        <div class="flex flex-col gap-3 max-w-xs mx-auto">
+                            <button @click="hasAccountChoice = 'yes'"
+                                    class="bg-primary hover:bg-primary-hover text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all duration-300 transform hover:scale-105"
+                                    data-i18n="welcome.has_account_yes"></button>
+                            <button @click="hasAccountChoice = 'no'"
+                                    class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all duration-300 transform hover:scale-105"
+                                    data-i18n="welcome.has_account_no"></button>
+                        </div>
+                    </div>
+
+                    <!-- Existing auth flow: shown when user chose 'yes' -->
+                    <div x-show="!isAuthenticated && hasAccountChoice === 'yes'" class="space-y-6">
                         <div class="bg-surface-card rounded-lg p-6 max-w-md mx-auto">
                             <div class="flex items-center gap-3 mb-4">
                                 <span class="material-symbols-outlined text-primary">info</span>
@@ -192,6 +205,25 @@
                         >
                             <span x-text="$store.i18n.t('common.cancel')"></span>
                         </button>
+                    </div>
+
+                    <!-- No account: signup instructions -->
+                    <div x-show="!isAuthenticated && hasAccountChoice === 'no'" class="space-y-6">
+                        <div class="bg-surface-card rounded-lg p-6 max-w-md mx-auto">
+                            <div class="flex items-start gap-3 mb-4">
+                                <span class="material-symbols-outlined text-primary mt-0.5">person_add</span>
+                                <p class="text-sm text-muted-dark text-left whitespace-pre-line" data-i18n="welcome.create_account_instructions"></p>
+                            </div>
+                        </div>
+
+                        <button @click="window.electronAPI && window.electronAPI.openExternal && window.electronAPI.openExternal('https://github.com/signup')"
+                                class="bg-background-dark hover:bg-surface-dark text-white font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105 mx-auto"
+                                data-i18n="welcome.create_github_account_button"></button>
+
+                        <p class="text-sm text-muted-dark">Após criar, volte e clique em "Sim"</p>
+                        <button @click="hasAccountChoice = null"
+                                class="text-muted-dark hover:text-text-dark text-sm underline transition-colors duration-300"
+                                data-i18n="common.back"></button>
                     </div>
 
                     <div x-show="isAuthenticated" class="space-y-6">
@@ -427,6 +459,7 @@
                 isAuthenticating: false,
                 isAuthenticated: false,
                 userInfo: null,
+                hasAccountChoice: null, // null | 'yes' | 'no'
                 // Node.js detection properties
                 isDetectingNode: false,
                 nodeDetectionResult: null,

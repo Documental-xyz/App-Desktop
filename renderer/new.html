@@ -108,6 +108,30 @@ document.addEventListener('DOMContentLoaded', async () => {
       })();
     }, 100); // Small delay to ensure script.js has finished
   }
+
+  // Handle repo-select modes (existing repo prefill or fork defaults)
+  const repoSelectMode = sessionStorage.getItem('repoSelectMode');
+  if (repoSelectMode === 'existing') {
+    const selectedRepo = JSON.parse(sessionStorage.getItem('selectedRepo') || '{}');
+    const nameInput = document.getElementById('project-name');
+    const urlInput = document.getElementById('github-url');
+    if (nameInput && selectedRepo.name) {
+      nameInput.value = selectedRepo.name;
+      nameInput.setAttribute('readonly', '');
+      nameInput.classList.add('bg-gray-800', 'opacity-70', 'cursor-not-allowed');
+    }
+    if (urlInput && selectedRepo.clone_url) {
+      urlInput.value = selectedRepo.clone_url;
+      urlInput.setAttribute('readonly', '');
+      urlInput.classList.add('bg-gray-800', 'opacity-70', 'cursor-not-allowed');
+    }
+  } else if (repoSelectMode === 'fork') {
+    const nameInput = document.getElementById('project-name');
+    const urlInput = document.getElementById('github-url');
+    if (nameInput) nameInput.value = 'Meu-Documental';
+    if (urlInput) urlInput.value = 'https://github.com/Documental-xyz/Documental.git';
+    // NO readonly — these are editable in fork mode
+  }
 });
 </script>
 </head>

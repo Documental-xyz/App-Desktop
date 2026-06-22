@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html class="dark" lang="pt-BR"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title data-i18n="repo_select.page_title">Documental - Select Repository</title>
+<link href="./assets/css/fonts.css" rel="stylesheet"/>
+<link href="./assets/css/compiled.css" rel="stylesheet"/>
+<link href="./assets/css/theme-override.css" rel="stylesheet"/>
+<style>[x-cloak]{display:none!important}</style>
+<script src="./i18n.js"></script>
+<script src="script.js" defer></script>
+<script>
+// Register Alpine component before alpine.min.js loads
+document.addEventListener('alpine:init', () => {
+  Alpine.data('repoSelect', () => ({
+    repos: [],
+    loading: true,
+    error: null,
+    selectedRepo: null,
+
+    async init() {
+      this.loading = true;
+      this.error = null;
+      try {
+        // Ensure translations are ready before rendering labels
+        if (window.__i18nReady) await window.__i18nReady;
+        const result = await window.electronAPI.listUserRepos();
+        if (result.success) {
+          this.repos = result.repos || [];
+        } else {
+          this.error = result.error || __t('repo_select.error_generic') || 'Failed to load repositories';
+        }
+      } catch (err) {
+        this.error = (err && err.message) ? err.message : 'Failed to load repositories';
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    selectRepo(repo) {
+      this.selectedRepo = repo;
+    },
+
+    continueWithSelected() {
+      if (!this.selectedRepo) return;
+      sessionStorage.setItem('repoSelectMode', 'existing');
+      sessionStorage.setItem('selectedRepo', JSON.stringify(this.selectedRepo));
+      window.electronAPI.navigateTo('new.html');
+    },
+
+    createFork() {
+      sessionStorage.setItem('repoSelectMode', 'fork');
+      window.electronAPI.navigateTo('new.html');
+    }
+  }));
+});
+
+// Translate static [data-i18n] elements once i18n is ready
+document.addEventListener('DOMContentLoaded', async function() {
+  if (window.__i18nReady) await window.__i18nReady;
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    var key = el.getAttribute('data-i18n');
+    el.textContent = window.__t(key);
+  });
+  document.title = window.__t('repo_select.page_title');
+});
+</script>
+<script src="./assets/js/alpine.min.js" defer></script>
+</head>
+<body class="bg-background-dark text-text-dark antialiased">
+<div class="flex flex-col h-screen">
+
+  <!-- Header -->
+  <header class="px-8 pt-8 pb-2">
+    <div class="max-w-4xl mx-auto">
+      <button data-navigate="index.html" class="flex items-center gap-2 text-muted-dark hover:text-text-dark transition-colors duration-200 mb-4">
+        <span class="material-symbols-outlined">arrow_back</span>
+        <span data-i18n="common.back">Back</span>
+      </button>
+      <div class="flex items-center justify-center gap-3 mb-2">
+        <svg class="h-9 w-9 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+        </svg>
+        <h1 class="text-3xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
+      </div>
+      <p class="text-muted-dark text-base text-center whitespace-pre-line" data-i18n="repo_select.subtitle">Select an existing repository to use, or create a new fork.</p>
+    </div>
+  </header>
+
+  <!-- Main content (Alpine scope covers list + footer) -->
+  <div x-data="repoSelect" x-init="init()" class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- Scrollable repo list area -->
+    <div class="flex-1 overflow-y-auto px-8 pb-6">
+      <div class="max-w-4xl mx-auto">
+
+        <!-- Loading state -->
+        <div x-show="loading" x-cloak class="flex justify-center items-center py-20">
+          <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+          <span class="ml-4 text-muted-dark" x-text="__t('repo_select.loading_repos')">Loading repositories...</span>
+        </div>
+
+        <!-- Error state -->
+        <div x-show="error &amp;&amp; !loading" x-cloak class="text-center py-20">
+          <p class="text-danger mb-4" x-text="error"></p>
+          <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+            <span class="material-symbols-outlined">refresh</span>
+            <span data-i18n="common.try_again">Try Again</span>
+          </button>
+        </div>
+
+        <!-- Empty state -->
+        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length === 0" x-cloak class="text-center py-20">
+          <span class="material-symbols-outlined text-6xl text-muted-dark mb-4 block">inbox</span>
+          <p class="text-muted-dark mb-6" data-i18n="repo_select.empty_repos">No repositories found.</p>
+          <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+            <span class="material-symbols-outlined">alt_route</span>
+            <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+          </button>
+        </div>
+
+        <!-- Repo list -->
+        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length > 0" x-cloak class="space-y-2 pt-2">
+          <template x-for="repo in repos" :key="repo.id">
+            <div @click="selectRepo(repo)"
+                 class="bg-surface-dark rounded-lg p-4 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
+                 :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex flex-col min-w-0">
+                  <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
+                  <span class="text-sm text-muted-dark truncate" x-text="repo.full_name"></span>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <!-- Documental badge (case-insensitive) -->
+                  <template x-if="repo.name.toLowerCase().includes('documental')">
+                    <span class="px-2 py-1 text-xs rounded-full bg-primary text-white font-medium" x-text="__t('repo_select.documental_badge')">Documental</span>
+                  </template>
+                  <!-- Private repo badge -->
+                  <template x-if="repo.private">
+                    <span class="px-2 py-1 text-xs rounded-full bg-warning text-white" x-text="__t('repo_select.private_repo_label')">Private</span>
+                  </template>
+                </div>
+              </div>
+              <p x-show="repo.description" x-text="repo.description" class="text-sm text-muted-dark mt-1"></p>
+            </div>
+          </template>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Footer with action buttons -->
+    <footer x-show="!loading" x-cloak class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+      <div class="flex justify-between items-center max-w-4xl mx-auto gap-3">
+        <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+          <span class="material-symbols-outlined">alt_route</span>
+          <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+        </button>
+        <button @click="continueWithSelected()" :disabled="!selectedRepo"
+                class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          <span class="material-symbols-outlined">arrow_forward</span>
+          <span data-i18n="repo_select.button_continue">Continue</span>
+        </button>
+      </div>
+    </footer>
+
+  </div>
+</div>
+
+</body></html>

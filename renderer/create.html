@@ -65,6 +65,7 @@
         processFailed: false,
         processPaused: false,
         steps: [
+            { id: 0, title: __t('create.step_fork'), status: 'pending', log: '', expanded: false },
             { id: 1, title: __t('create.step_git_clone'), status: 'pending', log: '', expanded: false },
             { id: 2, title: __t('create.step_branch_preview'), status: 'pending', log: '', expanded: false },
             { id: 3, title: __t('create.step_dependencies'), status: 'pending', log: '', expanded: false },
@@ -89,6 +90,7 @@
             this.isReopenMode = sessionStorage.getItem('reopenMode') === 'true';
             this.isExistingGitRepo = sessionStorage.getItem('isExistingGitRepo') === 'true';
             this.isEmptyFolder = sessionStorage.getItem('isEmptyFolder') === 'true';
+            this.shouldForkFirst = sessionStorage.getItem('shouldForkFirst') === 'true';
             
             if (!this.projectId) {
                 console.error('No project ID found in session storage.');
@@ -97,32 +99,45 @@
             }
 
             const savedState = JSON.parse(sessionStorage.getItem(`projectCreationState-${this.projectId}`));
-            if (savedState) {
+            if (savedState && savedState.schemaVersion === 2) {
                 Object.assign(this.$data, savedState);
             } else if (this.isReopenMode) {
-                // For reopen mode, mark first 3 steps as completed
                 this.steps[0].status = 'success';
                 this.steps[1].status = 'success';
                 this.steps[2].status = 'success';
-                this.steps[3].status = 'active';
+                this.steps[3].status = 'success';
+                this.steps[4].status = 'active';
                 this.activeStepId = 4;
             } else if (this.isExistingGitRepo) {
-                // For existing git repo, skip git clone step
                 this.steps[0].status = 'success';
-                this.steps[0].title = __t('create.step_git_found');
-                this.steps[1].status = 'active';
+                this.steps[1].status = 'success';
+                this.steps[1].title = __t('create.step_git_found');
+                this.steps[2].status = 'active';
                 this.activeStepId = 2;
             } else if (this.isEmptyFolder) {
-                // For empty folder, clone directly into the folder
-                this.steps[0].title = __t('create.step_cloning_folder');
-                this.steps[0].status = 'active';
-                this.activeStepId = 1;
+                if (this.shouldForkFirst) {
+                    this.steps[0].status = 'active';
+                    this.activeStepId = 0;
+                } else {
+                    this.steps[0].status = 'success';
+                    this.steps[1].title = __t('create.step_cloning_folder');
+                    this.steps[1].status = 'active';
+                    this.activeStepId = 1;
+                }
             } else {
-                this.steps[0].status = 'active';
+                if (this.shouldForkFirst) {
+                    this.steps[0].status = 'active';
+                    this.activeStepId = 0;
+                } else {
+                    this.steps[0].status = 'success';
+                    this.steps[1].status = 'active';
+                    this.activeStepId = 1;
+                }
             }
 
             this.$watch('steps', (newSteps) => {
                 sessionStorage.setItem(`projectCreationState-${this.projectId}`, JSON.stringify({
+                    schemaVersion: 2,
                     projectId: this.projectId,
                     projectPath: this.projectPath,
                     githubUrl: this.githubUrl,
@@ -259,7 +274,7 @@
                         await window.electronAPI.reopenProject(this.projectId, this.projectPath, this.githubUrl, this.repoFolderName);
                     } else {
                         // For new projects, run full creation process
-                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false);
+                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false);
                     }
                 }
             } catch (error) {
@@ -345,10 +360,10 @@
             if (this.isReopenMode) {
                 this.activeStepId = 4;
                 this.steps.forEach((step, index) => {
-                    if (index < 3) {
+                    if (index < 4) {
                         step.status = 'success';
                         step.log = __t('create.step_completed_previously');
-                    } else if (index === 3) {
+                    } else if (index === 4) {
                         step.status = 'active';
                         step.log = '';
                     } else {
@@ -357,11 +372,19 @@
                     }
                 });
             } else {
-                this.activeStepId = 1;
-                this.steps.forEach((step, index) => {
-                    step.status = index === 0 ? 'active' : 'pending';
-                    step.log = '';
-                });
+                if (this.shouldForkFirst) {
+                    this.activeStepId = 0;
+                    this.steps.forEach((step, index) => {
+                        step.status = index === 0 ? 'active' : 'pending';
+                        step.log = '';
+                    });
+                } else {
+                    this.activeStepId = 1;
+                    this.steps.forEach((step, index) => {
+                        step.status = index === 0 ? 'success' : (index === 1 ? 'active' : 'pending');
+                        step.log = '';
+                    });
+                }
             }
             
             sessionStorage.removeItem(`projectCreationState-${this.projectId}`);
