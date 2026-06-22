@@ -26,6 +26,7 @@ yarn-error.log*
 
 dist
 .opencode/
+.opencode
 opencode.json
 tmp/
 documental-processes.json
