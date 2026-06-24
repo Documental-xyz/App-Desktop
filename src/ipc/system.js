@@ -46,12 +46,15 @@ class SystemHandlers {
    * @param {Object} dependencies.logger - Logger instance
    * @param {Object} dependencies.windowManager - Window manager instance
    * @param {Object} [dependencies.processManager] - Process manager instance
+   * @param {Object} [dependencies.themeService] - Theme service instance
    */
-  constructor({ logger, windowManager, processManager }) {
+  constructor({ logger, windowManager, processManager, themeService }) {
     this.logger = logger;
     this.windowManager = windowManager;
     this.processManager = processManager;
+    this.themeService = themeService || null;
     this.platformService = new PlatformService({ logger });
+
     this.installationProgress = {
       stage: 'idle',
       progress: 0,
@@ -1068,6 +1071,164 @@ async verifyNodeInstallation() {
       return await this.closeAndReopenToIndex(event);
     });
 
+    const { nativeTheme } = require('electron');
+    this._lastBroadcastedMode = null;
+    nativeTheme.on('updated', () => {
+      const osDark = this.themeService?._detectOsDarkPreference?.() ?? (nativeTheme.shouldUseDarkColors ?? false);
+      const resolvedMode = osDark ? 'dark' : 'light';
+      if (resolvedMode !== this._lastBroadcastedMode) {
+        this._lastBroadcastedMode = resolvedMode;
+        BrowserWindow.getAllWindows().forEach(win => {
+          if (!win.isDestroyed()) {
+            win.webContents.send('theme-changed', { resolvedMode });
+          }
+        });
+        this.logger.info(`🎨 OS theme changed → broadcasted resolvedMode=${resolvedMode}`);
+      }
+    });
+
+    /**
+     * Set theme mode (auto/dark/light) — persists to runtime-env.json and
+     * applies the new theme at runtime via webContents.insertCSS() without
+     * reloading the window (avoids white flash and state loss).
+     */
+    ipcMain.handle('set-theme-mode', async (event, mode) => {
+      try {
+        const validModes = ['auto', 'dark', 'light'];
+        if (!validModes.includes(mode)) {
+          return { success: false, error: `Invalid mode: ${mode}` };
+        }
+
+        const runtimeEnvPath = path.join(process.cwd(), 'resources', 'config', 'runtime-env.json');
+
+        let config = {};
+        try {
+          config = JSON.parse(fs.readFileSync(runtimeEnvPath, 'utf8'));
+        } catch (e) {}
+
+        config.THEME_MODE = mode;
+        config.generatedAt = new Date().toISOString();
+        fs.writeFileSync(runtimeEnvPath, JSON.stringify(config, null, 2), 'utf8');
+
+        // Sync in-memory _rawMode so getRawMode() returns the updated value on page reload
+        if (this.themeService) {
+          this.themeService._rawMode = mode;
+        }
+
+        let resolvedMode = mode;
+        if (mode === 'auto') {
+          const osPrefersDark = this.themeService?._detectOsDarkPreference?.()
+            ?? ((require('electron').nativeTheme.shouldUseDarkColors ?? false));
+          resolvedMode = osPrefersDark ? 'dark' : 'light';
+        }
+
+        // If the active theme doesn't support the resolved mode (e.g. a
+        // dark-only theme like tokyo-night when mode is 'light'), fall back
+        // to the first available mode so the injected CSS is complete and
+        // carries the theme's actual colors instead of just base defaults.
+        const availableModes = (this.themeService && this.themeService.manifest?.mode) || ['dark', 'light'];
+        if (!availableModes.includes(resolvedMode)) {
+          const fallbackMode = availableModes[0];
+          this.logger.warn(
+            `🎨 Theme "${this.themeService?.themeName}" does not support mode "${resolvedMode}" ` +
+            `(available: [${availableModes.join(', ')}]); falling back to "${fallbackMode}"`
+          );
+          resolvedMode = fallbackMode;
+        }
+
+        this.logger.info(
+          `🎨 set-theme-mode: themeService=${!!this.themeService}, requestedMode=${mode}, resolvedMode=${resolvedMode}`
+        );
+
+        /** @type {string} CSS content for the resolved mode, hoisted so the
+         *  return statement (outside the if-block) can send it to the renderer
+         *  as a direct-injection fallback. */
+        let css = '';
+        if (this.themeService) {
+          css = await this.themeService.getResolvedCssForMode(resolvedMode);
+          this.logger.info(`🎨 Generated CSS: ${css.length} chars for mode ${resolvedMode}`);
+          const windows = BrowserWindow.getAllWindows();
+          for (const win of windows) {
+            // Inject via executeJavaScript to create a <style> element at the end
+            // of <head>. This ensures the injected CSS comes AFTER <link> stylesheets
+            // in the cascade, overriding theme-override.css and other author-origin
+            // stylesheets. insertCSS(css, {cssOrigin: 'author'}) is not used because
+            // Blink places injectedAuthorSheets_ BEFORE regular <link> stylesheets,
+            // so theme-override.css (same specificity, later in cascade) always wins.
+            const script = `(function(css){
+              var el=document.getElementById('__theme_injected');
+              if(el)el.remove();
+              var s=document.createElement('style');
+              s.id='__theme_injected';
+              s.textContent=css;
+              document.head.appendChild(s);
+            })(${JSON.stringify(css)})`;
+            try {
+              await win.webContents.executeJavaScript(script);
+            } catch (err) {
+              this.logger.warn(`🎨 executeJavaScript fallback to insertCSS: ${err.message}`);
+              try { win.webContents.insertCSS(css, { cssOrigin: 'author' }); } catch (e) {
+                this.logger.error(`🎨 All CSS injection methods failed: ${e.message}`);
+              }
+            }
+          }
+          this.logger.info(`🎨 CSS injected into ${windows.length} windows`);
+        } else {
+          this.logger.warn('🎨 themeService not available, cannot inject CSS');
+        }
+
+        this.logger.info(`🎨 Theme mode applied: ${mode} (resolved: ${resolvedMode})`);
+
+        // Return the CSS so the renderer can inject it directly as a
+        // fallback — executeJavaScript can fail on subsequent toggles
+        // (CSP, timing, etc.), leaving stale CSS in the page.
+        return { success: true, mode, resolvedMode, css };
+      } catch (error) {
+        this.logger.error('Error setting theme mode:', error);
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle('get-os-dark-preference', async () => {
+      try {
+        if (this.themeService && this.themeService._detectOsDarkPreference) {
+          return { success: true, prefersDark: this.themeService._detectOsDarkPreference() };
+        }
+        const { nativeTheme } = require('electron');
+        return { success: true, prefersDark: nativeTheme.shouldUseDarkColors ?? false };
+      } catch (error) {
+        return { success: false, prefersDark: false, error: error.message };
+      }
+    });
+
+    /**
+     * Get current theme mode (raw + resolved).
+     * Delegates to ThemeService.getRawMode() which respects the precedence
+     * .env (process.env.THEME_MODE) > runtime-env.json > 'auto'.
+     *
+     * Also returns a resolvedMode — when raw mode is 'auto', resolves it
+     * via _detectOsDarkPreference so the renderer can cache the
+     * effective dark/light state without re-querying matchMedia.
+     */
+    ipcMain.handle('get-theme-mode', async () => {
+      try {
+        if (this.themeService && this.themeService.getRawMode) {
+          const rawMode = this.themeService.getRawMode();
+          let resolvedMode = rawMode;
+          if (rawMode === 'auto') {
+            const osPrefersDark = this.themeService?._detectOsDarkPreference?.()
+              ?? ((require('electron').nativeTheme.shouldUseDarkColors ?? false));
+            resolvedMode = osPrefersDark ? 'dark' : 'light';
+          }
+          return { success: true, mode: rawMode, resolvedMode };
+        }
+        return { success: true, mode: 'auto', resolvedMode: 'dark' };
+      } catch (error) {
+        this.logger.error('Error getting theme mode:', error);
+        return { success: false, mode: 'auto', resolvedMode: 'dark', error: error.message };
+      }
+    });
+
     this.logger.info('✅ System operations IPC handlers registered');
   }
 
@@ -1086,6 +1247,9 @@ async verifyNodeInstallation() {
     ipcMain.removeHandler('confirm-exit-app');
     ipcMain.removeHandler('open-file-explorer');
     ipcMain.removeHandler('create-new-window-with-state');
+    ipcMain.removeHandler('set-theme-mode');
+    ipcMain.removeHandler('get-os-dark-preference');
+    ipcMain.removeHandler('get-theme-mode');
     
     // Remove all listeners for event-based handlers
     ipcMain.removeAllListeners('clear-console-output');

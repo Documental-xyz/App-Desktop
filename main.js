@@ -68,6 +68,9 @@ async function initializeServices() {
       getNativeTheme: () => require('electron').nativeTheme
     });
     themeService.initialize(app.getAppPath());
+    try {
+      require('electron').nativeTheme.themeSource = 'system';
+    } catch (_e) { }
     logger.info('✅ Theme service initialized');
 
     // Initialize window manager

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="dark" lang="en">
+<html lang="en">
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
@@ -59,7 +59,7 @@
     </style>
 
 </head>
-<body class="bg-background-dark text-text-dark antialiased">
+<body class="bg-scene bg-background-dark text-text-dark antialiased">
     <div class="flex flex-col min-h-screen" x-data="welcomeWizard">
         <!-- Progress Bar -->
         <div class="h-1 bg-surface-dark">
@@ -100,8 +100,32 @@
                             <p class="text-sm text-muted-dark" x-text="$store.i18n.t('welcome.modern_experience_desc')"></p>
                         </div>
                     </div>
+
+                    <div class="flex flex-col items-center gap-3 mb-16">
+                        <span class="text-sm text-muted-dark font-medium" x-text="$store.i18n.t('language.theme') || 'Theme'"></span>
+                        <div class="inline-flex items-center gap-0 p-1 rounded-xl bg-surface-dark border border-border-subtle">
+                            <button @click="selectTheme('auto')"
+                                    :class="selectedTheme === 'auto' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
+                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                <span class="material-symbols-outlined text-lg">contrast</span>
+                                <span x-text="$store.i18n.t('language.theme_auto') || 'Auto'"></span>
+                            </button>
+                            <button @click="selectTheme('dark')"
+                                    :class="selectedTheme === 'dark' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
+                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                <span class="material-symbols-outlined text-lg">dark_mode</span>
+                                <span x-text="$store.i18n.t('language.theme_dark') || 'Dark'"></span>
+                            </button>
+                            <button @click="selectTheme('light')"
+                                    :class="selectedTheme === 'light' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
+                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                <span class="material-symbols-outlined text-lg">light_mode</span>
+                                <span x-text="$store.i18n.t('language.theme_light') || 'Light'"></span>
+                            </button>
+                        </div>
+                    </div>
  
-                    <div class="mt-10 flex justify-center gap-4">
+                    <div class="mt-2 flex justify-center gap-4">
                         <button onclick="if(window.electronAPI&amp;&amp;window.electronAPI.navigateTo){window.electronAPI.navigateTo('language.html')}else{window.location.href='language.html'}"
                                 class="bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105"
                                 style="border:1px solid var(--color-border-default);">
@@ -463,6 +487,7 @@
             Alpine.data('welcomeWizard', () => ({
                 currentStep: 1,
                 totalSteps: 3,
+                selectedTheme: 'auto',
                 isAuthenticating: false,
                 isAuthenticated: false,
                 userInfo: null,
@@ -488,13 +513,87 @@
                 init() {
                     document.title = __t('welcome.page_title');
 
-                    // Check if already authenticated
                     this.checkAuthenticationStatus();
+                    this.initTheme();
+
+                    if (window.electronAPI && window.electronAPI.onThemeChange) {
+                        window.electronAPI.onThemeChange(({ resolvedMode }) => {
+                            if (this.selectedTheme === 'auto' && resolvedMode) {
+                                this.applyThemeClass(resolvedMode);
+                                if (window.electronAPI && window.electronAPI.setThemeMode) {
+                                    window.electronAPI.setThemeMode('auto').then(result => {
+                                        if (result && result.css) {
+                                            let el = document.getElementById('__theme_injected');
+                                            if (!el) {
+                                                el = document.createElement('style');
+                                                el.id = '__theme_injected';
+                                                document.head.appendChild(el);
+                                            }
+                                            el.textContent = result.css;
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    }
 
                     if (window.electronAPI && window.electronAPI.onNodeInstallProgress) {
                         window.electronAPI.onNodeInstallProgress((progress) => {
                             this.nodeInstallProgress = progress;
                         });
+                    }
+                },
+
+                applyThemeClass(mode) {
+                    let shouldBeDark;
+                    if (mode === 'auto') {
+                        shouldBeDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                    } else {
+                        shouldBeDark = mode === 'dark';
+                    }
+                    document.documentElement.classList.toggle('dark', shouldBeDark);
+                },
+
+                async initTheme() {
+                    if (window.electronAPI && window.electronAPI.getThemeMode) {
+                        const r = await window.electronAPI.getThemeMode();
+                        if (r.success) {
+                            this.selectedTheme = r.mode;
+                            let effectiveMode = r.resolvedMode || r.mode;
+                            if (r.mode === 'auto' && window.electronAPI.getOsDarkPreference) {
+                                const pref = await window.electronAPI.getOsDarkPreference();
+                                if (pref && pref.success) {
+                                    effectiveMode = pref.prefersDark ? 'dark' : 'light';
+                                }
+                            }
+                            this.applyThemeClass(effectiveMode);
+                        }
+                    }
+                },
+
+                async selectTheme(mode) {
+                    this.selectedTheme = mode;
+                    if (window.electronAPI && window.electronAPI.setThemeMode) {
+                        const result = await window.electronAPI.setThemeMode(mode);
+                        if (result && result.css) {
+                            let el = document.getElementById('__theme_injected');
+                            if (!el) {
+                                el = document.createElement('style');
+                                el.id = '__theme_injected';
+                                document.head.appendChild(el);
+                            }
+                            el.textContent = result.css;
+                        }
+                        let effectiveMode = (result && result.resolvedMode) || mode;
+                        if (mode === 'auto' && window.electronAPI.getOsDarkPreference) {
+                            const pref = await window.electronAPI.getOsDarkPreference();
+                            if (pref && pref.success) {
+                                effectiveMode = pref.prefersDark ? 'dark' : 'light';
+                            }
+                        }
+                        this.applyThemeClass(effectiveMode);
+                    } else {
+                        this.applyThemeClass(mode);
                     }
                 },
 

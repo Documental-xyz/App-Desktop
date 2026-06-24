@@ -124,7 +124,139 @@ class ThemeService {
   }
 
   /**
-   * Get the theme logo as a data URI for CSS injection.
+   * Build a fully-resolved, injectable CSS string for a specific mode
+   * (dark/light). Reads colors.css files in the chain, extracts only the
+   * declarations matching the requested mode, merges with variables.css
+   * base defaults, resolves all var() references against primitives, and
+   * returns a flat `:root { ... }` block ready for webContents.insertCSS().
+   *
+   * @param {string} mode - 'dark' or 'light' (NOT 'auto' — caller must resolve)
+   * @returns {Promise<string>} Resolved CSS string with concrete values
+   */
+  async getResolvedCssForMode(mode) {
+    const primitives = this._buildPrimitivesMap();
+
+    let combined = '';
+    for (const cssFile of this.cssFiles) {
+      try {
+        const content = this._fs.readFileSync(cssFile, 'utf8');
+        const modeSpecific = this._extractModeDeclarations(content, mode);
+        if (modeSpecific) combined += modeSpecific + '\n';
+      } catch (err) {
+        this.logger.warn(`ThemeService: failed to read CSS file "${cssFile}": ${err.message}`);
+      }
+    }
+
+    // Prepend base semantic-token defaults from variables.css filtered to the
+    // same mode so unresolved tokens still have sensible values.
+    const baseDefaults = this._extractModeDeclarations(
+      this._fs.readFileSync(this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'variables.css'), 'utf8'),
+      mode
+    ) || '';
+    combined = baseDefaults + '\n' + combined;
+
+    return this._resolveVarRefs(combined, primitives);
+  }
+
+  /**
+   * Build a map of primitive variable names to their concrete values by
+   * parsing the Tier 1 `:root { ... }` block in variables.css.
+   * @returns {Object} Map of '--name' -> 'value'
+   * @private
+   */
+  _buildPrimitivesMap() {
+    const map = {};
+    try {
+      const content = this._fs.readFileSync(
+        this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'variables.css'), 'utf8'
+      );
+      const rootMatch = content.match(/:root\s*\{([^}]*)\}/);
+      if (rootMatch) {
+        const decls = rootMatch[1];
+        const re = /(--[a-zA-Z0-9_-]+)\s*:\s*([^;]+);/g;
+        let m;
+        while ((m = re.exec(decls))) {
+          map[m[1].trim()] = m[2].trim();
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`ThemeService: failed to build primitives map: ${err.message}`);
+    }
+    return map;
+  }
+
+  /**
+   * Extract declarations targeting the given mode from a CSS source string.
+   * Matches `[data-theme="X"][data-mode="MODE"] { ... }` blocks (and a
+   * fallback generic `[data-theme="*"][data-mode="MODE"]` pattern), plus
+   * `:root { ... }` as a last-resort default if no mode-specific block
+   * exists. Returns a normalized `:root { ... }` block, or null if nothing
+   * matched.
+   * @param {string} cssText - Raw CSS source
+   * @param {string} mode - 'dark' or 'light'
+   * @returns {string|null} `:root { ... }` block or null
+   * @private
+   */
+  _extractModeDeclarations(cssText, mode) {
+    const themeName = this.themeName;
+    const patterns = [
+      new RegExp(`\\[data-theme="${themeName}"\\]\\[data-mode="${mode}"\\]\\s*\\{([^}]*)\\}`, 'g'),
+      new RegExp(`\\[data-theme="[^"]*"\\]\\[data-mode="${mode}"\\]\\s*\\{([^}]*)\\}`, 'g')
+    ];
+    let combined = '';
+    for (const re of patterns) {
+      let m;
+      while ((m = re.exec(cssText))) {
+        combined += m[1] + '\n';
+      }
+    }
+
+    // Fallback to :root defaults if no mode-specific declarations matched
+    const rootMatch = cssText.match(/:root\s*\{([^}]*)\}/);
+    if (rootMatch && !combined) {
+      combined = rootMatch[1];
+    }
+
+    return combined ? `:root { ${combined} }` : null;
+  }
+
+  /**
+   * Resolve all var() references in a CSS string against the primitives map.
+   * Performs up to 5 substitution passes to handle nested refs, then merges
+   * any inline declarations from the input itself into the primitives map
+   * for a final pass. Unresolvable refs fall back to their fallback value
+   * or are left intact.
+   * @param {string} cssText - CSS with var() references
+   * @param {Object} primitives - Map of '--name' -> 'value'
+   * @returns {string} CSS with var() refs resolved where possible
+   * @private
+   */
+  _resolveVarRefs(cssText, primitives) {
+    let resolved = cssText;
+    // Iteratively resolve nested var() references against primitives
+    for (let i = 0; i < 5; i++) {
+      const prev = resolved;
+      resolved = resolved.replace(/var\((--[a-zA-Z0-9_-]+)(?:,\s*([^)]+))?\)/g, (match, name, fallback) => {
+        return primitives[name] || fallback || match;
+      });
+      if (resolved === prev) break;
+    }
+
+    // Merge any declarations present in the input itself, then do one more pass
+    const re = /(--[a-zA-Z0-9_-]+)\s*:\s*([^;]+);/g;
+    let m;
+    while ((m = re.exec(cssText))) {
+      primitives[m[1].trim()] = m[2].trim();
+    }
+    resolved = resolved.replace(/var\((--[a-zA-Z0-9_-]+)(?:,\s*([^)]+))?\)/g, (match, name, fallback) => {
+      return primitives[name] || fallback || match;
+    });
+
+    return resolved;
+  }
+
+  /**
+    * Get the theme logo as a data URI for CSS injection.
    * Returns null when no theme logo.svg exists.
    * @returns {string|null} data:image/svg+xml;base64,... URI or null
    */
@@ -217,8 +349,7 @@ class ThemeService {
     const requestedMode = this._resolveThemeModeEnv();
 
     if (requestedMode === 'auto') {
-      const nt = this._getNativeTheme();
-      const osPrefersDark = nt?.shouldUseDarkColors ?? true;
+      const osPrefersDark = this._detectOsDarkPreference();
       const resolved = osPrefersDark ? 'dark' : 'light';
       if (availableModes.includes(resolved)) {
         return resolved;
@@ -237,6 +368,43 @@ class ThemeService {
       `ThemeService: requested mode "${requestedMode}" not available in [${availableModes}], using "${availableModes[0]}"`
     );
     return availableModes[0];
+  }
+
+  _detectOsDarkPreference() {
+    const nt = this._getNativeTheme();
+    if (nt) {
+      if (nt.shouldUseDarkColors) {
+        return true;
+      }
+
+      if (process.platform === 'linux') {
+        try {
+          const { execSync } = require('child_process');
+          const colorScheme = execSync(
+            'gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null',
+            { timeout: 2000, encoding: 'utf8' }
+          ).trim();
+          if (colorScheme.includes('dark')) {
+            return true;
+          }
+        } catch (_e) { }
+
+        try {
+          const { execSync } = require('child_process');
+          const gtkTheme = execSync(
+            'gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null',
+            { timeout: 2000, encoding: 'utf8' }
+          ).trim().toLowerCase();
+          if (gtkTheme.includes('dark')) {
+            return true;
+          }
+        } catch (_e) { }
+      }
+
+      return false;
+    }
+
+    return true;
   }
 
   _resolveThemeModeEnv() {

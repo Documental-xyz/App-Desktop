@@ -92,6 +92,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppLocaleSync: () => ipcRenderer.sendSync('i18n:get-locale-sync'),
   setAppLocale: (locale) => ipcRenderer.invoke('i18n:set-locale', locale),
   getAvailableLocales: () => ipcRenderer.invoke('i18n:get-available-locales'),
+  setThemeMode: (mode) => ipcRenderer.invoke('set-theme-mode', mode),
+  getThemeMode: () => ipcRenderer.invoke('get-theme-mode'),
+  onThemeChange: (callback) => ipcRenderer.on('theme-changed', (event, data) => callback(data)),
+  getOsDarkPreference: () => ipcRenderer.invoke('get-os-dark-preference'),
 });
 
 console.log('✅ electronAPI exposed to renderer successfully');
