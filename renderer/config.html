@@ -7,6 +7,7 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <script src="./i18n.js"></script>
+<script src="./shared/logo.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="script.js" defer></script>
 <style>
@@ -132,23 +133,23 @@
 <div class="flex flex-col h-screen">
 <header class="flex items-center justify-between h-16 px-4 bg-surface-dark border-b border-border-subtle shrink-0">
 <div class="flex items-center space-x-2">
-<a class="flex items-center space-x-2" href="#">
-<svg class="h-6 w-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
-</svg>
-<h1 class="text-xl font-bold text-text-dark">Documental</h1>
-</a>
-<span class="text-xl font-light text-muted-dark">/</span>
-<h2 class="text-xl font-semibold text-text-dark" x-text="$store.i18n.t('config.title')">Configurações</h2>
-</div>
-<div class="flex items-center space-x-4">
-<span class="text-sm text-primary transition-opacity duration-300" x-show="saveStatus" x-text="saveStatus"></span>
-<button @click="saveSettings()" class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary">
-<span class="material-icons mr-2 text-sm">save</span>
+        <a class="flex items-center space-x-2" href="#">
+            <span id="page-logo"></span>
+            <script>document.getElementById('page-logo').innerHTML = window.Documental && window.Documental.renderLogo ? window.Documental.renderLogo({ size: 'md' }) : '';</script>
+            <h1 class="text-4xl font-black text-text-dark">Documental</h1>
+        </a>
+        <span class="text-xl font-light text-muted-dark">/</span>
+        <h2 class="text-xl font-semibold text-text-dark" x-text="$store.i18n.t('config.title')">Configurações</h2>
+    </div>
+    <div class="flex items-center space-x-4">
+        <span class="text-sm text-primary transition-opacity duration-300" x-show="saveStatus" x-text="saveStatus"></span>
+        <button @click="saveSettings()" class="btn-primary px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary">
+            <span class="material-icons mr-2 text-sm">save</span>
                     <span x-text="$store.i18n.t('config.save_changes')">Salvar Alterações</span>
                 </button>
-<a class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary" href="#" data-navigate="main.html">
-<span class="material-icons text-muted-dark">close</span>
+<a class="btn-back" data-navigate="main.html">
+<span class="material-symbols-outlined text-base">arrow_back</span>
+<span x-text="$store.i18n.t('common.back')">Back</span>
 </a>
 </div>
 </header>
@@ -198,7 +199,7 @@
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.general_desc')">Ajustes básicos de comportamento do aplicativo.</p>
 <div class="space-y-6">
 <!-- Language selector (first setting) -->
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" x-text="$store.i18n.t('config.language')">Idioma</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.language_description')">Selecione o idioma do aplicativo</p>
 <select class="mt-2 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark"
@@ -210,7 +211,7 @@
 </select>
 </div>
 <!-- Default view -->
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" for="default-view" x-text="$store.i18n.t('config.default_view')">Visualização Padrão ao Iniciar</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.default_view_desc')">Escolha qual modo de visualização será aberto ao iniciar um projeto.</p>
 <select class="mt-2 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark" id="default-view" x-model="settings.defaultView">
@@ -220,7 +221,7 @@
 </select>
 </div>
 <!-- Auto update -->
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle flex items-center justify-between">
+<div class="card flex items-center justify-between">
 <div>
 <label class="block text-sm font-medium text-text-dark" for="auto-update" x-text="$store.i18n.t('config.auto_update')">Atualização Automática</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.auto_update_desc')">Verificar e instalar atualizações do Documental Desktop automaticamente.</p>
@@ -238,7 +239,7 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.appearance_title')">Aparência</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.appearance_desc')">Personalize a aparência do aplicativo.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" for="theme-selector" x-text="$store.i18n.t('config.theme')">Tema da Interface</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.theme_desc')">Altere o tema para se adequar à sua preferência de iluminação.</p>
 <select class="mt-2 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark" id="theme-selector" x-model="settings.theme">
@@ -255,12 +256,12 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.git_title')">Git &amp; Deploy</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.git_desc')">Configurações relacionadas ao controle de versão e publicação.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" for="default-branch" x-text="$store.i18n.t('config.publish_branch')">Branch de Publicação Padrão</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.publish_branch_desc')">A branch que será sugerida por padrão ao publicar alterações.</p>
 <input class="mt-2 block w-full bg-background-dark border-border-default rounded-md focus:ring-primary focus:border-primary sm:text-sm text-text-dark" id="default-branch" type="text" x-model="settings.defaultBranch"/>
 </div>
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle flex items-center justify-between">
+<div class="card flex items-center justify-between">
 <div>
 <label class="block text-sm font-medium text-text-dark" for="auto-publish" x-text="$store.i18n.t('config.auto_publish')">Commit e Push Automático ao Publicar</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.auto_publish_desc')">Se ativado, `git add .`, `git commit` e `git push` serão executados automaticamente.</p>
@@ -278,7 +279,7 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.advanced_title')">Avançado</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.advanced_desc')">Opções para usuários experientes. Tenha cuidado ao alterar.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" for="terminal-shell" x-text="$store.i18n.t('config.terminal_shell')">Shell do Terminal Integrado</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.terminal_shell_desc')">Selecione o shell padrão para novas abas do terminal.</p>
 <select class="mt-2 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark" id="terminal-shell" x-model="settings.terminalShell">
@@ -288,10 +289,10 @@
 <option value="cmd" x-text="$store.i18n.t('config.option_cmd')">CMD (Windows)</option>
 </select>
 </div>
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" x-text="$store.i18n.t('config.reset_settings')">Redefinir Configurações</label>
 <p class="text-xs text-muted-dark mt-1 whitespace-pre-line" x-text="$store.i18n.t('config.reset_settings_desc')">Restaura todas as configurações para seus valores padrão. Esta ação não pode ser desfeita.</p>
-<button class="mt-3 px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-red-600" x-text="$store.i18n.t('config.reset_to_default')"></button>
+<button class="mt-3 px-4 py-2 text-sm font-medium text-white bg-danger rounded-md hover:bg-danger-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-danger" x-text="$store.i18n.t('config.reset_to_default')"></button>
 </div>
 </div>
 </div>
@@ -301,7 +302,7 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.notifications_title')">Notificações</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.notifications_desc')">Gerencie quais notificações do sistema você deseja receber.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <div class="space-y-4">
 <div class="flex items-center justify-between">
 <div>
@@ -345,7 +346,7 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.data_title')">Dados e Cache</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.data_desc')">Gerencie como o aplicativo armazena dados em cache.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" for="cache-level" x-text="$store.i18n.t('config.cache_level')">Nível de Cache da Aplicação</label>
 <p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.cache_level_desc')">Controla a agressividade com que o conteúdo das iframes é armazenado em cache.</p>
 <select class="mt-2 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark" id="cache-level" x-model="settings.cacheLevel">
@@ -354,10 +355,10 @@
 <option value="disabled" x-text="$store.i18n.t('config.option_disabled')">Desativado (Sempre busca o conteúdo mais recente)</option>
 </select>
 </div>
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <label class="block text-sm font-medium text-text-dark" x-text="$store.i18n.t('config.clear_cache')">Limpar Cache Manualmente</label>
 <p class="text-xs text-muted-dark mt-1 whitespace-pre-line" x-text="$store.i18n.t('config.clear_cache_desc')">Força a limpeza de todo o cache de visualização e edição. Pode ser útil para resolver problemas de exibição.</p>
-<button class="mt-3 px-4 py-2 text-sm font-medium text-white bg-accent-orange rounded-md hover:bg-orange-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent-orange" x-text="$store.i18n.t('config.clear_cache_now')">
+<button class="mt-3 px-4 py-2 text-sm font-medium text-white bg-accent rounded-md hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent" x-text="$store.i18n.t('config.clear_cache_now')">
                             Limpar Cache Agora
                         </button>
 </div>
@@ -369,7 +370,7 @@
 <h2 class="text-2xl font-bold text-text-dark mb-1" x-text="$store.i18n.t('config.profile_title')">Perfil do Usuário</h2>
 <p class="text-muted-dark mb-6" x-text="$store.i18n.t('config.profile_desc')">Gerencie suas informações de perfil vinculadas ao GitHub.</p>
 <div class="space-y-6">
-<div class="p-6 bg-surface-dark rounded-lg border border-border-subtle">
+<div class="card">
 <div class="flex items-center space-x-4 mb-6">
 <template x-if="userProfile.avatarUrl">
 <img :src="userProfile.avatarUrl" alt="Avatar" class="w-16 h-16 rounded-full border-2 border-border-default"/>
@@ -402,7 +403,7 @@
 </div>
 </div>
 <div class="mt-6 flex items-center space-x-4">
-<button @click="saveProfile()" :disabled="profileSaveStatus === 'saving'" class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed">
+            <button @click="saveProfile()" :disabled="profileSaveStatus === 'saving'" class="btn-primary px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed">
 <span x-show="profileSaveStatus !== 'saving'" x-text="$store.i18n.t('config.save_profile')">Salvar Perfil</span>
 <span x-show="profileSaveStatus === 'saving'" x-text="$store.i18n.t('config.saving')">Salvando...</span>
 </button>

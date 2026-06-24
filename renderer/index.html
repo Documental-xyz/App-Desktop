@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="dark" lang="en"><head>
+<html class="dark" data-i18n-document-title="index.page_title" lang="en"><head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title data-i18n="index.page_title">Documental - Select Project</title>
@@ -8,6 +8,8 @@
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 
 <script src="./i18n.js"></script>
+<script src="./shared/logo.js"></script>
+<script src="./shared/i18n-apply.js"></script>
 <script src="script.js" defer></script>
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
@@ -15,12 +17,16 @@
 <div class="flex-1 flex items-center justify-center p-8">
 <div class="w-full max-w-4xl">
 <div class="text-center mb-12">
-<div class="flex items-center justify-center gap-4 mb-4">
-<svg class="h-12 w-12 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
-</svg>
-<h1 class="text-5xl font-black text-text-dark">Documental</h1>
-</div>
+<div class="flex items-center justify-center gap-4 mb-4" id="brand-logo"></div>
+<script>
+(function() {
+  var target = document.getElementById('brand-logo');
+  if (target) {
+    target.innerHTML = window.Documental.renderLogo({ size: 'md' }) +
+      '<h1 class="text-4xl font-black text-text-dark">Documental</h1>';
+  }
+})();
+</script>
 <p class="text-muted-dark text-lg whitespace-pre-line" data-i18n="index.subtitle">Your centralized documentation environment.</p>
 </div>
 <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -59,19 +65,16 @@
 <!-- Folder info will be inserted here -->
 </div>
 <div class="flex justify-end space-x-3">
-<button id="cancel-folder" class="px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-surface-dark" data-i18n="common.cancel">Cancel</button>
-<button id="confirm-new-project" class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary-hover" data-i18n="index.create_new_project">Create New Project</button>
+<button id="cancel-folder" class="btn-secondary px-4 py-2 text-sm" data-i18n="common.cancel">Cancel</button>
+<button id="confirm-new-project" class="btn-primary px-4 py-2 text-sm" data-i18n="index.create_new_project">Create New Project</button>
 </div>
 </div>
 </div>
 <script>
-document.addEventListener('DOMContentLoaded', async function() {
-  if (window.__i18nReady) await window.__i18nReady;
-  document.querySelectorAll('[data-i18n]').forEach(function(el) {
-    var key = el.getAttribute('data-i18n');
-    el.textContent = window.__t(key);
-  });
-  document.title = window.__t('index.page_title');
+document.addEventListener('DOMContentLoaded', function() {
+  if (window.Documental && window.Documental.applyTranslations) {
+    window.Documental.applyTranslations();
+  }
 });
 </script>
 
