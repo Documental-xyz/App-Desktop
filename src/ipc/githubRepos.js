@@ -63,7 +63,8 @@ class GithubReposHandlers {
             clone_url: repo.clone_url,
             private: repo.private,
             updated_at: repo.updated_at,
-            description: repo.description
+            description: repo.description,
+            owner: repo.owner ? { login: repo.owner.login, type: repo.owner.type } : null
           });
         }
 
