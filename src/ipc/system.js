@@ -1099,7 +1099,12 @@ async verifyNodeInstallation() {
           return { success: false, error: `Invalid mode: ${mode}` };
         }
 
-        const runtimeEnvPath = path.join(process.cwd(), 'resources', 'config', 'runtime-env.json');
+        let runtimeEnvPath;
+        if (app.isPackaged) {
+          runtimeEnvPath = path.join(app.getPath('userData'), 'runtime-env.json');
+        } else {
+          runtimeEnvPath = path.join(process.cwd(), 'resources', 'config', 'runtime-env.json');
+        }
 
         let config = {};
         try {

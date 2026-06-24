@@ -41,6 +41,15 @@ function loadRuntimeEnv(fsImpl, pathImpl, appRoot) {
     );
   }
 
+  try {
+    const { app } = require('electron');
+    if (app && app.getPath) {
+      candidatePaths.unshift(
+        pathImpl.join(app.getPath('userData'), 'runtime-env.json')
+      );
+    }
+  } catch (_e) {}
+
   for (const candidate of candidatePaths) {
     try {
       if (fsImpl.existsSync(candidate)) {
