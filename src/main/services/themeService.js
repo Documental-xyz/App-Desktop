@@ -401,6 +401,19 @@ class ThemeService {
         } catch (_e) { }
       }
 
+      if (process.platform === 'darwin') {
+        try {
+          const { execSync } = require('child_process');
+          const output = execSync(
+            'defaults read -g AppleInterfaceStyle 2>/dev/null',
+            { timeout: 2000, encoding: 'utf8' }
+          ).trim();
+          if (output.toLowerCase().includes('dark')) {
+            return true;
+          }
+        } catch (_e) { }
+      }
+
       return false;
     }
 
