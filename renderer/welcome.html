@@ -101,31 +101,33 @@
                         </div>
                     </div>
 
-                    <div class="flex flex-col items-center gap-3 mb-16">
+                    <div class="flex flex-col items-center gap-3">
                         <span class="text-sm text-muted-dark font-medium" x-text="__t('language.theme')"></span>
-                        <div class="inline-flex items-center gap-0 p-1 rounded-xl bg-surface-dark border border-border-subtle">
+                        <div class="inline-flex items-center gap-0 p-2 rounded-lg bg-surface-dark border border-border-subtle">
                             <button @click="selectTheme('auto')"
                                     :class="selectedTheme === 'auto' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
-                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                    class="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">contrast</span>
                                 <span x-text="__t('language.theme_auto')"></span>
                             </button>
                             <button @click="selectTheme('dark')"
                                     :class="selectedTheme === 'dark' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
-                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                    class="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">dark_mode</span>
                                 <span x-text="__t('language.theme_dark')"></span>
                             </button>
                             <button @click="selectTheme('light')"
                                     :class="selectedTheme === 'light' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
-                                    class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
+                                    class="inline-flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">light_mode</span>
                                 <span x-text="__t('language.theme_light')"></span>
                             </button>
                         </div>
                     </div>
- 
-                    <div class="mt-2 flex justify-center gap-4">
+
+                    <div class="h-16"></div>
+
+                    <div class="flex justify-center gap-4" style="margin-top: 2rem;">
                         <button onclick="if(window.electronAPI&amp;&amp;window.electronAPI.navigateTo){window.electronAPI.navigateTo('language.html')}else{window.location.href='language.html'}"
                                 class="bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105"
                                 style="border:1px solid var(--color-border-default);">
@@ -137,6 +139,23 @@
                             <span x-text="$store.i18n.t('welcome.start_setup')"></span>
                             <span class="material-symbols-outlined">arrow_forward</span>
                         </button>
+                    </div>
+
+                    <div class="mt-10 text-center space-y-3">
+                        <a href="#" @click.prevent="openExternal('https://documental.xyz/')"
+                           class="inline-block text-base text-muted-dark hover:text-primary transition-colors">
+                            www.documental.xyz
+                        </a>
+                        <div class="flex items-center justify-center gap-2 text-sm text-muted-dark">
+                            <a href="#" @click.prevent="openExternal('https://documental.xyz/docs')"
+                               class="hover:text-primary transition-colors" x-text="__t('welcome.footer_link_about')"></a>
+                            <span>-</span>
+                            <a href="#" @click.prevent="openExternal('https://documental.xyz/docs')"
+                               class="hover:text-primary transition-colors" x-text="__t('welcome.footer_link_help')"></a>
+                            <span>-</span>
+                            <a href="#" @click.prevent="openExternal('https://documental.xyz/docs')"
+                               class="hover:text-primary transition-colors" x-text="__t('welcome.footer_link_license')"></a>
+                        </div>
                     </div>
                 </div>
 
@@ -612,6 +631,14 @@
                 previousStep() {
                     if (this.currentStep > 1) {
                         this.currentStep--;
+                    }
+                },
+
+                openExternal(url) {
+                    if (window.electronAPI && window.electronAPI.openExternal) {
+                        window.electronAPI.openExternal(url);
+                    } else {
+                        window.open(url, '_blank');
                     }
                 },
 
