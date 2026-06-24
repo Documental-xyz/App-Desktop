@@ -1,0 +1,83 @@
+'use strict';
+
+(function () {
+  function injectCss(css) {
+    if (!css) return;
+    var el = document.getElementById('__theme_injected');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = '__theme_injected';
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
+  }
+
+  function applyThemeClass(mode) {
+    var shouldBeDark;
+    if (mode === 'auto') {
+      shouldBeDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } else {
+      shouldBeDark = mode === 'dark';
+    }
+    document.documentElement.classList.toggle('dark', shouldBeDark);
+  }
+
+  async function initTheme() {
+    if (!window.electronAPI || !window.electronAPI.getThemeMode) return;
+
+    try {
+      var r = await window.electronAPI.getThemeMode();
+      if (!r || !r.success) return;
+
+      var effectiveMode = r.resolvedMode || r.mode;
+
+      if (r.mode === 'auto' && window.electronAPI.getOsDarkPreference) {
+        try {
+          var pref = await window.electronAPI.getOsDarkPreference();
+          if (pref && pref.success) {
+            effectiveMode = pref.prefersDark ? 'dark' : 'light';
+          }
+        } catch (_e) {}
+      }
+
+      applyThemeClass(effectiveMode);
+
+      if (window.electronAPI.setThemeMode) {
+        try {
+          var result = await window.electronAPI.setThemeMode(r.mode);
+          if (result && result.css) {
+            injectCss(result.css);
+          }
+        } catch (_e) {}
+      }
+    } catch (_e) {}
+  }
+
+  function registerThemeChangeListener() {
+    if (!window.electronAPI || !window.electronAPI.onThemeChange) return;
+
+    window.electronAPI.onThemeChange(function (data) {
+      if (!data || !data.resolvedMode) return;
+
+      applyThemeClass(data.resolvedMode);
+
+      if (window.electronAPI.setThemeMode) {
+        window.electronAPI.setThemeMode('auto').then(function (result) {
+          if (result && result.css) {
+            injectCss(result.css);
+          }
+        }).catch(function () {});
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () {
+      initTheme();
+      registerThemeChangeListener();
+    });
+  } else {
+    initTheme();
+    registerThemeChangeListener();
+  }
+})();

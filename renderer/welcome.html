@@ -102,25 +102,25 @@
                     </div>
 
                     <div class="flex flex-col items-center gap-3 mb-16">
-                        <span class="text-sm text-muted-dark font-medium" x-text="$store.i18n.t('language.theme') || 'Theme'"></span>
+                        <span class="text-sm text-muted-dark font-medium" x-text="__t('language.theme')"></span>
                         <div class="inline-flex items-center gap-0 p-1 rounded-xl bg-surface-dark border border-border-subtle">
                             <button @click="selectTheme('auto')"
                                     :class="selectedTheme === 'auto' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
                                     class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">contrast</span>
-                                <span x-text="$store.i18n.t('language.theme_auto') || 'Auto'"></span>
+                                <span x-text="__t('language.theme_auto')"></span>
                             </button>
                             <button @click="selectTheme('dark')"
                                     :class="selectedTheme === 'dark' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
                                     class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">dark_mode</span>
-                                <span x-text="$store.i18n.t('language.theme_dark') || 'Dark'"></span>
+                                <span x-text="__t('language.theme_dark')"></span>
                             </button>
                             <button @click="selectTheme('light')"
                                     :class="selectedTheme === 'light' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
                                     class="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-medium transition-all duration-200">
                                 <span class="material-symbols-outlined text-lg">light_mode</span>
-                                <span x-text="$store.i18n.t('language.theme_light') || 'Light'"></span>
+                                <span x-text="__t('language.theme_light')"></span>
                             </button>
                         </div>
                     </div>
