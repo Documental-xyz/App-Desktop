@@ -258,8 +258,11 @@ repo_select:
   button_create_fork: "Criar novo fork"
   select_prompt: "Selecione um repositório para continuar"
   search_placeholder: "Buscar repositórios..."
-  no_repos: "Nenhum repositório encontrado"
+  no_repos: "Não foi encontrado nenhum repositório nos critérios selecionados em sua conta GitHub.\nVocê pode tentar outros filtros ou criar um novo repositório através de um fork na opção abaixo."
   no_match: "Nenhum repositório corresponde à busca"
+  filter_documental: "Documental"
+  filter_private: "Privado"
+  filter_personal: "Pessoais"
   repo_count: "{count} repositórios"
 
 create:
