@@ -109,7 +109,7 @@
                             <span x-text="$store.i18n.t('common.back') || 'Voltar'"></span>
                         </button>
                         <button @click="nextStep()"
-                                class="bg-primary hover:bg-primary-hover text-white font-semibold py-3 px-10 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
+                                class="bg-primary hover:bg-primary-hover text-white text-base font-semibold py-3 px-10 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
                             <span x-text="$store.i18n.t('welcome.start_setup')"></span>
                             <span class="material-symbols-outlined">arrow_forward</span>
                         </button>
@@ -117,18 +117,22 @@
                 </div>
 
 
-                <!-- Step 2: GitHub Authentication Explanation -->
+                
                 <div x-show="currentStep === 2" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in">
-                    <div class="mb-12">
+                    <div class="mb-8">
+                       
                         <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-surface-dark mb-6">
-                            <span class="material-symbols-outlined text-4xl text-primary">link</span>
+                            <svg class="w-12 h-12 text-text-dark" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                            </svg>
                         </div>
                         <h1 class="text-4xl font-black text-text-dark mb-4" x-text="$store.i18n.t('welcome.connect_github_title')"></h1>
-                        <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed mb-8 whitespace-pre-line" x-text="$store.i18n.t('welcome.connect_github_subtitle')">
-                        </p>
+                        <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed whitespace-pre-line" x-text="$store.i18n.t('welcome.connect_github_subtitle')"></p>
                     </div>
 
-                    <div class="bg-surface-dark rounded-lg p-8 max-w-2xl mx-auto mb-8">
+                   
+
+                    <div x-show="!isAuthenticated && !isAuthenticating && !isCreatingAccount" class="bg-surface-dark rounded-lg p-8 max-w-2xl mx-auto mb-8">
                         <div class="space-y-6">
                             <div class="flex items-start gap-4">
                                 <span class="material-symbols-outlined text-primary text-xl mt-1">check_circle</span>
@@ -155,112 +159,74 @@
                     </div>
 
 
-                </div>
-
-                <!-- Step 3: GitHub Authentication -->
-                <div x-show="currentStep === 3" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in">
-                    <div class="mb-12">
-                        <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-surface-dark mb-6">
-                            <svg class="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                            </svg>
-                        </div>
-                        <h1 class="text-4xl font-black text-text-dark mb-4" x-text="$store.i18n.t('welcome.auth_github_title')"></h1>
-                        <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed mb-8 whitespace-pre-line" x-text="$store.i18n.t('welcome.auth_github_subtitle')">
-                        </p>
-                    </div>
-
-                    <!-- Question: Do you already have a GitHub account? -->
-                    <div x-show="!isAuthenticated && hasAccountChoice === null" class="space-y-6">
-                        <div class="flex flex-col gap-3 max-w-xs mx-auto">
-                            <button @click="hasAccountChoice = 'yes'"
-                                    class="bg-primary hover:bg-primary-hover text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all duration-300 transform hover:scale-105"
-                                    data-i18n="welcome.has_account_yes"></button>
-                            <button @click="hasAccountChoice = 'no'"
-                                    class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all duration-300 transform hover:scale-105"
-                                    data-i18n="welcome.has_account_no"></button>
-                        </div>
-                    </div>
-
-                    <!-- Existing auth flow: shown when user chose 'yes' -->
-                    <div x-show="!isAuthenticated && hasAccountChoice === 'yes'" class="space-y-6">
-                        <div class="bg-surface-card rounded-lg p-6 max-w-md mx-auto">
-                            <div class="flex items-center gap-3 mb-4">
-                                <span class="material-symbols-outlined text-primary">info</span>
-                                <p class="text-sm text-muted-dark" x-text="$store.i18n.t('welcome.redirect_info')"></p>
+                    <div x-show="!isAuthenticated && isAuthenticating && deviceCode" class="bg-surface-dark rounded-lg p-8 max-w-2xl mx-auto mb-8">
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-center gap-3">
+                                <span class="text-sm text-muted-dark" x-text="$store.i18n.t('welcome.access_code')"></span>
+                                <code class="text-2xl font-mono font-bold tracking-wider text-primary select-all" x-text="deviceCode"></code>
+                                <button @click="navigator.clipboard.writeText(deviceCode); deviceCodeCopied = true; setTimeout(() => deviceCodeCopied = false, 2000)"
+                                        class="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-surface-secondary hover:bg-surface-card text-text-dark transition-colors duration-200"
+                                        :title="deviceCodeCopied ? $store.i18n.t('common.copied') : $store.i18n.t('common.copy')">
+                                    <span class="material-symbols-outlined text-lg" x-text="deviceCodeCopied ? 'check' : 'content_copy'"></span>
+                                </button>
+                                <span class="text-sm text-muted-dark ml-4 tabular-nums" x-show="deviceCodeExpiresIn > 0"
+                                      x-text="$store.i18n.t('welcome.expires_in', {time: formatCountdown(deviceCodeExpiresIn)})"></span>
                             </div>
+                            <webview :src="verificationUri"
+                                     class="w-full rounded-lg border border-border-subtle bg-background-dark"
+                                     style="width: 100%; height: 400px; display: flex;"
+                                     allowpopups>
+                            </webview>
                         </div>
-
-                        <button @click="authenticateWithGitHub()" :disabled="isAuthenticating" class="bg-background-dark hover:bg-surface-dark text-white font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105 mx-auto disabled:opacity-50 disabled:cursor-not-allowed">
-                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                            </svg>
-                            <span x-text="isAuthenticating ? $store.i18n.t('welcome.connecting') : $store.i18n.t('welcome.connect_with_github')"></span>
-                        </button>
-
-                        <button
-                            x-show="isAuthenticating"
-                            @click="isAuthenticating = false"
-                            class="mt-4 px-4 py-2 bg-surface-secondary text-white rounded-lg hover:bg-surface-dark transition-colors duration-300 text-sm font-medium"
-                        >
-                            <span x-text="$store.i18n.t('common.cancel')"></span>
-                        </button>
                     </div>
 
-                    <!-- No account: signup instructions -->
-                    <div x-show="!isAuthenticated && hasAccountChoice === 'no'" class="space-y-6">
-                        <div class="bg-surface-card rounded-lg p-6 max-w-md mx-auto">
-                            <div class="flex items-start gap-3 mb-4">
-                                <span class="material-symbols-outlined text-primary mt-0.5">person_add</span>
-                                <p class="text-sm text-muted-dark text-left whitespace-pre-line" data-i18n="welcome.create_account_instructions"></p>
-                            </div>
-                        </div>
-
-                        <button @click="window.electronAPI && window.electronAPI.openExternal && window.electronAPI.openExternal('https://github.com/signup')"
-                                class="bg-background-dark hover:bg-surface-dark text-white font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105 mx-auto"
-                                data-i18n="welcome.create_github_account_button"></button>
-
-                        <p class="text-sm text-muted-dark" data-i18n="welcome.create_account_return"></p>
-                        <button @click="hasAccountChoice = null"
-                                class="text-muted-dark hover:text-text-dark text-sm underline transition-colors duration-300"
-                                data-i18n="common.back"></button>
+                    <div x-show="!isAuthenticated && isCreatingAccount" class="bg-surface-dark rounded-lg p-8 max-w-2xl mx-auto mb-8">
+                        <webview src="https://github.com/signup"
+                                 class="w-full rounded-lg border border-border-subtle bg-background-dark"
+                                 style="width: 100%; height: 450px; display: flex;"
+                                 allowpopups>
+                        </webview>
                     </div>
 
-                    <div x-show="isAuthenticated" class="space-y-6">
-                        <div class="bg-surface-dark border border-border-subtle rounded-lg p-6 max-w-md mx-auto">
-                            <div class="flex items-center gap-3 mb-4">
-                                <span class="material-symbols-outlined text-green-500">check_circle</span>
-                                <p class="text-sm text-green-400" x-text="$store.i18n.t('welcome.auth_success')"></p>
+                    <div x-show="!isAuthenticated && isAuthenticating && !deviceCode" class="bg-surface-card rounded-lg p-6 max-w-md mx-auto mb-8">
+                        <div class="flex items-center gap-3">
+                            <div class="animate-spin">
+                                <span class="material-symbols-outlined text-primary">refresh</span>
                             </div>
-                            <div x-show="userInfo" class="text-left">
-                                <div class="flex justify-between items-start mb-4">
-                                    <div>
-                                        <p class="text-sm text-muted-dark mb-2" x-text="$store.i18n.t('welcome.connected_as')"></p>
-                                        <div class="flex items-center gap-3">
-                                            <img x-show="userInfo.avatar_url" :src="userInfo.avatar_url" :alt="userInfo.name" class="w-10 h-10 rounded-full">
-                                            <div>
-                                                <p class="font-semibold text-text-dark" x-text="userInfo.name || userInfo.login"></p>
-                                                <p class="text-sm text-muted-dark" x-text="userInfo.email"></p>
-                                            </div>
+                            <p class="text-sm text-muted-dark" x-text="$store.i18n.t('welcome.connecting')"></p>
+                        </div>
+                    </div>
+
+                    
+                    <div x-show="isAuthenticated" class="bg-surface-dark border border-border-subtle rounded-lg p-6 max-w-md mx-auto mb-8">
+                        <div class="flex items-center gap-3 mb-4">
+                            <span class="material-symbols-outlined text-primary">check_circle</span>
+                            <p class="text-sm text-primary" x-text="$store.i18n.t('welcome.auth_success')"></p>
+                        </div>
+                        <div x-show="userInfo" class="text-left">
+                            <div class="flex justify-between items-start mb-4">
+                                <div>
+                                    <p class="text-sm text-muted-dark mb-2" x-text="$store.i18n.t('welcome.connected_as')"></p>
+                                    <div class="flex items-center gap-3">
+                                        <img x-show="userInfo.avatar_url" :src="userInfo.avatar_url" :alt="userInfo.name" class="w-10 h-10 rounded-full">
+                                        <div>
+                                            <p class="font-semibold text-text-dark" x-text="userInfo.name || userInfo.login"></p>
+                                            <p class="text-sm text-muted-dark" x-text="userInfo.email"></p>
                                         </div>
                                     </div>
-                                    <button @click="logoutFromGitHub()" 
-                                            class="bg-danger hover:bg-danger-dark text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors duration-300 flex items-center gap-2">
-                                        <span class="material-symbols-outlined text-lg">logout</span>
-                                        <span x-text="$store.i18n.t('welcome.logout')"></span>
-                                    </button>
                                 </div>
+                                <button @click="logoutFromGitHub()"
+                                        class="bg-danger hover:bg-danger-dark text-on-danger text-sm font-medium py-2 px-4 rounded-lg transition-colors duration-300 flex items-center gap-2">
+                                    <span class="material-symbols-outlined text-lg">logout</span>
+                                    <span x-text="$store.i18n.t('welcome.logout')"></span>
+                                </button>
                             </div>
                         </div>
-
-
                     </div>
-
-
                 </div>
 
-                <!-- Step 4: Node.js Detection and Setup -->
-                <div x-show="currentStep === 4" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in">
+
+                <div x-show="currentStep === 3" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in">
                     <div class="mb-10">
                         <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-surface-dark mb-6">
                             <span class="material-symbols-outlined text-4xl text-primary">cloud_download</span>
@@ -298,8 +264,8 @@
                     <template x-if="nodeDetectionResult && nodeDetectionResult.runtime && nodeDetectionResult.runtime.installed && nodeDetectionResult.runtime.isValid">
                         <div class="bg-surface-card border border-border-subtle rounded-lg p-6 max-w-xl mx-auto mb-4 text-left">
                             <div class="flex items-center gap-3 mb-3">
-                                <span class="material-symbols-outlined text-green-500 text-xl">check_circle</span>
-                                <p class="font-medium text-green-400" x-text="$store.i18n.t('welcome.node_installed')"></p>
+                                <span class="material-symbols-outlined text-success text-xl">check_circle</span>
+                                <p class="font-medium text-success" x-text="$store.i18n.t('welcome.node_installed')"></p>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
@@ -362,45 +328,76 @@
 
                     <div x-show="nodeInstallSuccess" class="bg-surface-dark border border-border-subtle rounded-lg p-4 max-w-xl mx-auto mb-4 text-left">
                         <div class="flex items-center gap-2">
-                            <span class="material-symbols-outlined text-green-400">task_alt</span>
-                            <p class="text-green-200 text-sm" x-text="$store.i18n.t('welcome.node_download_success')"></p>
+                            <span class="material-symbols-outlined text-success">task_alt</span>
+                            <p class="text-success text-sm" x-text="$store.i18n.t('welcome.node_download_success')"></p>
                         </div>
                     </div>
                 </div>
 
                 <!-- Action Buttons -->
                     <div class="flex gap-4 justify-center">
-                        <!-- Step 2: GitHub Authentication Explanation -->
-                        <div x-show="currentStep === 2" class="flex gap-4 justify-center w-full">
 
-                            <button @click="previousStep()" class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-300">
+                        <div x-show="currentStep === 2" class="flex gap-4 justify-center w-full flex-wrap">
+                            <button @click="previousStep()" x-show="!isCreatingAccount" class="bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-3 px-6 rounded-lg transition-colors duration-300">
                                 <span class="material-symbols-outlined align-middle mr-2">arrow_back</span>
                                 <span x-text="$store.i18n.t('common.back')"></span>
                             </button>
-                            
-                            <button @click="nextStep()" 
-                                    class="bg-primary hover:bg-primary-hover text-white font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
-                                <span x-text="$store.i18n.t('common.understand')"></span>
-                                <span class="material-symbols-outlined">arrow_forward</span>
-                            </button>
-                        </div>
 
-                        <!-- Step 3: GitHub Authentication -->
-                        <div x-show="currentStep === 3" class="flex gap-4 justify-center w-full">
-                            <button @click="previousStep()" class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-300">
+                            <button @click="authenticateWithGitHub()"
+                                    x-show="!isAuthenticated && !isAuthenticating && !isCreatingAccount"
+                                    class="bg-primary hover:bg-primary-hover text-on-primary text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
+                                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                                </svg>
+                                <span x-text="$store.i18n.t('welcome.connect_with_github')"></span>
+                            </button>
+
+                            <button @click="isAuthenticating = false"
+                                    x-show="!isAuthenticated && isAuthenticating"
+                                    class="bg-surface-secondary hover:bg-surface-dark text-text-dark text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-colors duration-300">
+                                <span class="material-symbols-outlined">cancel</span>
+                                <span x-text="$store.i18n.t('common.cancel')"></span>
+                            </button>
+
+                            <button @click="isCreatingAccount = true"
+                                    x-show="!isAuthenticated && !isAuthenticating && !isCreatingAccount"
+                                    class="bg-surface-secondary hover:bg-surface-dark text-text-dark text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
+                                <span class="material-symbols-outlined">person_add</span>
+                                <span x-text="$store.i18n.t('welcome.create_github_account_button')"></span>
+                            </button>
+
+                            <button @click="previousStep()"
+                                    x-show="isCreatingAccount"
+                                    class="bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-3 px-6 rounded-lg transition-colors duration-300">
                                 <span class="material-symbols-outlined align-middle mr-2">arrow_back</span>
                                 <span x-text="$store.i18n.t('common.back')"></span>
                             </button>
-                            
-                            <button @click="nextStep()" x-show="isAuthenticated" 
-                                    class="bg-primary hover:bg-primary-hover text-white font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
+
+                            <button @click="isCreatingAccount = false"
+                                    x-show="isCreatingAccount"
+                                    class="bg-surface-secondary hover:bg-surface-dark text-text-dark text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-colors duration-300">
+                                <span class="material-symbols-outlined">cancel</span>
+                                <span x-text="$store.i18n.t('common.cancel')"></span>
+                            </button>
+
+                            <button @click="isCreatingAccount = false; authenticateWithGitHub()"
+                                    x-show="isCreatingAccount"
+                                    class="bg-primary hover:bg-primary-hover text-on-primary text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
+                                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                                </svg>
+                                <span x-text="$store.i18n.t('welcome.login_now')"></span>
+                            </button>
+
+                            <button @click="nextStep()"
+                                    x-show="isAuthenticated"
+                                    class="bg-primary hover:bg-primary-hover text-on-primary text-base font-semibold py-3 px-8 rounded-lg flex items-center gap-2 transition-all duration-300 transform hover:scale-105">
                                 <span x-text="$store.i18n.t('common.next')"></span>
                                 <span class="material-symbols-outlined">arrow_forward</span>
                             </button>
                         </div>
 
-                        <!-- Step 4: Node.js Detection -->
-                        <div x-show="currentStep === 4" class="flex flex-wrap gap-4 justify-center w-full">
+                        <div x-show="currentStep === 3" class="flex flex-wrap gap-4 justify-center w-full">
                             <button @click="previousStep()" class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-300">
                                 <span class="material-symbols-outlined align-middle mr-2">arrow_back</span>
                                 <span x-text="$store.i18n.t('common.back')"></span>
@@ -449,16 +446,32 @@
 
 
     <script src="./i18n.js"></script>
+<script src="./shared/i18n-apply.js"></script>
 <script src="./assets/js/alpine.min.js" defer></script>
     <script src="script.js" defer></script>
+    <script>
+        // Apply declarative data-i18n translations once i18n is ready and DOM is loaded.
+        // Required so static data-i18n attributes (e.g. Yes/No/Create Account buttons) show text.
+        document.addEventListener('DOMContentLoaded', function () {
+            if (window.Documental && window.Documental.applyTranslations) {
+                window.Documental.applyTranslations();
+            }
+        });
+    </script>
     <script>
         document.addEventListener('alpine:init', () => {
             Alpine.data('welcomeWizard', () => ({
                 currentStep: 1,
-                totalSteps: 4,
+                totalSteps: 3,
                 isAuthenticating: false,
                 isAuthenticated: false,
                 userInfo: null,
+                deviceCode: null,
+                verificationUri: null,
+                deviceCodeCopied: false,
+                deviceCodeExpiresIn: 0,
+                deviceCodeTimer: null,
+                isCreatingAccount: false,
                 hasAccountChoice: null, // null | 'yes' | 'no'
                 // Node.js detection properties
                 isDetectingNode: false,
@@ -490,7 +503,7 @@
                         this.currentStep++;
                         
                         // Check Node.js installation when moving to step 4
-                        if (this.currentStep === 4) {
+                        if (this.currentStep === 3) {
                             this.detectNode();
                         }
                     }
@@ -527,82 +540,78 @@
                 },
 
                 async authenticateWithGitHub() {
-                    console.log('🔘 Authentication button clicked!');
-                    console.log('🔍 Checking electronAPI availability:', !!window.electronAPI);
-                    console.log('🔍 Checking authenticateWithGitHub method:', !!(window.electronAPI && window.electronAPI.authenticateWithGitHub));
-                    
                     this.isAuthenticating = true;
+                    this.deviceCode = null;
+                    this.verificationUri = null;
+                    this.deviceCodeExpiresIn = 0;
                     try {
                         if (window.electronAPI && window.electronAPI.authenticateWithGitHub) {
-                            console.log('📡 Calling authenticateWithGitHub API...');
                             const result = await window.electronAPI.authenticateWithGitHub();
-                            console.log('📥 Authentication API response:', result);
-                            
+
                             if (result.requiresDeviceCode) {
-                                console.log('📱 Device code flow initiated:', {
-                                    deviceCode: result.deviceCode,
-                                    verificationUri: result.verificationUri,
-                                    expiresIn: result.expiresIn,
-                                    interval: result.interval
-                                });
-                                
-                                // Show device code to user
-                                const userCode = result.deviceCode;
-                                const verificationUri = result.verificationUri;
-                                
-                                console.log('🔔 Showing device code to user...');
-                                
-                                // Create a modal or alert with the code
-                                const proceed = confirm(
-                                    __t('welcome.device_code_title') + '\n\n' +
-                                    __t('welcome.device_code_step1', {url: verificationUri}) + '\n' +
-                                    __t('welcome.device_code_step2', {code: userCode}) + '\n\n' +
-                                    __t('welcome.device_code_step3')
+                                this.deviceCode = result.deviceCode;
+                                this.verificationUri = result.verificationUri;
+                                this.startDeviceCodeTimer(result.expiresIn);
+
+                                const authResult = await window.electronAPI.continueGitHubAuth(
+                                    result.deviceCodeInternal,
+                                    result.interval
                                 );
-                                
-                                console.log('👤 User decision:', proceed);
-                                
-                                if (proceed) {
-                                    console.log('🔄 Continuing authentication polling...');
-                                    // Continue polling for token
-                                    const authResult = await window.electronAPI.continueGitHubAuth(
-                                        result.deviceCodeInternal, 
-                                        result.interval
-                                    );
-                                    
-                                    console.log('📥 Continue auth response:', authResult);
-                                    
-                                    if (authResult.success) {
-                                        console.log('✅ Authentication successful!');
-                                        this.isAuthenticated = true;
-                                        this.userInfo = authResult.userInfo;
-                                    } else {
-                                        console.error('❌ Authentication continuation failed:', authResult.error);
-                                        alert(__t('welcome.error_auth', {error: authResult.error}));
-                                    }
+
+                                this.stopDeviceCodeTimer();
+
+                                if (authResult.success) {
+                                    this.isAuthenticated = true;
+                                    this.userInfo = authResult.userInfo;
+                                    this.deviceCode = null;
+                                    this.verificationUri = null;
                                 } else {
-                                    console.log('🚫 User cancelled authentication');
+                                    alert(__t('welcome.error_auth', {error: authResult.error}));
                                 }
                             } else if (result.success) {
-                                console.log('✅ Direct authentication successful!');
                                 this.isAuthenticated = true;
                                 this.userInfo = result.userInfo;
                             } else {
-                                console.error('❌ Authentication failed:', result.error);
                                 alert(__t('welcome.error_auth', {error: result.error}));
                             }
                         } else {
-                            console.error('❌ electronAPI or authenticateWithGitHub not available');
                             alert(__t('welcome.error_auth_api'));
                         }
                     } catch (error) {
-                        console.error('💥 Authentication error:', error);
-                        console.error('🔍 Error stack:', error.stack);
                         alert(__t('welcome.error_auth', {error: error.message}));
                     } finally {
-                        console.log('🏁 Authentication process finished');
+                        this.stopDeviceCodeTimer();
                         this.isAuthenticating = false;
+                        this.deviceCode = null;
+                        this.verificationUri = null;
                     }
+                },
+
+                startDeviceCodeTimer(expiresIn) {
+                    this.deviceCodeExpiresIn = expiresIn;
+                    this.stopDeviceCodeTimer();
+                    this.deviceCodeTimer = setInterval(() => {
+                        this.deviceCodeExpiresIn--;
+                        if (this.deviceCodeExpiresIn <= 0) {
+                            this.stopDeviceCodeTimer();
+                            this.isAuthenticating = false;
+                            this.deviceCode = null;
+                            this.verificationUri = null;
+                        }
+                    }, 1000);
+                },
+
+                stopDeviceCodeTimer() {
+                    if (this.deviceCodeTimer) {
+                        clearInterval(this.deviceCodeTimer);
+                        this.deviceCodeTimer = null;
+                    }
+                },
+
+                formatCountdown(seconds) {
+                    const m = Math.floor(seconds / 60);
+                    const s = seconds % 60;
+                    return m + ':' + String(s).padStart(2, '0');
                 },
 
                 async completeSetup() {
