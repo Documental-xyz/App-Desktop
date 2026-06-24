@@ -423,12 +423,6 @@ class ThemeService {
   _resolveThemeModeEnv() {
     this._appRoot = this._appRoot || null;
 
-    const envMode = (process.env.THEME_MODE || '').trim().toLowerCase();
-    if (envMode) {
-      this._rawMode = envMode;
-      return envMode;
-    }
-
     if (this._appRoot) {
       const runtimeEnv = loadRuntimeEnv(this._fs, this._path, this._appRoot);
       const runtimeMode = (runtimeEnv?.THEME_MODE || '').trim().toLowerCase();
@@ -436,6 +430,12 @@ class ThemeService {
         this._rawMode = runtimeMode;
         return runtimeMode;
       }
+    }
+
+    const envMode = (process.env.THEME_MODE || '').trim().toLowerCase();
+    if (envMode) {
+      this._rawMode = envMode;
+      return envMode;
     }
 
     this._rawMode = 'auto';

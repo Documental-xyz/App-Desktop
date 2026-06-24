@@ -490,3 +490,9 @@ script:
   action_label: "Action:"
   content_label: "Content:"
   project_fallback: "Project #{id}"
+
+language:
+  theme: "Theme"
+  theme_auto: "Auto"
+  theme_dark: "Dark"
+  theme_light: "Light"
