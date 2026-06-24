@@ -473,36 +473,27 @@ class AuthHandlers {
   async authenticateWithGitHub() {
     try {
       this.logger.info('🔐 Starting GitHub authentication flow...');
-      this.logger.info('📋 GitHub Config:', {
-        clientId: GITHUB_CONFIG.CLIENT_ID,
-        deviceCodeUrl: GITHUB_CONFIG.DEVICE_CODE_URL,
-        tokenUrl: GITHUB_CONFIG.TOKEN_URL,
-        scopes: GITHUB_CONFIG.SCOPES
-      });
-      
-      // Step 1: Initiate device flow
-      this.logger.info('📡 Initiating device flow...');
+
       const deviceCodeResponse = await this.initiateDeviceFlow();
-      
-      this.logger.info('✅ Device flow initiated successfully:', {
+
+      this.logger.info('✅ Device flow initiated:', {
         deviceCode: deviceCodeResponse.user_code,
         verificationUri: deviceCodeResponse.verification_uri,
         expiresIn: deviceCodeResponse.expires_in,
         interval: deviceCodeResponse.interval
       });
-      
-      // Step 2: Show authentication window with device code
-      const authResult = await this.showAuthenticationWindow(deviceCodeResponse);
-      
-      return authResult;
-      
+
+      return {
+        requiresDeviceCode: true,
+        deviceCode: deviceCodeResponse.user_code,
+        deviceCodeInternal: deviceCodeResponse.device_code,
+        verificationUri: deviceCodeResponse.verification_uri,
+        expiresIn: deviceCodeResponse.expires_in,
+        interval: deviceCodeResponse.interval
+      };
+
     } catch (error) {
       this.logger.error('❌ GitHub authentication failed:', error);
-      this.logger.error('🔍 Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
       return { success: false, error: error.message };
     }
   }
