@@ -61,6 +61,46 @@
   --color-surface-card: var(--doc-card);
   --color-surface-card-alt: var(--doc-card-alt);
   --color-surface-secondary: var(--doc-secondary);
+  --color-on-primary: #ffffff;
+}
+
+/* ==========================================================================
+   Tier 3: Design Tokens (font / space / radius / shadow / icon)
+   YAGNI — minimal set for cross-theme UI harmonization.
+   ========================================================================== */
+:root {
+  /* Typography */
+  --font-display: 'Inter', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-size-h1: 2.25rem;
+  --font-size-h2: 1.5rem;
+  --font-size-h3: 1.25rem;
+  --font-size-body: 1rem;
+  --font-size-sm: 0.875rem;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* Border radius */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+
+  /* Icon sizes */
+  --icon-header: 2.5rem;
+  --icon-inline: 1.25rem;
+
+  /* Layout tokens */
+  --header-top-spacing: 2rem;
 }
 
 @tailwind base;
@@ -68,21 +108,33 @@
 @tailwind utilities;
 
 @layer components {
+    /* Primary action button — uses text-on-primary token (WCAG-safe across themes) */
     .btn-primary {
-        @apply bg-primary hover:bg-primary-hover text-white font-semibold rounded-md px-4 py-2 text-sm focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary transition-colors;
+        @apply bg-primary hover:bg-primary-hover text-on-primary font-semibold rounded-md transition-colors duration-300;
         cursor: pointer;
     }
+    /* Secondary action button — surface fill, theme-aware text */
     .btn-secondary {
-        @apply bg-surface-dark hover:bg-muted-dark text-white font-medium rounded-md px-4 py-2 text-sm transition-colors;
+        @apply bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold rounded-md transition-colors duration-300;
         cursor: pointer;
     }
+    /* Danger action button — destructive actions */
     .btn-danger {
-        @apply bg-danger hover:bg-danger-dark text-white font-medium rounded-md px-4 py-2 text-sm transition-colors;
+        @apply bg-danger hover:bg-danger-dark text-on-primary font-medium rounded-md transition-colors duration-300;
         cursor: pointer;
     }
+    /* Ghost button — transparent, surfaces on hover */
     .btn-ghost {
-        @apply text-muted-dark hover:text-text-dark font-medium px-4 py-2 text-sm transition-colors;
+        @apply bg-transparent hover:bg-surface-secondary text-text-dark font-medium rounded-md transition-colors duration-300;
         cursor: pointer;
+    }
+    /* Back link — textual navigation back */
+    .btn-back {
+        @apply inline-flex items-center gap-1.5 text-sm text-muted-dark hover:text-text-dark transition-colors duration-200 mb-4;
+    }
+    /* Center wrapper — vertical centering of page content */
+    .page-center {
+        @apply flex-1 flex flex-col items-center justify-center min-h-0;
     }
 
     .welcome-gradient {
@@ -95,6 +147,23 @@
     .spinner-sm { width: 1.25rem; height: 1.25rem; }
     .spinner-md { width: 2rem; height: 2rem; }
     .spinner-lg { width: 3rem; height: 3rem; }
+
+    /* Badge components — small status indicators using text-on-* tokens */
+    .badge-primary {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-primary text-on-primary;
+    }
+    .badge-warning {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-warning text-on-warning;
+    }
+    .badge-danger {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-danger text-on-danger;
+    }
+    .badge-info {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-info text-on-info;
+    }
+    .badge-success {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-success text-on-primary;
+    }
 
     .custom-scrollbar::-webkit-scrollbar {
         width: 8px;
@@ -130,8 +199,9 @@
     /* ==========================================================================
        Card Variants
        ========================================================================== */
+    /* Base card surface — composed container for panels */
     .card {
-        @apply bg-surface-dark rounded-lg p-6 border border-border-subtle;
+        @apply bg-surface-dark rounded-lg border border-border-subtle p-6;
     }
     .card-hover {
         @apply bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer;
