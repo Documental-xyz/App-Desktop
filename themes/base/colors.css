@@ -25,9 +25,17 @@
   --color-border-subtle: var(--gray-700);
   --color-border-default: var(--gray-600);
   --color-gray-550: var(--gray-550);
+  --color-on-primary: var(--white);
+  --color-on-warning: var(--white);
+  --color-on-danger: var(--white);
+  --color-on-info: var(--white);
 }
 
 [data-theme="base"][data-mode="light"] {
+  --color-on-primary: var(--white);
+  --color-on-warning: var(--white);
+  --color-on-danger: var(--white);
+  --color-on-info: var(--white);
   --color-background-dark: var(--gray-100);
   --color-surface-dark: var(--white);
   --color-text-dark: var(--gray-900);

@@ -47,6 +47,10 @@
 
   /* Gray intermediate */
   --color-gray-550: #3a4f5f;
+  --color-on-primary: #ffffff;
+  --color-on-warning: #ffffff;
+  --color-on-danger: #ffffff;
+  --color-on-info: #ffffff;
 }
 
 [data-theme="documental"][data-mode="light"] {
@@ -82,4 +86,8 @@
   /* Borders */
   --color-border-subtle: #d1d9e6;
   --color-border-default: #b8c4d0;
+  --color-on-primary: #ffffff;
+  --color-on-warning: #ffffff;
+  --color-on-danger: #ffffff;
+  --color-on-info: #ffffff;
 }

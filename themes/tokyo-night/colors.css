@@ -44,4 +44,8 @@
 
   /* Gray intermediate */
   --color-gray-550: #414868;
+  --color-on-primary: #1a1b26;
+  --color-on-warning: #1a1b26;
+  --color-on-danger: #ffffff;
+  --color-on-info: #ffffff;
 }
