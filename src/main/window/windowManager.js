@@ -53,6 +53,7 @@ class WindowManager {
           preload: path.resolve(__dirname, '..', '..', '..', 'preload.js'),
           contextIsolation: true,
           nodeIntegration: false,
+          webviewTag: true,
           ...config.windowConfig?.webPreferences
         },
         ...config.windowConfig
