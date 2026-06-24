@@ -7,6 +7,16 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <style>[x-cloak]{display:none!important}</style>
+<style>
+.repo-header { padding-top: 12vh !important; }
+@media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
+@media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
+@media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+.repo-content { padding-top: 1rem; }
+@media (min-height: 800px) { .repo-content { padding-top: 1.25rem; } }
+@media (min-height: 1000px) { .repo-content { padding-top: 1.5rem; } }
+@media (min-height: 1200px) { .repo-content { padding-top: 2rem; } }
+</style>
 
 <!-- Shared components -->
 <script src="./shared/layout.js"></script>
@@ -26,6 +36,9 @@ document.addEventListener('alpine:init', () => {
     error: null,
     selectedRepo: null,
     searchQuery: '',
+    documentalFilter: true,
+    privateFilter: false,
+    personalFilter: false,
 
     async init() {
       this.loading = true;
@@ -51,8 +64,20 @@ document.addEventListener('alpine:init', () => {
      */
     get filteredRepos() {
       const q = (this.searchQuery || '').toLowerCase();
-      if (!q) return this.repos;
-      return this.repos.filter(repo => (repo.name || '').toLowerCase().includes(q));
+      let list = this.repos;
+      if (this.documentalFilter) {
+        list = list.filter(repo => (repo.name || '').toLowerCase().includes('documental'));
+      }
+      if (this.privateFilter) {
+        list = list.filter(repo => repo.private === true);
+      }
+      if (this.personalFilter) {
+        list = list.filter(repo => repo.owner && repo.owner.type === 'User');
+      }
+      if (q) {
+        list = list.filter(repo => (repo.name || '').toLowerCase().includes(q));
+      }
+      return list;
     },
 
     /**
@@ -80,7 +105,7 @@ document.addEventListener('alpine:init', () => {
      */
     get hasMultipleOwners() {
       const seen = new Set();
-      for (const repo of this.repos) {
+      for (const repo of this.filteredRepos) {
         const owner = (repo.owner && repo.owner.login)
           ? repo.owner.login
           : ((repo.full_name || repo.name || '').split('/')[0] || '—');
@@ -136,17 +161,17 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="flex flex-col h-screen">
 
   <!-- Header (shrink-0) -->
-  <header class="shrink-0 px-8 py-header">
-    <div class="max-w-4xl mx-auto">
+  <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
+    <div class="max-w-4xl mx-auto mt-auto">
       <button data-navigate="index.html" class="btn-back">
         <span class="material-symbols-outlined">arrow_back</span>
         <span data-i18n="common.back">Back</span>
       </button>
       <div class="flex items-center justify-center gap-3 mb-2">
         <span id="page-logo"></span>
-        <h1 class="text-4xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
+        <h1 class="text-5xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
       </div>
-      <p class="text-lg text-muted-dark text-center whitespace-pre-line" data-i18n="repo_select.subtitle">Select an existing repository to use, or create a new fork.</p>
+      <p class="text-lg text-muted-dark text-center whitespace-pre-line" data-i18n="repo_select.subtitle">You need a GitHub repository to save and publish your documentation.</p>
     </div>
   </header>
 
@@ -155,7 +180,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     <!-- Scrollable repo list area (fixed-height box with internal scroll) -->
     <div class="flex-1 overflow-y-auto px-8 pb-6">
-      <div class="page-center max-w-4xl mx-auto w-full">
+      <div class="page-center max-w-4xl mx-auto w-full repo-content">
 
         <!-- Loading state (fixed-height container prevents layout shift) -->
         <div x-show="loading" x-cloak class="flex justify-center items-center py-20 min-h-[16rem]">
@@ -172,18 +197,8 @@ document.addEventListener('DOMContentLoaded', function() {
           </button>
         </div>
 
-        <!-- Empty state: zero repos -->
-        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length === 0" x-cloak class="text-center py-10 text-muted-dark min-h-[16rem] flex flex-col items-center justify-center">
-          <span class="material-symbols-outlined text-6xl text-muted-dark mb-4 block">inbox</span>
-          <p class="mb-6"><span data-i18n="repo_select.no_repos">No repositories found</span></p>
-          <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-            <span class="material-symbols-outlined">alt_route</span>
-            <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
-          </button>
-        </div>
-
-        <!-- Repo list (with filter + grid) -->
-        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length > 0" x-cloak class="pt-2">
+        <!-- Repo list (with filter + toggle + scrollable grid) -->
+        <div x-show="!loading &amp;&amp; !error" x-cloak class="w-full pt-2">
 
           <!-- Search/filter -->
           <div class="mb-4 flex items-center gap-3">
@@ -198,70 +213,110 @@ document.addEventListener('DOMContentLoaded', function() {
             <span class="text-sm text-muted-dark whitespace-nowrap" x-text="window.__t('repo_select.repo_count', { count: filteredRepos.length })"></span>
           </div>
 
-          <!-- Empty state: filter has no matches -->
-          <div x-show="filteredRepos.length === 0" x-cloak class="text-center py-10 text-muted-dark">
-            <span class="material-symbols-outlined text-5xl text-muted-dark mb-3 block">search_off</span>
-            <span data-i18n="repo_select.no_match">No repositories match your search</span>
+          <!-- Filter toggles -->
+          <div class="mb-6 flex items-center justify-center gap-6">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <div @click="documentalFilter = !documentalFilter"
+                   class="w-10 h-6 rounded-full transition-colors duration-200 relative flex items-center"
+                   :class="documentalFilter ? 'bg-primary' : 'bg-surface-dark'">
+                <div class="w-4 h-4 rounded-full bg-white transition-all duration-200"
+                     :style="documentalFilter ? 'margin-left: 1.25rem;' : 'margin-left: 0.25rem;'"></div>
+              </div>
+              <span class="text-sm text-muted-dark" x-text="__t('repo_select.filter_documental')"></span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <div @click="privateFilter = !privateFilter"
+                   class="w-10 h-6 rounded-full transition-colors duration-200 relative flex items-center"
+                   :class="privateFilter ? 'bg-primary' : 'bg-surface-dark'">
+                <div class="w-4 h-4 rounded-full bg-white transition-all duration-200"
+                     :style="privateFilter ? 'margin-left: 1.25rem;' : 'margin-left: 0.25rem;'"></div>
+              </div>
+              <span class="text-sm text-muted-dark" x-text="__t('repo_select.filter_private')"></span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <div @click="personalFilter = !personalFilter"
+                   class="w-10 h-6 rounded-full transition-colors duration-200 relative flex items-center"
+                   :class="personalFilter ? 'bg-primary' : 'bg-surface-dark'">
+                <div class="w-4 h-4 rounded-full bg-white transition-all duration-200"
+                     :style="personalFilter ? 'margin-left: 1.25rem;' : 'margin-left: 0.25rem;'"></div>
+              </div>
+              <span class="text-sm text-muted-dark" x-text="__t('repo_select.filter_personal')"></span>
+            </label>
           </div>
 
-          <!-- Single-owner layout: flat grid (no group headers) -->
-          <template x-if="!hasMultipleOwners">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <template x-for="repo in filteredRepos" :key="repo.id">
-                <div @click="selectRepo(repo)"
-                     class="bg-surface-dark rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
-                     :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="flex flex-col min-w-0 flex-1">
-                      <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
-                      <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
-                    </div>
-                    <div class="flex items-center gap-1.5 flex-shrink-0">
-                      <template x-if="repo.name.toLowerCase().includes('documental')">
-                        <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                      </template>
-                      <template x-if="repo.private">
-                        <span class="badge-warning" x-text="__t('repo_select.private_repo_label')">Private</span>
-                      </template>
+          <!-- Empty state: no repos match current filters -->
+          <div x-show="repos.length === 0 || filteredRepos.length === 0" x-cloak class="text-center py-10 text-muted-dark min-h-[16rem] flex flex-col items-center justify-center">
+            <span class="material-symbols-outlined text-5xl text-muted-dark mb-3 block">inbox</span>
+            <p class="whitespace-pre-line mb-6 max-w-md" x-text="__t('repo_select.no_repos')"></p>
+            <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+              <span class="material-symbols-outlined">alt_route</span>
+              <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+            </button>
+          </div>
+
+          <!-- Fixed-height scrollable repo grid -->
+          <div x-show="filteredRepos.length > 0" x-cloak class="border border-border-subtle rounded-lg bg-surface-dark text-left" style="max-height: 540px; overflow-y: auto;">
+
+            <!-- Single-owner layout: flat grid (no group headers) -->
+            <template x-if="!hasMultipleOwners">
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3">
+                <template x-for="repo in filteredRepos" :key="repo.id">
+                  <div @click="selectRepo(repo)"
+                       class="rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-card border border-border-subtle"
+                       :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="flex flex-col min-w-0 flex-1">
+                        <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
+                        <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
+                      </div>
+                      <div class="flex items-center gap-1.5 flex-shrink-0">
+                        <template x-if="repo.name.toLowerCase().includes('documental')">
+                          <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                        </template>
+                        <template x-if="repo.private">
+                          <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
+                        </template>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </template>
-            </div>
-          </template>
+                </template>
+              </div>
+            </template>
 
-          <!-- Multi-owner layout: grouped grid with owner headers -->
-          <template x-if="hasMultipleOwners">
-            <div class="space-y-4">
-              <template x-for="group in groupedRepos" :key="group.owner">
-                <div>
-                  <h3 class="text-sm font-semibold text-muted-dark mt-4 mb-2 first:mt-0" x-text="group.owner"></h3>
-                  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <template x-for="repo in group.repos" :key="repo.id">
-                      <div @click="selectRepo(repo)"
-                           class="bg-surface-dark rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
-                           :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
-                        <div class="flex items-center justify-between gap-2">
-                          <div class="flex flex-col min-w-0 flex-1">
-                            <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
-                            <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
-                          </div>
-                          <div class="flex items-center gap-1.5 flex-shrink-0">
-                            <template x-if="repo.name.toLowerCase().includes('documental')">
-                              <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                            </template>
-                            <template x-if="repo.private">
-                              <span class="badge-warning" x-text="__t('repo_select.private_repo_label')">Private</span>
-                            </template>
+            <!-- Multi-owner layout: grouped grid with owner headers -->
+            <template x-if="hasMultipleOwners">
+              <div class="space-y-4 p-3">
+                <template x-for="group in groupedRepos" :key="group.owner">
+                  <div>
+                    <h3 class="text-sm font-semibold text-muted-dark mt-4 mb-2 first:mt-0" x-text="group.owner"></h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <template x-for="repo in group.repos" :key="repo.id">
+                        <div @click="selectRepo(repo)"
+                             class="rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-card border border-border-subtle"
+                             :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
+                          <div class="flex items-center justify-between gap-2">
+                            <div class="flex flex-col min-w-0 flex-1">
+                              <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
+                              <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
+                            </div>
+                            <div class="flex items-center gap-1.5 flex-shrink-0">
+                              <template x-if="repo.name.toLowerCase().includes('documental')">
+                                <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                              </template>
+                              <template x-if="repo.private">
+                                <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
+                              </template>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </template>
+                      </template>
+                    </div>
                   </div>
-                </div>
-              </template>
-            </div>
-          </template>
+                </template>
+              </div>
+            </template>
+
+          </div>
 
         </div>
 
