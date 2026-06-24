@@ -283,7 +283,52 @@ function parseModeSpecificDeclarations(cssText, mode) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Main
+// 4. OS dark mode detection (for THEME_MODE=auto)
+// ---------------------------------------------------------------------------
+
+function detectOsDarkPreference() {
+  if (process.platform === 'linux') {
+    try {
+      const { execSync } = require('child_process');
+      const colorScheme = execSync(
+        'gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null',
+        { timeout: 2000, encoding: 'utf8' }
+      ).trim();
+      if (colorScheme.includes('dark')) {
+        return true;
+      }
+    } catch (_e) { }
+
+    try {
+      const { execSync } = require('child_process');
+      const gtkTheme = execSync(
+        'gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null',
+        { timeout: 2000, encoding: 'utf8' }
+      ).trim().toLowerCase();
+      if (gtkTheme.includes('dark')) {
+        return true;
+      }
+    } catch (_e) { }
+  }
+
+  if (process.platform === 'darwin') {
+    try {
+      const { execSync } = require('child_process');
+      const output = execSync(
+        'defaults read -g AppleInterfaceStyle 2>/dev/null',
+        { timeout: 2000, encoding: 'utf8' }
+      ).trim();
+      if (output.toLowerCase().includes('dark')) {
+        return true;
+      }
+    } catch (_e) { }
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// 5. Main
 // ---------------------------------------------------------------------------
 
 function main() {
@@ -291,7 +336,12 @@ function main() {
 
   // Resolve theme configuration
   const themeName = resolveConfig('THEME', 'base') || 'base';
-  const themeMode = resolveConfig('THEME_MODE', 'dark') || 'dark';
+  let themeMode = resolveConfig('THEME_MODE', 'auto') || 'auto';
+
+  if (themeMode === 'auto') {
+    themeMode = detectOsDarkPreference() ? 'dark' : 'light';
+    console.log(`   THEME_MODE=auto → resolved to "${themeMode}" based on OS preference`);
+  }
 
   console.log(`   Theme: ${themeName}`);
   console.log(`   Mode:  ${themeMode}`);
