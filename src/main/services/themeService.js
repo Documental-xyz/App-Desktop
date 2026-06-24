@@ -113,6 +113,35 @@ class ThemeService {
       `ThemeService: initialized — theme="${this.themeName}", mode="${this.themeMode}", ` +
       `cssFiles=${this.cssFiles.length}, logo=${!!this.logoPath}, icons=${!!this.iconCssPath}`
     );
+
+    try {
+      const { app } = require('electron');
+      if (app.isPackaged) {
+        const userDataPath = app.getPath('userData');
+        const fs2 = this._fs;
+        const path2 = this._path;
+        const userRuntimeEnvPath = path2.join(userDataPath, 'runtime-env.json');
+        let needsWrite = false;
+        let existingConfig = {};
+        try {
+          existingConfig = JSON.parse(fs2.readFileSync(userRuntimeEnvPath, 'utf8'));
+          if (!existingConfig.THEME) {
+            needsWrite = true;
+          }
+        } catch (_e) {
+          needsWrite = true;
+        }
+        if (needsWrite && this.themeName) {
+          existingConfig.THEME = this.themeName;
+          if (!existingConfig.THEME_MODE) {
+            existingConfig.THEME_MODE = this._rawMode || 'auto';
+          }
+          try {
+            fs2.writeFileSync(userRuntimeEnvPath, JSON.stringify(existingConfig, null, 2), 'utf8');
+          } catch (_e) {}
+        }
+      }
+    } catch (_e) {}
   }
 
   /**

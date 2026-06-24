@@ -1112,6 +1112,9 @@ async verifyNodeInstallation() {
         } catch (e) {}
 
         config.THEME_MODE = mode;
+        if (!config.THEME && this.themeService && this.themeService.themeName) {
+          config.THEME = this.themeService.themeName;
+        }
         config.generatedAt = new Date().toISOString();
         fs.writeFileSync(runtimeEnvPath, JSON.stringify(config, null, 2), 'utf8');
 
