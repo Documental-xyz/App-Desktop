@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="dark" lang="pt-BR"><head>
+<html class="dark" lang="pt-BR" data-i18n-document-title="repo_select.page_title"><head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title data-i18n="repo_select.page_title">Documental - Select Repository</title>
@@ -7,6 +7,13 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <style>[x-cloak]{display:none!important}</style>
+
+<!-- Shared components -->
+<script src="./shared/layout.js"></script>
+<script src="./shared/footer.js"></script>
+<script src="./shared/logo.js"></script>
+<script src="./shared/i18n-apply.js"></script>
+
 <script src="./i18n.js"></script>
 <script src="script.js" defer></script>
 <script>
@@ -17,6 +24,7 @@ document.addEventListener('alpine:init', () => {
     loading: true,
     error: null,
     selectedRepo: null,
+    searchQuery: '',
 
     async init() {
       this.loading = true;
@@ -37,6 +45,50 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
+    /**
+     * Repos filtered by current search query (case-insensitive name match).
+     */
+    get filteredRepos() {
+      const q = (this.searchQuery || '').toLowerCase();
+      if (!q) return this.repos;
+      return this.repos.filter(repo => (repo.name || '').toLowerCase().includes(q));
+    },
+
+    /**
+     * Filtered repos grouped by owner login. Returns an array of
+     * { owner: string, repos: Array } preserving first-seen order.
+     */
+    get groupedRepos() {
+      const groups = [];
+      const indexByKey = {};
+      for (const repo of this.filteredRepos) {
+        const owner = (repo.owner && repo.owner.login)
+          ? repo.owner.login
+          : ((repo.full_name || repo.name || '').split('/')[0] || '—');
+        if (indexByKey[owner] === undefined) {
+          indexByKey[owner] = groups.length;
+          groups.push({ owner, repos: [] });
+        }
+        groups[indexByKey[owner]].repos.push(repo);
+      }
+      return groups;
+    },
+
+    /**
+     * True when there are multiple distinct owners (group headers shown).
+     */
+    get hasMultipleOwners() {
+      const seen = new Set();
+      for (const repo of this.repos) {
+        const owner = (repo.owner && repo.owner.login)
+          ? repo.owner.login
+          : ((repo.full_name || repo.name || '').split('/')[0] || '—');
+        seen.add(owner);
+        if (seen.size > 1) return true;
+      }
+      return false;
+    },
+
     selectRepo(repo) {
       this.selectedRepo = repo;
     },
@@ -55,14 +107,26 @@ document.addEventListener('alpine:init', () => {
   }));
 });
 
-// Translate static [data-i18n] elements once i18n is ready
+// Apply translations to declarative [data-i18n] elements once i18n is ready.
+// Uses shared/i18n-apply.js (no inline DOM writes).
 document.addEventListener('DOMContentLoaded', async function() {
-  if (window.__i18nReady) await window.__i18nReady;
-  document.querySelectorAll('[data-i18n]').forEach(function(el) {
-    var key = el.getAttribute('data-i18n');
-    el.textContent = window.__t(key);
-  });
+  if (window.applyTranslations) {
+    await window.applyTranslations();
+  } else if (window.__i18nReady) {
+    await window.__i18nReady;
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      el.textContent = window.__t(el.getAttribute('data-i18n'));
+    });
+  }
   document.title = window.__t('repo_select.page_title');
+});
+
+// Inject logo SVG during parse (before paint) to avoid flicker.
+document.addEventListener('DOMContentLoaded', function() {
+  var slot = document.getElementById('page-logo');
+  if (slot && window.renderLogo) {
+    slot.innerHTML = renderLogo({ size: 'md' });
+  }
 });
 </script>
 <script src="./assets/js/alpine.min.js" defer></script>
@@ -70,38 +134,36 @@ document.addEventListener('DOMContentLoaded', async function() {
 <body class="bg-background-dark text-text-dark antialiased">
 <div class="flex flex-col h-screen">
 
-  <!-- Header -->
-  <header class="px-8 pt-8 pb-2">
+  <!-- Header (shrink-0) -->
+  <header class="shrink-0 px-8 py-header">
     <div class="max-w-4xl mx-auto">
-      <button data-navigate="index.html" class="flex items-center gap-2 text-muted-dark hover:text-text-dark transition-colors duration-200 mb-4">
+      <button data-navigate="index.html" class="btn-back">
         <span class="material-symbols-outlined">arrow_back</span>
         <span data-i18n="common.back">Back</span>
       </button>
       <div class="flex items-center justify-center gap-3 mb-2">
-        <svg class="h-9 w-9 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
-        </svg>
-        <h1 class="text-3xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
+        <span id="page-logo"></span>
+        <h1 class="text-4xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
       </div>
-      <p class="text-muted-dark text-base text-center whitespace-pre-line" data-i18n="repo_select.subtitle">Select an existing repository to use, or create a new fork.</p>
+      <p class="text-lg text-muted-dark text-center whitespace-pre-line" data-i18n="repo_select.subtitle">Select an existing repository to use, or create a new fork.</p>
     </div>
   </header>
 
   <!-- Main content (Alpine scope covers list + footer) -->
-  <div x-data="repoSelect" x-init="init()" class="flex-1 flex flex-col overflow-hidden">
+  <main x-data="repoSelect" x-init="init()" class="flex-1 overflow-hidden flex flex-col">
 
-    <!-- Scrollable repo list area -->
+    <!-- Scrollable repo list area (fixed-height box with internal scroll) -->
     <div class="flex-1 overflow-y-auto px-8 pb-6">
-      <div class="max-w-4xl mx-auto">
+      <div class="page-center max-w-4xl mx-auto w-full">
 
-        <!-- Loading state -->
-        <div x-show="loading" x-cloak class="flex justify-center items-center py-20">
+        <!-- Loading state (fixed-height container prevents layout shift) -->
+        <div x-show="loading" x-cloak class="flex justify-center items-center py-20 min-h-[16rem]">
           <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
           <span class="ml-4 text-muted-dark" x-text="__t('repo_select.loading_repos')">Loading repositories...</span>
         </div>
 
         <!-- Error state -->
-        <div x-show="error &amp;&amp; !loading" x-cloak class="text-center py-20">
+        <div x-show="error &amp;&amp; !loading" x-cloak class="text-center py-20 min-h-[16rem] flex flex-col items-center justify-center">
           <p class="text-danger mb-4" x-text="error"></p>
           <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
             <span class="material-symbols-outlined">refresh</span>
@@ -109,48 +171,104 @@ document.addEventListener('DOMContentLoaded', async function() {
           </button>
         </div>
 
-        <!-- Empty state -->
-        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length === 0" x-cloak class="text-center py-20">
+        <!-- Empty state: zero repos -->
+        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length === 0" x-cloak class="text-center py-10 text-muted-dark min-h-[16rem] flex flex-col items-center justify-center">
           <span class="material-symbols-outlined text-6xl text-muted-dark mb-4 block">inbox</span>
-          <p class="text-muted-dark mb-6" data-i18n="repo_select.empty_repos">No repositories found.</p>
+          <p class="mb-6"><span data-i18n="repo_select.no_repos">No repositories found</span></p>
           <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
             <span class="material-symbols-outlined">alt_route</span>
             <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
           </button>
         </div>
 
-        <!-- Repo list -->
-        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length > 0" x-cloak class="space-y-2 pt-2">
-          <template x-for="repo in repos" :key="repo.id">
-            <div @click="selectRepo(repo)"
-                 class="bg-surface-dark rounded-lg p-4 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
-                 :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
-              <div class="flex items-center justify-between gap-3">
-                <div class="flex flex-col min-w-0">
-                  <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
-                  <span class="text-sm text-muted-dark truncate" x-text="repo.full_name"></span>
+        <!-- Repo list (with filter + grid) -->
+        <div x-show="!loading &amp;&amp; !error &amp;&amp; repos.length > 0" x-cloak class="pt-2">
+
+          <!-- Search/filter -->
+          <div class="mb-4 flex items-center gap-3">
+            <div class="relative flex-1">
+              <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-muted-dark pointer-events-none">search</span>
+              <input type="search"
+                     x-model="searchQuery"
+                     data-i18n-placeholder="repo_select.search_placeholder"
+                     :placeholder="window.__t ? window.__t('repo_select.search_placeholder') : 'Search repositories...'"
+                     class="input w-full pl-10 pr-4 py-2 bg-surface-dark border border-border-subtle rounded-md text-text-dark placeholder-muted-dark focus:outline-none focus:ring-2 focus:ring-primary" />
+            </div>
+            <span class="text-sm text-muted-dark whitespace-nowrap" x-text="window.__t('repo_select.repo_count', { count: filteredRepos.length })"></span>
+          </div>
+
+          <!-- Empty state: filter has no matches -->
+          <div x-show="filteredRepos.length === 0" x-cloak class="text-center py-10 text-muted-dark">
+            <span class="material-symbols-outlined text-5xl text-muted-dark mb-3 block">search_off</span>
+            <span data-i18n="repo_select.no_match">No repositories match your search</span>
+          </div>
+
+          <!-- Single-owner layout: flat grid (no group headers) -->
+          <template x-if="!hasMultipleOwners">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <template x-for="repo in filteredRepos" :key="repo.id">
+                <div @click="selectRepo(repo)"
+                     class="bg-surface-dark rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
+                     :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex flex-col min-w-0 flex-1">
+                      <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
+                      <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
+                    </div>
+                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                      <template x-if="repo.name.toLowerCase().includes('documental')">
+                        <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                      </template>
+                      <template x-if="repo.private">
+                        <span class="badge-warning" x-text="__t('repo_select.private_repo_label')">Private</span>
+                      </template>
+                    </div>
+                  </div>
                 </div>
-                <div class="flex items-center gap-2 flex-shrink-0">
-                  <!-- Documental badge (case-insensitive) -->
-                  <template x-if="repo.name.toLowerCase().includes('documental')">
-                    <span class="px-2 py-1 text-xs rounded-full bg-primary text-white font-medium" x-text="__t('repo_select.documental_badge')">Documental</span>
-                  </template>
-                  <!-- Private repo badge -->
-                  <template x-if="repo.private">
-                    <span class="px-2 py-1 text-xs rounded-full bg-warning text-white" x-text="__t('repo_select.private_repo_label')">Private</span>
-                  </template>
-                </div>
-              </div>
-              <p x-show="repo.description" x-text="repo.description" class="text-sm text-muted-dark mt-1"></p>
+              </template>
             </div>
           </template>
+
+          <!-- Multi-owner layout: grouped grid with owner headers -->
+          <template x-if="hasMultipleOwners">
+            <div class="space-y-4">
+              <template x-for="group in groupedRepos" :key="group.owner">
+                <div>
+                  <h3 class="text-sm font-semibold text-muted-dark mt-4 mb-2 first:mt-0" x-text="group.owner"></h3>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <template x-for="repo in group.repos" :key="repo.id">
+                      <div @click="selectRepo(repo)"
+                           class="bg-surface-dark rounded-lg p-3 cursor-pointer transition-colors duration-200 hover:bg-surface-secondary"
+                           :class="selectedRepo &amp;&amp; selectedRepo.id === repo.id ? 'ring-2 ring-primary' : ''">
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="flex flex-col min-w-0 flex-1">
+                            <span class="font-medium text-text-dark truncate" x-text="repo.name"></span>
+                            <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
+                          </div>
+                          <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <template x-if="repo.name.toLowerCase().includes('documental')">
+                              <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                            </template>
+                            <template x-if="repo.private">
+                              <span class="badge-warning" x-text="__t('repo_select.private_repo_label')">Private</span>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
         </div>
 
       </div>
     </div>
 
-    <!-- Footer with action buttons -->
-    <footer x-show="!loading" x-cloak class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+    <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
+    <footer x-show="!loading &amp;&amp; !error" x-cloak class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
       <div class="flex justify-between items-center max-w-4xl mx-auto gap-3">
         <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
           <span class="material-symbols-outlined">alt_route</span>
@@ -164,7 +282,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       </div>
     </footer>
 
-  </div>
+  </main>
 </div>
 
 </body></html>

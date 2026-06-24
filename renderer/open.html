@@ -51,11 +51,15 @@
         }
     </style>
 <script src="./i18n.js"></script>
+<script src="./shared/layout.js"></script>
+<script src="./shared/footer.js"></script>
+<script src="./shared/logo.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="script.js" defer></script>
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
-<div class="flex flex-col h-screen" x-data="{
+<!-- Page wrapper: matches renderLayout() output from shared/layout.js ('flex flex-col h-screen' + 'flex-1 overflow-hidden' main + 'shrink-0' footer). -->
+<div class="flex flex-col h-screen" id="page-layout" x-data="{
         projectId: null,
         projectPath: '',
         githubUrl: '',
@@ -341,16 +345,24 @@
             await this.startOpenProcess();
         }
     }">
+<main class="flex-1 overflow-hidden flex flex-col">
 <div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
 <div class="w-full max-w-2xl">
 
+<button class="btn-back" data-navigate="index.html">
+<span class="material-symbols-outlined text-base">arrow_back</span>
+<span x-text="__t('common.back')">Back</span>
+</button>
+
 <div class="text-center mb-8">
 <div class="flex items-center justify-center gap-4 mb-3">
+<span id="page-logo"></span>
+<script>document.getElementById('page-logo').innerHTML = window.Documental && window.Documental.renderLogo ? window.Documental.renderLogo({ size: 'md' }) : '';</script>
 <template x-if="!allStepsSuccess">
 <div class="creative-loader"></div>
 </template>
 </div>
-<h1 class="text-3xl font-bold text-text-dark" x-text="__t('open.title')"></h1>
+<h1 class="text-4xl font-black text-text-dark" x-text="__t('open.title')"></h1>
 <p class="text-muted-dark text-base mt-1 whitespace-pre-line" x-text="__t('open.subtitle')">Aguarde enquanto preparamos seu projeto novamente.</p>
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
@@ -397,41 +409,50 @@
 </div>
 </div>
 </div>
+</main>
+<!-- Footer: 3-zone pattern (info | main buttons | progress) mirroring renderFooter() from shared/footer.js.
+     Kept inline (not via dynamic renderFooter call) so all Alpine directives on action buttons are present in the DOM stream before Alpine.js scans the tree. -->
+<footer class="shrink-0">
 <div class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
-<div class="flex justify-end gap-4 max-w-2xl mx-auto">
- <button @click="cancelProcess()" class="bg-red-600 hover:bg-red-500 text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-<span x-text="__t('common.cancel')"></span>
+    <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
+        <div class="flex-1 flex justify-start gap-2"></div>
+        <div class="flex justify-center gap-3">
+            <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+                <span x-text="__t('common.cancel')"></span>
+            </button>
+            <template x-if="!anyStepFailed">
+                <button :class="{'!bg-primary !hover:bg-primary-hover': allStepsSuccess}" :disabled="!allStepsSuccess" @click="allStepsSuccess ? (sessionStorage.setItem('currentProjectId', projectId), window.electronAPI.navigateTo('main.html')) : null" class="bg-surface-secondary text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:bg-surface-secondary disabled:cursor-not-allowed text-sm">
+                    <span x-text="allStepsSuccess ? __t('common.finish') : __t('common.advance')"></span>
                 </button>
-<template x-if="!anyStepFailed">
-<button :class="{'!bg-primary !hover:bg-primary-hover': allStepsSuccess}" :disabled="!allStepsSuccess" @click="allStepsSuccess ? (sessionStorage.setItem('currentProjectId', projectId), window.electronAPI.navigateTo('main.html')) : null" class="bg-surface-secondary text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:bg-surface-secondary disabled:cursor-not-allowed text-sm">
-<span x-text="allStepsSuccess ? __t('common.finish') : __t('common.advance')"></span>
-</button>
-</template>
-<template x-if="anyStepFailed">
-<button :disabled="!processFinished" @click="retryProcess()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
-                        <span x-text="__t('common.try_again')"></span>
-                    </button>
-</template>
+            </template>
+            <template x-if="anyStepFailed">
+                <button :disabled="!processFinished" @click="retryProcess()" class="bg-info hover:bg-info-dark text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                    <span x-text="__t('common.try_again')"></span>
+                </button>
+            </template>
+        </div>
+        <div class="flex-1 flex justify-end gap-2"></div>
+    </div>
 </div>
-</div>
+</footer>
 </div>
 
 <!-- Modal de confirmação para cancelar -->
 <div id="cancel-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;">
     <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
         <div class="flex items-center gap-3 mb-4">
-            <span class="material-symbols-outlined text-yellow-500 text-2xl">warning</span>
+            <span class="material-symbols-outlined text-warning text-2xl">warning</span>
             <h3 class="text-lg font-medium text-text-dark" x-text="__t('open.cancel_reopen_title')"></h3>
         </div>
         <p class="text-sm text-muted-dark mb-6 whitespace-pre-line" x-text="__t('open.cancel_reopen_desc')"></p>
         
         <div class="space-y-3">
             <button id="confirm-delete-btn" 
-                    class="w-full px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors duration-200">
+                    class="w-full px-4 py-2 text-sm font-medium text-white bg-danger rounded-md hover:bg-danger-dark transition-colors duration-200">
                 <span x-text="__t('open.yes_delete')"></span>
             </button>
             <button id="confirm-return-btn" 
-                    class="w-full px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-700 transition-colors duration-200">
+                    class="w-full px-4 py-2 text-sm font-medium text-white bg-warning rounded-md hover:bg-warning-dark transition-colors duration-200">
                 <span x-text="__t('open.yes_return')"></span>
             </button>
             <button id="cancel-modal-btn" 

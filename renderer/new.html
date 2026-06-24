@@ -7,6 +7,10 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <script src="./i18n.js"></script>
+<!-- Shared UI components (Tasks 3/4/6) -->
+<script src="./shared/layout.js"></script>
+<script src="./shared/footer.js"></script>
+<script src="./shared/logo.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -139,66 +143,90 @@ document.addEventListener('DOMContentLoaded', async () => {
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
 <div class="flex flex-col h-screen">
-<div class="flex-1 flex items-center justify-center p-8 pb-24">
-<div class="w-full max-w-2xl">
-<div class="text-center mb-10">
-<div class="flex items-center justify-center gap-4 mb-4">
-<svg class="h-10 w-10 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
-</svg>
-<h1 class="text-4xl font-black text-text-dark" data-i18n="new.title"></h1>
-</div>
-<p class="text-muted-dark text-lg whitespace-pre-line" data-i18n="new.subtitle"></p>
-</div>
 
-<div class="mb-6">
-<button data-navigate="index.html" class="flex items-center gap-2 text-muted-dark hover:text-text-dark transition-colors duration-200">
-<span class="material-symbols-outlined">arrow_back</span>
-<span data-i18n="new.back_home"></span>
-</button>
-</div>
-<div class="bg-surface-dark rounded-lg p-8 space-y-6">
-<div>
-<label class="block text-sm font-medium text-muted-dark mb-2" for="project-name" data-i18n="new.project_name"></label>
-<input class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="project-name" name="project-name" placeholder="" data-i18n-placeholder="new.project_name_placeholder" type="text"/>
-</div>
-<div>
-<label class="block text-sm font-medium text-muted-dark mb-2" for="github-url" data-i18n="new.github_url"></label>
-<input class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="github-url" name="github-url" placeholder="" data-i18n-placeholder="new.github_url_placeholder" type="url"/>
-</div>
-<div>
-<label class="block text-sm font-medium text-muted-dark mb-2" for="project-path" data-i18n="new.folder_path"></label>
-<div class="flex items-center space-x-2">
-<input class="flex-1 w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="project-path" name="project-path" type="text"/>
-<button class="bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-4 rounded-md flex items-center gap-2 transition-colors duration-300" id="select-folder-button">
-<span class="material-symbols-outlined text-xl">folder_open</span>
-<span data-i18n="select"></span>
-</button>
-</div>
-</div>
-</div>
-<div class="flex items-center gap-3 pt-2">
-<label class="relative inline-flex items-center cursor-pointer">
-<input type="checkbox" id="enable-pages-toggle" class="sr-only peer" checked=""/>
-<div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
-<div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
-</label>
-<div class="flex items-center gap-1">
-<span class="text-sm text-text-dark" data-i18n="new.enable_github_pages"></span>
-<span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.github_pages_tooltip" title="">help</span>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
-<div class="flex justify-end max-w-2xl mx-auto">
-<button class="bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 text-sm" id="create-project-button">
-<span class="material-symbols-outlined">add_circle</span>
-<span data-i18n="new.create_project"></span>
-</button>
-</div>
-</div>
+  <!-- ===== HEADER (shrink-0) ===== -->
+  <header class="shrink-0 pt-header px-8">
+    <div class="max-w-2xl mx-auto text-center">
+      <a class="btn-back" data-navigate="index.html" href="#">
+        <span class="material-symbols-outlined">arrow_back</span>
+        <span data-i18n="new.back_home"></span>
+      </a>
+      <div class="flex items-center justify-center gap-4 mb-4">
+        <span id="page-logo"></span>
+        <script>
+          (function() {
+            var logoHost = document.getElementById('page-logo');
+            if (logoHost && window.Documental && window.Documental.renderLogo) {
+              logoHost.innerHTML = window.Documental.renderLogo({ size: 'md' });
+            }
+          })();
+        </script>
+        <h1 class="text-4xl font-black text-text-dark" data-i18n="new.title"></h1>
+      </div>
+      <p class="text-lg text-muted-dark whitespace-pre-line" data-i18n="new.subtitle"></p>
+    </div>
+  </header>
+
+  <!-- ===== MAIN (flex-1 overflow-hidden — Opção C: footer always visible) ===== -->
+  <main class="flex-1 overflow-hidden flex flex-col">
+    <div class="flex-1 flex items-center justify-center px-8 pb-8 overflow-y-auto">
+      <div class="w-full max-w-2xl">
+
+        <div class="bg-surface-dark rounded-lg p-8 space-y-6">
+          <div>
+            <label class="block text-sm font-medium text-muted-dark mb-2" for="project-name" data-i18n="new.project_name"></label>
+            <input class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="project-name" name="project-name" placeholder="" data-i18n-placeholder="new.project_name_placeholder" type="text"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-muted-dark mb-2" for="github-url" data-i18n="new.github_url"></label>
+            <input class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="github-url" name="github-url" placeholder="" data-i18n-placeholder="new.github_url_placeholder" type="url"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-muted-dark mb-2" for="project-path" data-i18n="new.folder_path"></label>
+            <div class="flex items-center space-x-2">
+              <input class="flex-1 w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="project-path" name="project-path" type="text"/>
+              <button class="btn-secondary px-4 py-2 text-sm flex items-center gap-2" id="select-folder-button">
+                <span class="material-symbols-outlined text-xl">folder_open</span>
+                <span data-i18n="select"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-3 pt-2">
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="enable-pages-toggle" class="sr-only peer" checked=""/>
+            <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
+            <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
+          </label>
+          <div class="flex items-center gap-1">
+            <span class="text-sm text-text-dark" data-i18n="new.enable_github_pages"></span>
+            <span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.github_pages_tooltip" title="">help</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== FOOTER (shrink-0 — Opção C: always visible) ===== -->
+  <footer class="shrink-0">
+    <div class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+      <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
+        <div class="flex-1 flex justify-start gap-2">
+          <span class="text-sm text-muted-dark" data-i18n="new.subtitle"></span>
+        </div>
+        <div class="flex justify-center gap-3">
+          <button class="btn-primary px-5 py-2 font-semibold text-sm flex items-center gap-2" id="create-project-button">
+            <span class="material-symbols-outlined">add_circle</span>
+            <span data-i18n="new.create_project"></span>
+          </button>
+        </div>
+        <div class="flex-1 flex justify-end gap-2"></div>
+      </div>
+    </div>
+  </footer>
+
 </div>
 
 </body></html>

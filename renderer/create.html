@@ -52,6 +52,8 @@
     </style>
 <script src="./i18n.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
+<script src="./shared/logo.js"></script>
+<script src="./shared/footer.js"></script>
 <script src="script.js" defer></script>
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
@@ -412,8 +414,9 @@
             
             sessionStorage.removeItem(`projectCreationState-${this.projectId}`);
             await this.startCreationProcess();
-        }
-    }">
+    }
+}">
+<main class="flex-1 overflow-hidden flex flex-col">
 <div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
 <div class="w-full max-w-2xl">
 
@@ -423,7 +426,6 @@
 <div class="creative-loader"></div>
 </template>
 </div>
-<h1 class="text-3xl font-bold text-text-dark" x-text="isReopenMode ? __t('create.reopening_workspace') : __t('create.creating_workspace')"></h1>
 <p class="text-muted-dark text-base mt-1 whitespace-pre-line" x-text="isReopenMode ? __t('create.reopening_subtitle') : __t('create.creating_subtitle')"></p>
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
@@ -436,16 +438,16 @@
 <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
 </template>
 <template x-if="step.status === 'success'">
-<span class="material-symbols-outlined text-green-500 text-xl">check_circle</span>
+<span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-success/20 text-success"><span class="material-symbols-outlined text-xl">check_circle</span></span>
 </template>
 <template x-if="step.status === 'failure'">
-<span class="material-symbols-outlined text-red-500 text-xl">error</span>
+<span class="material-symbols-outlined text-danger text-xl">error</span>
 </template>
 <template x-if="step.status === 'pending'">
 <div class="w-4 h-4 border-2 border-border-subtle rounded-full"></div>
 </template>
 </div>
-<span :class="{ 'text-muted-dark': step.status === 'pending', 'text-text-dark font-semibold': step.status === 'success', 'text-text-dark': step.status === 'active', 'text-red-400': step.status === 'failure' }" class="font-medium" x-text="step.title"></span>
+<span :class="{ 'text-muted-dark': step.status === 'pending', 'text-text-dark font-semibold': step.status === 'success', 'text-text-dark': step.status === 'active', 'text-danger': step.status === 'failure' }" class="font-medium" x-text="step.title"></span>
 </div>
 <span :class="{ 'rotate-180': step.expanded }" class="material-symbols-outlined transition-transform">expand_more</span>
 </div>
@@ -461,9 +463,13 @@
 </div>
 </div>
 </div>
-<div class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
-<div class="flex justify-end gap-4 max-w-2xl mx-auto">
- <button @click="cancelProcess()" class="bg-red-600 hover:bg-red-500 text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+</main>
+<footer class="shrink-0">
+<div class="p-4 border-t border-border-subtle bg-surface-dark">
+    <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
+        <div id="footer-info-slot" class="flex-1 flex justify-start gap-2"><span class="text-xs text-muted-dark" x-text="steps.filter(s =&gt; s.status === 'success').length + ' / ' + steps.length"></span></div>
+        <div class="flex justify-center gap-3">
+ <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
                     <span x-text="__t('common.cancel')">Cancel</span>
                 </button>
 <template x-if="!anyStepFailed">
@@ -472,30 +478,33 @@
 </button>
 </template>
 <template x-if="anyStepFailed">
-<button :disabled="!processFinished" @click="retryProcess()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
-                        <span x-text="__t('common.try_again')">Try Again</span>
-                    </button>
+<button :disabled="!processFinished" @click="retryProcess()" class="bg-info hover:bg-info-dark text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                    <span x-text="__t('common.try_again')">Try Again</span>
+                </button>
 </template>
+        </div>
+        <div class="flex-1 flex justify-end gap-2"></div>
+    </div>
 </div>
-</div>
+</footer>
 </div>
 
 <!-- Modal de confirmação para cancelar -->
 <div id="cancel-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;">
     <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
         <div class="flex items-center gap-3 mb-4">
-            <span class="material-symbols-outlined text-yellow-500 text-2xl">warning</span>
+            <span class="material-symbols-outlined text-warning text-2xl">warning</span>
             <h3 class="text-lg font-medium text-text-dark" x-text="__t('create.cancel_creation_title')"></h3>
         </div>
         <p class="text-sm text-muted-dark mb-6 whitespace-pre-line" x-text="__t('create.cancel_creation_desc')"></p>
         
         <div class="space-y-3">
             <button id="confirm-delete-btn" 
-                    class="w-full px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors duration-200">
+                    class="w-full px-4 py-2 text-sm font-medium text-white bg-danger rounded-md hover:bg-danger-dark transition-colors duration-200">
                 <span x-text="__t('create.yes_delete')"></span>
             </button>
             <button id="confirm-return-btn" 
-                    class="w-full px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-700 transition-colors duration-200">
+                    class="w-full px-4 py-2 text-sm font-medium text-on-warning bg-warning rounded-md hover:bg-warning-dark transition-colors duration-200">
                 <span x-text="__t('create.yes_return')"></span>
             </button>
             <button id="cancel-modal-btn" 
@@ -506,4 +515,13 @@
     </div>
 </div>
 
+<script>
+// Inject logo using shared component (Opção C shell wizard)
+(function() {
+    var logoSlot = document.getElementById('logo-slot');
+    if (logoSlot && window.Documental && window.Documental.renderLogo) {
+        logoSlot.innerHTML = window.Documental.renderLogo({ size: 'md' });
+    }
+})();
+</script>
 </body></html>
