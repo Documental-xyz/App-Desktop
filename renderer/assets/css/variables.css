@@ -61,4 +61,8 @@
   --color-surface-card: var(--doc-card);
   --color-surface-card-alt: var(--doc-card-alt);
   --color-surface-secondary: var(--doc-secondary);
+  --color-on-primary: #ffffff;
+  --color-on-warning: #ffffff;
+  --color-on-danger: #ffffff;
+  --color-on-info: #ffffff;
 }
