@@ -105,6 +105,10 @@ welcome:
   create_account_instructions: "Crea tu cuenta gratuita de GitHub. Toma menos de 2 minutos."
   create_github_account_button: "Crear cuenta de GitHub"
   create_account_return: "Después de crear, vuelve y haz clic en \"Sí\""
+  # Footer links
+  footer_link_about: "Acerca de"
+  footer_link_help: "Ayuda"
+  footer_link_license: "Licencia"
   # Footer
   step_of: "Paso {current} de {total}"
 
