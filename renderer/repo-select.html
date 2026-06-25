@@ -50,6 +50,9 @@ document.addEventListener('alpine:init', () => {
         const result = await window.electronAPI.listUserRepos();
         if (result.success) {
           this.repos = result.repos || [];
+          // Loading done — now scan for documental repos (shows scanning spinner)
+          this.loading = false;
+          await this.scanDocumentalRepos();
         } else {
           this.error = result.error || __t('repo_select.error_generic') || 'Failed to load repositories';
         }
