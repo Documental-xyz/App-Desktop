@@ -90,6 +90,162 @@ class GithubReposHandlers {
     return { success: true, repos: allRepos };
   }
 
+  /**
+   * Finds all repositories containing a documental.json marker file.
+   * Uses GitHub Code Search API for efficiency (1-N calls instead of N calls).
+   * @returns {Promise<{success: boolean, documentalRepos?: string[], fallback?: boolean, error?: string}>}
+   */
+  async findDocumentalRepos() {
+    let token;
+    try {
+      token = await secureTokenService.getToken();
+    } catch (error) {
+      this.logger.error('Error getting GitHub token for documental repo search:', error);
+      return { success: false, error: 'Failed to retrieve authentication token' };
+    }
+
+    if (!token) {
+      return { success: false, error: 'No GitHub token available' };
+    }
+
+    let octokit;
+    try {
+      const { Octokit } = await import('@octokit/rest');
+      octokit = new Octokit({ auth: token });
+    } catch (error) {
+      this.logger.error('Error initializing Octokit for documental repo search:', error);
+      return { success: false, error: 'Failed to initialize GitHub client' };
+    }
+
+    const documentalRepos = new Set();
+
+    try {
+      const { data: user } = await octokit.rest.users.getAuthenticated();
+
+      // Personal repos: search by filename qualifier. Note: space (not +) between qualifiers
+      // because octokit encodes '+' as %2B; literal space becomes '+' in the URL query.
+      try {
+        const userSearch = await octokit.rest.search.code({
+          q: `filename:documental.json user:${user.login}`
+        });
+        for (const item of userSearch.data.items) {
+          documentalRepos.add(item.repository.full_name);
+        }
+      } catch (error) {
+        if (error.status === 422) {
+          // Qualifier-only query rejected — retry with a literal search term.
+          this.logger.warn('Code search 422 on user qualifier-only query; retrying with literal term');
+          try {
+            const userSearchAlt = await octokit.rest.search.code({
+              q: `documental filename:documental.json user:${user.login}`
+            });
+            for (const item of userSearchAlt.data.items) {
+              documentalRepos.add(item.repository.full_name);
+            }
+          } catch (innerError) {
+            this.logger.warn('Code search alternative query also failed for user:', innerError.message);
+            throw innerError;
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      // Org repos: enumerate orgs and search each sequentially (rate limit = 10/min).
+      const { data: orgs } = await octokit.rest.orgs.listForAuthenticatedUser();
+      for (const org of orgs) {
+        try {
+          const orgSearch = await octokit.rest.search.code({
+            q: `filename:documental.json org:${org.login}`
+          });
+          for (const item of orgSearch.data.items) {
+            documentalRepos.add(item.repository.full_name);
+          }
+        } catch (error) {
+          if (error.status === 422) {
+            this.logger.warn(`Code search 422 on org qualifier-only query (${org.login}); retrying with literal term`);
+            try {
+              const orgSearchAlt = await octokit.rest.search.code({
+                q: `documental filename:documental.json org:${org.login}`
+              });
+              for (const item of orgSearchAlt.data.items) {
+                documentalRepos.add(item.repository.full_name);
+              }
+            } catch (innerError) {
+              this.logger.warn(`Code search alternative query failed for org ${org.login}:`, innerError.message);
+            }
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      return { success: true, documentalRepos: Array.from(documentalRepos) };
+    } catch (error) {
+      if (error.status === 403) {
+        this.logger.warn('GitHub rate limit hit during code search; attempting getContent fallback');
+      } else if (error.status === 401) {
+        this.logger.warn('GitHub token expired during documental repo search');
+        return { success: false, error: 'GitHub token expired or invalid. Please re-authenticate.' };
+      } else {
+        this.logger.warn('Code search failed; attempting getContent fallback:', error.message);
+      }
+
+      // Fallback: enumerate repos via listForAuthenticatedUser and probe documental.json via getContent.
+      try {
+        const allRepos = [];
+        let page = 1;
+        const perPage = 100;
+        while (allRepos.length < MAX_REPOS) {
+          const response = await octokit.repos.listForAuthenticatedUser({
+            per_page: perPage,
+            page,
+            sort: 'updated',
+            affiliation: 'owner,collaborator'
+          });
+          if (!response.data || response.data.length === 0) {
+            break;
+          }
+          allRepos.push(...response.data);
+          if (response.data.length < perPage) {
+            break;
+          }
+          page++;
+        }
+
+        const fallbackRepos = new Set();
+        // Chunk in groups of 10 to limit concurrency.
+        const chunkSize = 10;
+        for (let i = 0; i < allRepos.length; i += chunkSize) {
+          const chunk = allRepos.slice(i, i + chunkSize);
+          const results = await Promise.allSettled(
+            chunk.map((repo) =>
+              octokit.repos.getContent({
+                owner: repo.owner.login,
+                repo: repo.name,
+                path: 'documental.json'
+              })
+            )
+          );
+          results.forEach((result, idx) => {
+            if (result.status === 'fulfilled') {
+              fallbackRepos.add(chunk[idx].full_name);
+            }
+            // 404 (rejected) = file not present, ignore.
+          });
+        }
+
+        return { success: true, documentalRepos: Array.from(fallbackRepos), fallback: true };
+      } catch (fallbackError) {
+        if (fallbackError.status === 403) {
+          return { success: false, error: 'GitHub API rate limit exceeded. Try again later.' };
+        }
+        this.logger.error('Documental repo search fallback failed:', fallbackError);
+        return { success: false, error: fallbackError.message };
+      }
+    }
+  }
+
   registerHandlers() {
     this.logger.info('Registering GitHub Repos IPC handlers');
     ipcMain.handle('github:list-user-repos', async () => {
@@ -100,11 +256,15 @@ class GithubReposHandlers {
         return { success: false, error: error.message };
       }
     });
+    ipcMain.handle('github:find-documental-repos', async () => {
+      return await this.findDocumentalRepos();
+    });
   }
 
   unregisterHandlers() {
     this.logger.info('Unregistering GitHub Repos IPC handlers');
     ipcMain.removeHandler('github:list-user-repos');
+    ipcMain.removeHandler('github:find-documental-repos');
   }
 }
 

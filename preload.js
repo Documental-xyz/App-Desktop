@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openInFileExplorer: (path) => ipcRenderer.invoke('open-file-explorer', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   listUserRepos: () => ipcRenderer.invoke('github:list-user-repos'),
+  findDocumentalRepos: () => ipcRenderer.invoke('github:find-documental-repos'),
   // Path utility functions
   joinPath: (...segments) => ipcRenderer.invoke('join-path', ...segments),
   normalizePath: (filePath) => ipcRenderer.invoke('normalizePath', filePath),
