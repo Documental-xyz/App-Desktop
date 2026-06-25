@@ -33,6 +33,7 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('repoSelect', () => ({
     repos: [],
     loading: true,
+    scanning: false,
     error: null,
     selectedRepo: null,
     searchQuery: '',
@@ -66,7 +67,7 @@ document.addEventListener('alpine:init', () => {
       const q = (this.searchQuery || '').toLowerCase();
       let list = this.repos;
       if (this.documentalFilter) {
-        list = list.filter(repo => (repo.name || '').toLowerCase().includes('documental'));
+        list = list.filter(repo => repo.isDocumental === true);
       }
       if (this.privateFilter) {
         list = list.filter(repo => repo.private === true);
@@ -129,6 +130,39 @@ document.addEventListener('alpine:init', () => {
     createFork() {
       sessionStorage.setItem('repoSelectMode', 'fork');
       window.electronAPI.navigateTo('new.html');
+    },
+
+    /**
+     * Detects which repos are Documental repos via backend scan.
+     * Sets repo.isDocumental on each entry. Defensive: always clears
+     * the scanning flag via timeout + finally.
+     */
+    async scanDocumentalRepos() {
+      this.scanning = true;
+      // 15s safety timeout that clears scanning regardless of result
+      const timeoutId = setTimeout(() => {
+        this.scanning = false;
+      }, 15000);
+      try {
+        const result = await window.electronAPI.findDocumentalRepos();
+        if (result && result.success && Array.isArray(result.documentalRepos)) {
+          for (const repo of this.repos) {
+            repo.isDocumental = result.documentalRepos.includes(repo.full_name);
+          }
+        } else {
+          for (const repo of this.repos) {
+            repo.isDocumental = false;
+          }
+        }
+      } catch (err) {
+        console.warn('Documental detection failed:', err);
+        for (const repo of this.repos) {
+          repo.isDocumental = false;
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        this.scanning = false;
+      }
     }
   }));
 });
@@ -182,6 +216,12 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="flex-1 overflow-y-auto px-8 pb-6">
       <div class="page-center max-w-4xl mx-auto w-full repo-content">
 
+        <!-- Scanning state (documental detection) -->
+        <div x-show="scanning" x-cloak class="flex flex-col items-center justify-center space-y-4 py-20 min-h-[16rem]">
+          <div class="w-16 h-16 border-4 border-border-default border-t-primary rounded-full animate-spin"></div>
+          <p class="text-xs uppercase tracking-[0.3em] text-muted-dark" x-text="__t('repo_select.scanning_documental')">Buscando repositórios Documental</p>
+        </div>
+
         <!-- Loading state (fixed-height container prevents layout shift) -->
         <div x-show="loading" x-cloak class="flex justify-center items-center py-20 min-h-[16rem]">
           <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
@@ -189,7 +229,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
 
         <!-- Error state -->
-        <div x-show="error &amp;&amp; !loading" x-cloak class="text-center py-20 min-h-[16rem] flex flex-col items-center justify-center">
+        <div x-show="error &amp;&amp; !loading &amp;&amp; !scanning" x-cloak class="text-center py-20 min-h-[16rem] flex flex-col items-center justify-center">
           <p class="text-danger mb-4" x-text="error"></p>
           <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
             <span class="material-symbols-outlined">refresh</span>
@@ -198,7 +238,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
 
         <!-- Repo list (with filter + toggle + scrollable grid) -->
-        <div x-show="!loading &amp;&amp; !error" x-cloak class="w-full pt-2">
+        <div x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="w-full pt-2">
 
           <!-- Search/filter -->
           <div class="mb-4 flex items-center gap-3">
@@ -254,6 +294,11 @@ document.addEventListener('DOMContentLoaded', function() {
             </button>
           </div>
 
+          <!-- Empty state: no documental repos found -->
+          <div x-show="documentalFilter &amp;&amp; filteredRepos.length === 0 &amp;&amp; repos.length > 0" x-cloak class="flex flex-col items-center justify-center py-12 text-center">
+            <p class="text-muted-dark whitespace-pre-line" x-text="__t('repo_select.no_documental_repos')"></p>
+          </div>
+
           <!-- Fixed-height scrollable repo grid -->
           <div x-show="filteredRepos.length > 0" x-cloak class="border border-border-subtle rounded-lg bg-surface-dark text-left" style="max-height: 540px; overflow-y: auto;">
 
@@ -270,9 +315,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                       </div>
                       <div class="flex items-center gap-1.5 flex-shrink-0">
-                        <template x-if="repo.name.toLowerCase().includes('documental')">
-                          <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                        </template>
+                        <template x-if="repo.isDocumental">
+                           <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                         </template>
                         <template x-if="repo.private">
                           <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
                         </template>
@@ -300,7 +345,7 @@ document.addEventListener('DOMContentLoaded', function() {
                               <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                             </div>
                             <div class="flex items-center gap-1.5 flex-shrink-0">
-                              <template x-if="repo.name.toLowerCase().includes('documental')">
+                              <template x-if="repo.isDocumental">
                                 <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
                               </template>
                               <template x-if="repo.private">
@@ -324,7 +369,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 
     <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
-    <footer x-show="!loading &amp;&amp; !error" x-cloak class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+    <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
       <div class="flex justify-between items-center max-w-4xl mx-auto gap-3">
         <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
           <span class="material-symbols-outlined">alt_route</span>
