@@ -256,6 +256,8 @@ repo_select:
   filter_private: "Private"
   filter_personal: "Personal"
   repo_count: "{count} repositories"
+  scanning_documental: "Searching Documental repositories"
+  no_documental_repos: "No Documental repositories found.\nTry disabling the filter or create a new fork."
 
 create:
   page_title: "Documental - Creating Workspace"
