@@ -33,32 +33,37 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('repoSelect', () => ({
     repos: [],
     loading: true,
-    scanning: false,
+    scanning: true,
     error: null,
     selectedRepo: null,
     searchQuery: '',
     documentalFilter: true,
     privateFilter: false,
     personalFilter: false,
+    showNonDocumentalConfirm: false,
 
     async init() {
       this.loading = true;
+      this.scanning = true;
       this.error = null;
       try {
-        // Ensure translations are ready before rendering labels
         if (window.__i18nReady) await window.__i18nReady;
         const result = await window.electronAPI.listUserRepos();
         if (result.success) {
           this.repos = result.repos || [];
-          // Loading done — now scan for documental repos (shows scanning spinner)
-          this.loading = false;
-          await this.scanDocumentalRepos();
+          await this._scanAndMarkDocumental();
         } else {
           this.error = result.error || __t('repo_select.error_generic') || 'Failed to load repositories';
         }
       } catch (err) {
         this.error = (err && err.message) ? err.message : 'Failed to load repositories';
       } finally {
+        // Force Alpine to process the repos array change BEFORE clearing flags.
+        // Without this, Alpine may render the content section (loading=false)
+        // with a stale filteredRepos value (empty), causing a flash of the
+        // "no repos found" empty state before the actual list appears.
+        await this.$nextTick();
+        this.scanning = false;
         this.loading = false;
       }
     },
@@ -125,9 +130,28 @@ document.addEventListener('alpine:init', () => {
 
     continueWithSelected() {
       if (!this.selectedRepo) return;
+      if (this.selectedRepo.isDocumental) {
+        // Documental repo — proceed directly
+        this._navigateToNew();
+      } else {
+        // Non-Documental repo — show confirmation modal
+        this.showNonDocumentalConfirm = true;
+      }
+    },
+
+    _navigateToNew() {
       sessionStorage.setItem('repoSelectMode', 'existing');
       sessionStorage.setItem('selectedRepo', JSON.stringify(this.selectedRepo));
       window.electronAPI.navigateTo('new.html');
+    },
+
+    confirmNonDocumental() {
+      this.showNonDocumentalConfirm = false;
+      this._navigateToNew();
+    },
+
+    cancelNonDocumental() {
+      this.showNonDocumentalConfirm = false;
     },
 
     createFork() {
@@ -137,34 +161,27 @@ document.addEventListener('alpine:init', () => {
 
     /**
      * Detects which repos are Documental repos via backend scan.
-     * Sets repo.isDocumental on each entry. Defensive: always clears
-     * the scanning flag via timeout + finally.
+     * Rebuilds the repos array with isDocumental flag so Alpine
+     * detects the change reactively. Does NOT manage the scanning
+     * flag — caller is responsible for that.
      */
-    async scanDocumentalRepos() {
-      this.scanning = true;
-      // 15s safety timeout that clears scanning regardless of result
-      const timeoutId = setTimeout(() => {
-        this.scanning = false;
-      }, 15000);
+    async _scanAndMarkDocumental() {
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 15000));
       try {
-        const result = await window.electronAPI.findDocumentalRepos();
-        if (result && result.success && Array.isArray(result.documentalRepos)) {
-          for (const repo of this.repos) {
-            repo.isDocumental = result.documentalRepos.includes(repo.full_name);
-          }
-        } else {
-          for (const repo of this.repos) {
-            repo.isDocumental = false;
-          }
-        }
+        const result = await Promise.race([
+          window.electronAPI.findDocumentalRepos(),
+          timeoutPromise
+        ]);
+        const documentalSet = (result && result.success && Array.isArray(result.documentalRepos))
+          ? new Set(result.documentalRepos)
+          : new Set();
+        this.repos = this.repos.map(repo => ({
+          ...repo,
+          isDocumental: documentalSet.has(repo.full_name)
+        }));
       } catch (err) {
         console.warn('Documental detection failed:', err);
-        for (const repo of this.repos) {
-          repo.isDocumental = false;
-        }
-      } finally {
-        clearTimeout(timeoutId);
-        this.scanning = false;
+        this.repos = this.repos.map(repo => ({ ...repo, isDocumental: false }));
       }
     }
   }));
@@ -200,10 +217,6 @@ document.addEventListener('DOMContentLoaded', function() {
   <!-- Header (shrink-0) -->
   <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
     <div class="max-w-4xl mx-auto mt-auto">
-      <button data-navigate="index.html" class="btn-back">
-        <span class="material-symbols-outlined">arrow_back</span>
-        <span data-i18n="common.back">Back</span>
-      </button>
       <div class="flex items-center justify-center gap-3 mb-2">
         <span id="page-logo"></span>
         <h1 class="text-5xl font-black text-text-dark" data-i18n="repo_select.title">Choose a Repository</h1>
@@ -226,7 +239,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
 
         <!-- Loading state (fixed-height container prevents layout shift) -->
-        <div x-show="loading" x-cloak class="flex justify-center items-center py-20 min-h-[16rem]">
+        <div x-show="loading &amp;&amp; !scanning" x-cloak class="flex justify-center items-center py-20 min-h-[16rem]">
           <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
           <span class="ml-4 text-muted-dark" x-text="__t('repo_select.loading_repos')">Loading repositories...</span>
         </div>
@@ -297,11 +310,6 @@ document.addEventListener('DOMContentLoaded', function() {
             </button>
           </div>
 
-          <!-- Empty state: no documental repos found -->
-          <div x-show="documentalFilter &amp;&amp; filteredRepos.length === 0 &amp;&amp; repos.length > 0" x-cloak class="flex flex-col items-center justify-center py-12 text-center">
-            <p class="text-muted-dark whitespace-pre-line" x-text="__t('repo_select.no_documental_repos')"></p>
-          </div>
-
           <!-- Fixed-height scrollable repo grid -->
           <div x-show="filteredRepos.length > 0" x-cloak class="border border-border-subtle rounded-lg bg-surface-dark text-left" style="max-height: 540px; overflow-y: auto;">
 
@@ -318,12 +326,15 @@ document.addEventListener('DOMContentLoaded', function() {
                         <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                       </div>
                       <div class="flex items-center gap-1.5 flex-shrink-0">
-                        <template x-if="repo.isDocumental">
-                           <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                         <template x-if="repo.isDocumental">
+                            <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                          </template>
+                         <template x-if="repo.fork">
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);" x-text="__t('repo_select.fork_badge')">Fork</span>
+                          </template>
+                         <template x-if="repo.private">
+                           <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
                          </template>
-                        <template x-if="repo.private">
-                          <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
-                        </template>
                       </div>
                     </div>
                   </div>
@@ -348,12 +359,15 @@ document.addEventListener('DOMContentLoaded', function() {
                               <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                             </div>
                             <div class="flex items-center gap-1.5 flex-shrink-0">
-                              <template x-if="repo.isDocumental">
-                                <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                              </template>
-                              <template x-if="repo.private">
-                                <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
-                              </template>
+                               <template x-if="repo.isDocumental">
+                                 <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                               </template>
+                               <template x-if="repo.fork">
+                                  <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);" x-text="__t('repo_select.fork_badge')">Fork</span>
+                                </template>
+                               <template x-if="repo.private">
+                                 <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
+                               </template>
                             </div>
                           </div>
                         </div>
@@ -373,18 +387,46 @@ document.addEventListener('DOMContentLoaded', function() {
 
     <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
     <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
-      <div class="flex justify-between items-center max-w-4xl mx-auto gap-3">
-        <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-          <span class="material-symbols-outlined">alt_route</span>
-          <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
-        </button>
-        <button @click="continueWithSelected()" :disabled="!selectedRepo"
-                class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-          <span class="material-symbols-outlined">arrow_forward</span>
-          <span data-i18n="repo_select.button_continue">Continue</span>
-        </button>
+      <div class="flex items-center max-w-4xl mx-auto gap-3">
+        <!-- Left: Back button -->
+        <div class="flex-1 flex justify-start">
+          <button data-navigate="index.html" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+            <span class="material-symbols-outlined">arrow_back</span>
+            <span data-i18n="common.back">Back</span>
+          </button>
+        </div>
+        <!-- Center: Create fork -->
+        <div class="flex justify-center">
+          <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+            <span class="material-symbols-outlined">alt_route</span>
+            <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+          </button>
+        </div>
+        <!-- Right: Continue -->
+        <div class="flex-1 flex justify-end">
+          <button @click="continueWithSelected()" :disabled="!selectedRepo"
+                  class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+            <span class="material-symbols-outlined">arrow_forward</span>
+            <span data-i18n="repo_select.button_continue">Continue</span>
+          </button>
+        </div>
       </div>
     </footer>
+
+    <!-- Confirmation modal: non-Documental repo selected -->
+    <div x-show="showNonDocumentalConfirm" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" @click.self="cancelNonDocumental()">
+      <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4" @click.stop>
+        <div class="flex items-center gap-3 mb-4">
+          <span class="material-symbols-outlined text-2xl" style="color: var(--color-warning);">warning</span>
+          <h3 class="text-lg font-medium text-text-dark" x-text="__t('repo_select.confirm_non_documental_title')">Tem certeza que deseja selecionar um repositório não identificado como Documental?</h3>
+        </div>
+        <p class="text-sm text-muted-dark mb-6" x-text="__t('repo_select.confirm_non_documental_desc')">Se não tiver certeza que esse repositório é um projeto Documental, selecioná-lo poderá gerar erros ao tentar criar o ambiente de trabalho.</p>
+        <div class="flex justify-end gap-3">
+          <button @click="cancelNonDocumental()" class="px-4 py-2 text-sm font-medium text-text-dark bg-surface-secondary rounded-md hover:bg-surface-dark transition-colors duration-200" data-i18n="common.cancel">Cancelar</button>
+          <button @click="confirmNonDocumental()" class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary-hover transition-colors duration-200">Sim, tenho certeza</button>
+        </div>
+      </div>
+    </div>
 
   </main>
 </div>
