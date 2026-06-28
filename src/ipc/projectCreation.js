@@ -242,7 +242,7 @@ class ProjectCreationHandler {
     const fallbackName = 'documental-project';
     const repoName = repoUrl ? repoUrl.split('/').pop().replace('.git', '') : fallbackName;
     const slug = projectName
-      ? projectName.toString().toLowerCase()
+      ? projectName.toString().trim()
           .replace(/\s+/g, '-')
           .replace(/[^\w\-]+/g, '')
           .replace(/\-\-+/g, '-')
@@ -279,7 +279,7 @@ class ProjectCreationHandler {
    * @param {string} [projectName] - User-provided project name (for folder slug)
    * @returns {Promise<Object>} Result object
    */
-   async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) {
+    async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false, organization = null) {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -360,7 +360,7 @@ class ProjectCreationHandler {
         const { githubForkService } = require('../services/githubForkService.js');
 
         const forkSlug = projectName
-          ? projectName.toString().toLowerCase()
+          ? projectName.toString().trim()
               .replace(/\s+/g, '-')
               .replace(/[^\w\-]+/g, '')
               .replace(/\-\-+/g, '-')
@@ -369,7 +369,7 @@ class ProjectCreationHandler {
           : null;
 
         try {
-          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output, forkSlug);
+          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output, forkSlug, organization);
           if (result.success) {
             repoUrl = result.forkCloneUrl;
             step0Output(t('create.fork_ready') + '\n');
@@ -841,9 +841,9 @@ class ProjectCreationHandler {
     /**
      * Start complete project creation
      */
-    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) => {
+    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false, organization = null) => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages, organization);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;
@@ -859,6 +859,16 @@ class ProjectCreationHandler {
         return await githubForkService.checkRepoExists(repoName);
       } catch (error) {
         this.logger.error('Error in check-repo-exists handler:', error);
+        return { exists: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle('check-fork-exists', async (event, sourceOwner, sourceRepo, targetOwner) => {
+      try {
+        const { githubForkService } = require('../services/githubForkService.js');
+        return await githubForkService.checkForkExists(sourceOwner, sourceRepo, targetOwner);
+      } catch (error) {
+        this.logger.error('Error in check-fork-exists handler:', error);
         return { exists: false, error: error.message };
       }
     });
@@ -915,6 +925,7 @@ class ProjectCreationHandler {
     ipcMain.removeHandler('open-project-only-preview-and-server');
     ipcMain.removeHandler('reopen-project');
     ipcMain.removeHandler('cancel-project-creation');
+    ipcMain.removeHandler('check-fork-exists');
 
     
     this.logger.info('✅ Project creation IPC handlers unregistered');

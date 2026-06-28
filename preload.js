@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false) =>
     ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages),
   checkRepoExists: (repoName) => ipcRenderer.invoke('check-repo-exists', repoName),
+  checkForkExists: (sourceOwner, sourceRepo, targetOwner) => ipcRenderer.invoke('check-fork-exists', sourceOwner, sourceRepo, targetOwner),
   reopenProject: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('reopen-project', projectId, projectPath, githubUrl, repoFolderName),
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),
   cancelProjectCreation: (projectId, projectPath, repoFolderName, shouldDeleteFiles = false) =>
@@ -81,6 +82,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   listUserRepos: () => ipcRenderer.invoke('github:list-user-repos'),
   findDocumentalRepos: () => ipcRenderer.invoke('github:find-documental-repos'),
+  listUserOrgs: () => ipcRenderer.invoke('github:list-user-orgs'),
   // Path utility functions
   joinPath: (...segments) => ipcRenderer.invoke('join-path', ...segments),
   normalizePath: (filePath) => ipcRenderer.invoke('normalizePath', filePath),

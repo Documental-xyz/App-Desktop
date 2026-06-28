@@ -111,7 +111,7 @@ class ProjectHandlers {
       return new Promise((resolve, reject) => {
         const self = this; // Preserve reference to the class
         db.get(
-          `SELECT projectName, repoUrl, projectPath, repoFolderName FROM projects WHERE id = ?`,
+          `SELECT projectName, repoUrl, repoFullName, projectPath, repoFolderName FROM projects WHERE id = ?`,
           [projectId],
           (err, row) => {
             if (err) {
@@ -142,7 +142,7 @@ class ProjectHandlers {
       return new Promise((resolve, reject) => {
         const self = this; // Preserve reference to the class
         db.all(
-          `SELECT id, projectName, projectPath, repoFolderName FROM projects ORDER BY createdAt DESC LIMIT 3`,
+          `SELECT id, projectName, repoUrl, repoFullName, projectPath, repoFolderName FROM projects ORDER BY createdAt DESC LIMIT 3`,
           (err, rows) => {
             if (err) {
               self.logger.error('Error getting recent projects:', err.message);
@@ -171,7 +171,7 @@ class ProjectHandlers {
       return new Promise((resolve, reject) => {
         const self = this; // Preserve reference to the class
         db.all(
-          `SELECT id, projectName, projectPath, repoFolderName, createdAt FROM projects ORDER BY createdAt DESC`,
+          `SELECT id, projectName, repoUrl, repoFullName, projectPath, repoFolderName, createdAt FROM projects ORDER BY createdAt DESC`,
           (err, rows) => {
             if (err) {
               self.logger.error('Error getting all projects:', err.message);
@@ -277,9 +277,16 @@ class ProjectHandlers {
         }
       }
 
+      let isDocumental = false;
+      const documentalJsonPath = path.join(folderPath, 'documental.json');
+      if (fs.existsSync(documentalJsonPath)) {
+        isDocumental = true;
+      }
+
       return {
         isEmpty,
         isGitRepo,
+        isDocumental,
         remoteUrl,
         fileCount: files.length
       };
@@ -296,13 +303,16 @@ class ProjectHandlers {
   async saveProject(projectData) {
     try {
       const { projectName, repoUrl, projectPath } = projectData;
+      const repoFullName = repoUrl
+        ? repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
+        : null;
       const db = await this.databaseManager.getDatabase();
       
       return new Promise((resolve, reject) => {
         const self = this; // Preserve reference to the class
         db.run(
-          `INSERT INTO projects (projectName, repoUrl, projectPath, repoFolderName) VALUES (?, ?, ?, ?)`,
-          [projectName, repoUrl, projectPath, null], // repoFolderName is null initially
+          `INSERT INTO projects (projectName, repoUrl, repoFullName, projectPath, repoFolderName) VALUES (?, ?, ?, ?, ?)`,
+          [projectName, repoUrl, repoFullName, projectPath, null], // repoFolderName is null initially
           function (err) {
             if (err) {
               self.logger.error('Error saving project:', err.message);

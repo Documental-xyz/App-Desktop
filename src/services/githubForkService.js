@@ -100,6 +100,36 @@ class GithubForkService {
   }
 
   /**
+   * Check if a fork of the given source repo already exists in the user's account or a specific org.
+   * Uses the GitHub API: GET /repos/{owner}/{repo}/forks and checks if any fork's owner matches.
+   * @param {string} sourceOwner - Source repo owner (e.g. "Documental-xyz")
+   * @param {string} sourceRepo - Source repo name (e.g. "Documental")
+   * @param {string} [targetOwner] - Optional: check if fork exists in this specific account/org
+   * @returns {Promise<{ exists: boolean, existingForkFullName?: string }>}
+   */
+  async checkForkExists(sourceOwner, sourceRepo, targetOwner = null) {
+    try {
+      const token = await secureTokenService.getToken();
+      if (!token) return { exists: false };
+      const { Octokit } = await import('@octokit/rest');
+      const octokit = new Octokit({ auth: token });
+
+      const { data: user } = await octokit.users.getAuthenticated();
+      const checkOwner = targetOwner || user.login;
+
+      const forks = await octokit.repos.listForks({ owner: sourceOwner, repo: sourceRepo, per_page: 100 });
+      const existingFork = forks.data.find(f => f.owner && f.owner.login === checkOwner);
+      if (existingFork) {
+        return { exists: true, existingForkFullName: existingFork.full_name };
+      }
+      return { exists: false };
+    } catch (error) {
+      this.logger?.error?.('checkForkExists error:', error?.message);
+      return { exists: false, error: error?.message };
+    }
+  }
+
+  /**
    * Enable GitHub Pages on a repository using workflow build type.
    * @param {string} owner - Repository owner.
    * @param {string} repo - Repository name.
@@ -145,10 +175,11 @@ class GithubForkService {
    * @param {string} repo - Source repository name (e.g. "template").
    * @param {(message: string) => void} [onProgress] - Optional progress callback.
    * @param {string} [forkName] - Optional custom name for the fork (slug of project name).
+   * @param {string} [organization] - Optional org login to fork into (instead of personal account).
    * @returns {Promise<{ success: boolean, forkCloneUrl: string, fork: Object }>}
    * @throws {Error} When not authenticated, fork creation fails, or polling times out.
    */
-  async forkAndPoll(owner, repo, onProgress, forkName = null) {
+  async forkAndPoll(owner, repo, onProgress, forkName = null, organization = null) {
     // a. Retrieve token
     const token = await secureTokenService.getToken();
     if (!token) {
@@ -185,6 +216,9 @@ class GithubForkService {
       if (forkName) {
         forkParams.name = forkName;
       }
+      if (organization) {
+        forkParams.organization = organization;
+      }
       const response = await octokit.repos.createFork(forkParams);
       this.logger?.info?.('createFork response status:', response?.status);
       if (response?.data?.full_name) {
@@ -195,14 +229,14 @@ class GithubForkService {
       const status = error && error.status;
       const message = (error && error.message) || '';
       if (status === 202 || /already exist/i.test(message)) {
-        this.logger?.info?.('Fork already exists; proceeding to polling.');
+        throw new Error('A repository with this name already exists in your account. Please choose a different workspace name.');
       } else {
         throw new Error('Failed to create fork: ' + message);
       }
     }
 
     // Use the actual fork name from the API response when available
-    const pollOwner = forkFullName ? forkFullName.split('/')[0] : userLogin;
+    const pollOwner = forkFullName ? forkFullName.split('/')[0] : (organization || userLogin);
     const pollRepo = forkFullName ? forkFullName.split('/')[1] : actualRepoName;
 
     // f. Poll until ready or timeout
@@ -230,19 +264,7 @@ class GithubForkService {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    // g. Rename fork if GitHub assigned a different name than requested
-    if (forkName && data && data.name && data.name !== forkName) {
-      try {
-        this.logger?.info?.('Renaming fork from', data.name, 'to', forkName);
-        await octokit.repos.update({ owner: pollOwner, repo: data.name, name: forkName });
-        const updated = await octokit.repos.get({ owner: pollOwner, repo: forkName });
-        data = updated.data;
-      } catch (renameError) {
-        this.logger?.error?.('Failed to rename fork:', renameError?.message);
-      }
-    }
-
-    // h. Return result
+    // g. Return result (no rename — fork name is set at creation time via forkParams.name)
     return {
       success: true,
       forkCloneUrl: 'https://github.com/' + pollOwner + '/' + (data?.name || pollRepo) + '.git',

@@ -62,6 +62,7 @@ class GithubReposHandlers {
             full_name: repo.full_name,
             clone_url: repo.clone_url,
             private: repo.private,
+            fork: repo.fork || false,
             updated_at: repo.updated_at,
             description: repo.description,
             owner: repo.owner ? { login: repo.owner.login, type: repo.owner.type } : null
@@ -259,12 +260,27 @@ class GithubReposHandlers {
     ipcMain.handle('github:find-documental-repos', async () => {
       return await this.findDocumentalRepos();
     });
+    ipcMain.handle('github:list-user-orgs', async () => {
+      try {
+        const token = await secureTokenService.getToken();
+        if (!token) return { success: false, error: 'Not authenticated' };
+        const { Octokit } = await import('@octokit/rest');
+        const octokit = new Octokit({ auth: token });
+        const { data: user } = await octokit.rest.users.getAuthenticated();
+        const { data: orgs } = await octokit.rest.orgs.listForAuthenticatedUser();
+        return { success: true, orgs: orgs.map(o => ({ login: o.login, avatar_url: o.avatar_url })), userLogin: user.login };
+      } catch (error) {
+        this.logger.error('Error listing user orgs:', error);
+        return { success: false, error: error.message };
+      }
+    });
   }
 
   unregisterHandlers() {
     this.logger.info('Unregistering GitHub Repos IPC handlers');
     ipcMain.removeHandler('github:list-user-repos');
     ipcMain.removeHandler('github:find-documental-repos');
+    ipcMain.removeHandler('github:list-user-orgs');
   }
 }
 
