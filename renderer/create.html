@@ -49,8 +49,13 @@
         .modal-backdrop {
             backdrop-filter: blur(4px);
         }
+        .repo-header { padding-top: 12vh !important; }
+        @media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
+        @media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
+        @media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
     </style>
 <script src="./i18n.js"></script>
+<script src="./shared/i18n-apply.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="./shared/logo.js"></script>
 <script src="./shared/footer.js"></script>
@@ -293,7 +298,9 @@
                         await window.electronAPI.reopenProject(this.projectId, this.projectPath, this.githubUrl, this.repoFolderName);
                     } else {
                         // For new projects, run full creation process
-                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '', this.enablePages || false);
+                        const forkOrg = sessionStorage.getItem('forkOrganization') || '';
+                        sessionStorage.removeItem('forkOrganization');
+                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '', this.enablePages || false, forkOrg || null);
                     }
                 }
             } catch (error) {
@@ -416,9 +423,28 @@
             await this.startCreationProcess();
     }
 }">
+<!-- Header -->
+<header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
+  <div class="max-w-4xl mx-auto mt-auto w-full">
+    <div class="flex items-center justify-center gap-3 mb-2">
+      <span id="page-logo"></span>
+      <script>
+        (function() {
+          var logoHost = document.getElementById('page-logo');
+          if (logoHost && window.Documental && window.Documental.renderLogo) {
+            logoHost.innerHTML = window.Documental.renderLogo({ size: 'md' });
+          }
+        })();
+      </script>
+      <h1 class="text-5xl font-black text-text-dark" x-text="isReopenMode ? __t('create.reopening_workspace') : __t('create.creating_workspace')"></h1>
+    </div>
+    <p class="text-lg text-muted-dark text-center whitespace-pre-line" x-text="isReopenMode ? __t('create.reopening_subtitle') : __t('create.creating_subtitle')"></p>
+  </div>
+</header>
+
 <main class="flex-1 overflow-hidden flex flex-col">
-<div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
-<div class="w-full max-w-2xl">
+  <div class="flex-1 flex items-start justify-center px-8 pb-8 overflow-y-auto">
+    <div class="w-full max-w-2xl" style="margin-top: 5vh;">
 
 <div class="text-center mb-8">
 <div class="flex items-center justify-center gap-4 mb-3">
@@ -426,7 +452,6 @@
 <div class="creative-loader"></div>
 </template>
 </div>
-<p class="text-muted-dark text-base mt-1 whitespace-pre-line" x-text="isReopenMode ? __t('create.reopening_subtitle') : __t('create.creating_subtitle')"></p>
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
 <template :key="step.id" x-for="(step, index) in steps">
@@ -438,7 +463,7 @@
 <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
 </template>
 <template x-if="step.status === 'success'">
-<span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-success/20 text-success"><span class="material-symbols-outlined text-xl">check_circle</span></span>
+<span class="inline-flex items-center justify-center w-8 h-8 rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);"><span class="material-symbols-outlined text-xl">check_circle</span></span>
 </template>
 <template x-if="step.status === 'failure'">
 <span class="material-symbols-outlined text-danger text-xl">error</span>
@@ -461,29 +486,29 @@
 </div>
 </template>
 </div>
+<p class="text-xs text-muted-dark text-center mt-3" x-text="steps.filter(s => s.status === 'success').length + ' / ' + steps.filter(s => (s.id !== 0 || shouldForkFirst) && (s.id !== 6 || enablePages)).length"></p>
 </div>
 </div>
 </main>
 <footer class="shrink-0">
 <div class="p-4 border-t border-border-subtle bg-surface-dark">
     <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
-        <div id="footer-info-slot" class="flex-1 flex justify-start gap-2"><span class="text-xs text-muted-dark" x-text="steps.filter(s =&gt; s.status === 'success').length + ' / ' + steps.length"></span></div>
-        <div class="flex justify-center gap-3">
- <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-                    <span x-text="__t('common.cancel')">Cancel</span>
-                </button>
-<template x-if="!anyStepFailed">
-<button :class="{'!bg-primary !hover:bg-primary-hover': allStepsSuccess}" :disabled="!allStepsSuccess" @click="allStepsSuccess ? (sessionStorage.setItem('currentProjectId', projectId), window.electronAPI.navigateTo('main.html')) : $event.target.innerText = __t('create.finished');" class="bg-surface-secondary text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:bg-surface-secondary disabled:cursor-not-allowed text-sm">
-<span x-text="allStepsSuccess ? __t('common.finish') : __t('common.advance')"></span>
-</button>
-</template>
-<template x-if="anyStepFailed">
-<button :disabled="!processFinished" @click="retryProcess()" class="bg-info hover:bg-info-dark text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+        <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+            <span class="material-symbols-outlined align-middle mr-1">close</span>
+            <span x-text="__t('common.cancel')">Cancel</span>
+        </button>
+        <div class="flex justify-end gap-3">
+ <template x-if="!anyStepFailed">
+ <button :class="{'!bg-primary !hover:bg-primary-hover': allStepsSuccess}" :disabled="!allStepsSuccess" @click="allStepsSuccess ? (sessionStorage.setItem('currentProjectId', projectId), window.electronAPI.navigateTo('main.html')) : $event.target.innerText = __t('create.finished');" class="bg-surface-secondary text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:bg-surface-secondary disabled:cursor-not-allowed text-sm">
+ <span x-text="allStepsSuccess ? __t('common.finish') : __t('common.advance')"></span>
+ </button>
+ </template>
+ <template x-if="anyStepFailed">
+ <button :disabled="!processFinished" @click="retryProcess()" class="bg-info hover:bg-info-dark text-white font-semibold py-2 px-5 rounded-md flex items-center gap-2 transition-colors duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
                     <span x-text="__t('common.try_again')">Try Again</span>
                 </button>
-</template>
+ </template>
         </div>
-        <div class="flex-1 flex justify-end gap-2"></div>
     </div>
 </div>
 </footer>
@@ -494,27 +519,39 @@
     <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
         <div class="flex items-center gap-3 mb-4">
             <span class="material-symbols-outlined text-warning text-2xl">warning</span>
-            <h3 class="text-lg font-medium text-text-dark" x-text="__t('create.cancel_creation_title')"></h3>
+            <h3 class="text-lg font-medium text-text-dark" data-i18n="create.cancel_creation_title"></h3>
         </div>
-        <p class="text-sm text-muted-dark mb-6 whitespace-pre-line" x-text="__t('create.cancel_creation_desc')"></p>
+        <p class="text-sm text-muted-dark mb-6 whitespace-pre-line" data-i18n="create.cancel_creation_desc"></p>
         
         <div class="space-y-3">
             <button id="confirm-delete-btn" 
                     class="w-full px-4 py-2 text-sm font-medium text-white bg-danger rounded-md hover:bg-danger-dark transition-colors duration-200">
-                <span x-text="__t('create.yes_delete')"></span>
+                <span data-i18n="create.yes_delete"></span>
             </button>
             <button id="confirm-return-btn" 
                     class="w-full px-4 py-2 text-sm font-medium text-on-warning bg-warning rounded-md hover:bg-warning-dark transition-colors duration-200">
-                <span x-text="__t('create.yes_return')"></span>
+                <span data-i18n="create.yes_return"></span>
             </button>
             <button id="cancel-modal-btn" 
                     class="w-full px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-surface-dark transition-colors duration-200">
-                <span x-text="__t('create.no_continue')"></span>
+                <span data-i18n="create.no_continue"></span>
             </button>
         </div>
     </div>
 </div>
 
+<script>
+document.addEventListener('DOMContentLoaded', async function() {
+  if (window.applyTranslations) {
+    await window.applyTranslations();
+  } else if (window.__i18nReady) {
+    await window.__i18nReady;
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      el.textContent = window.__t(el.getAttribute('data-i18n'));
+    });
+  }
+});
+</script>
 <script>
 // Inject logo using shared component (Opção C shell wizard)
 (function() {

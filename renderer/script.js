@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!window.electronAPI || !window.electronAPI.checkRepoExists) {
           console.warn('[fork-check] checkRepoExists IPC not available — preload may need app restart');
         } else {
-          const slug = projectName.toLowerCase()
+          const slug = projectName.trim()
             .replace(/\s+/g, '-')
             .replace(/[^\w\-]+/g, '')
             .replace(/\-\-+/g, '-')
@@ -172,6 +172,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const enablePagesToggle = document.getElementById('enable-pages-toggle');
         const enablePages = enablePagesToggle ? enablePagesToggle.checked : false;
         sessionStorage.setItem('enableGitHubPages', enablePages.toString());
+        const privateRepoToggle = document.getElementById('private-repo-toggle');
+        const isPrivateRepo = privateRepoToggle ? privateRepoToggle.checked : false;
+        sessionStorage.setItem('isPrivateRepo', isPrivateRepo.toString());
         sessionStorage.removeItem('folderInfo');
         sessionStorage.removeItem('repoSelectMode');
         sessionStorage.removeItem('selectedRepo');
@@ -209,13 +212,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             ? await PathUtils.join(project.projectPath, project.repoFolderName)
             : project.projectPath;
           
+          const repoName = project.repoFullName || '';
           return `
             <div class="flex items-center justify-between bg-surface-dark p-4 rounded-lg hover:bg-gray-800 cursor-pointer recent-project-item" data-project-id="${project.id}">
               <div class="flex items-center gap-4">
                 <span class="material-symbols-outlined text-muted-dark">description</span>
                 <div>
                   <p class="font-semibold text-text-dark">${project.projectName}</p>
-                  <p class="text-sm text-muted-dark">${fullPath}</p>
+                  ${repoName ? `<p class="text-sm text-muted-dark flex items-center gap-1 mt-0.5"><span class="material-symbols-outlined text-xs">commit</span>${repoName}</p>` : ''}
+                  <p class="text-sm text-muted-dark flex items-center gap-1 mt-0.5"><span class="material-symbols-outlined text-xs">folder</span>${fullPath}</p>
                 </div>
               </div>
               <button class="p-2 rounded-full hover:bg-gray-700 remove-project" data-project-id="${project.id}">
@@ -263,7 +268,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function openRecentProject(projectId) {
     try {
       sessionStorage.setItem('currentProjectId', projectId);
-      navigateToPage('open.html');
+      sessionStorage.setItem('reopenMode', 'true');
+      navigateToPage('create.html');
     } catch (error) {
       console.error('Error opening recent project:', error);
       alert(__t('all_projects.error_open_project', {error}));
@@ -330,13 +336,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             ? await PathUtils.join(project.projectPath, project.repoFolderName)
             : project.projectPath;
           
+          const repoName = project.repoFullName || '';
           return `
             <div class="flex items-center justify-between bg-gray-900/50 p-4 rounded-lg hover:bg-gray-800 cursor-pointer all-project-item" data-project-id="${project.id}">
               <div class="flex items-center gap-4">
                 <span class="material-symbols-outlined text-muted-dark">description</span>
                 <div>
                   <p class="font-semibold text-text-dark">${project.projectName}</p>
-                  <p class="text-sm text-muted-dark">${fullPath}</p>
+                  ${repoName ? `<p class="text-sm text-muted-dark flex items-center gap-1 mt-0.5"><span class="material-symbols-outlined text-xs">commit</span>${repoName}</p>` : ''}
+                  <p class="text-sm text-muted-dark flex items-center gap-1 mt-0.5"><span class="material-symbols-outlined text-xs">folder</span>${fullPath}</p>
                   <p class="text-xs text-muted-dark mt-1">${__t('all_projects.created_at', {date: new Date(project.createdAt).toLocaleDateString(__t('common.date_locale'))})}</p>
                 </div>
               </div>
@@ -405,18 +413,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       // Normalize the folder path before processing
       const normalizedPath = await PathUtils.normalize(folderPath);
-      
+
       if (window.electronAPI && window.electronAPI.checkProjectExists) {
         const projectExists = await window.electronAPI.checkProjectExists(normalizedPath);
-        
+
         if (projectExists.exists) {
-          // Project exists, open it
+          // Project exists, open it using create.html + reopenMode
           sessionStorage.setItem('currentProjectId', projectExists.projectId);
-          navigateToPage('open.html');
-        } else {
-          // Project doesn't exist, show modal
-          showFolderModal(normalizedPath, projectExists.folderInfo);
+          sessionStorage.setItem('reopenMode', 'true');
+          navigateToPage('create.html');
+          return;
         }
+
+        const folderInfo = projectExists.folderInfo;
+        if (!folderInfo) {
+          showFolderModal(normalizedPath, folderInfo);
+          return;
+        }
+
+        if (!folderInfo.isGitRepo) {
+          const notGitModal = document.getElementById('not-git-modal');
+          if (notGitModal) notGitModal.style.display = 'flex';
+          return;
+        }
+
+        if (folderInfo.isGitRepo && !folderInfo.isDocumental) {
+          const notDocModal = document.getElementById('not-documental-modal');
+          if (notDocModal) {
+            notDocModal.dataset.selectedPath = normalizedPath;
+            notDocModal.dataset.remoteUrl = folderInfo.remoteUrl || '';
+            notDocModal.style.display = 'flex';
+          }
+          return;
+        }
+
+        // Git repo + Documental project: show existing folder modal
+        showFolderModal(normalizedPath, folderInfo);
       }
     } catch (error) {
       console.error('Error checking folder:', error);
@@ -428,9 +460,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   function showFolderModal(folderPath, folderInfo) {
     const folderModal = document.getElementById('folder-modal');
     const folderInfoDiv = document.getElementById('folder-info');
-    
+
     folderModal.dataset.selectedPath = folderPath;
-    
+
+    // Store early so new.html reads reliable isExistingGitRepo/isEmptyFolder
+    // even if the user clicks Create before async detection completes.
+    if (folderInfo) {
+      sessionStorage.setItem('folderInfo', JSON.stringify(folderInfo));
+    }
+
     let infoHTML = `<p><strong>${__t('script.folder_path_label')}</strong> ${folderPath}</p>`;
     
     if (folderInfo) {
@@ -476,6 +514,57 @@ document.addEventListener('DOMContentLoaded', async () => {
     cancelFolderBtn.addEventListener('click', () => {
       const folderModal = document.getElementById('folder-modal');
       folderModal.style.display = 'none';
+    });
+  }
+
+  // Not-git modal close
+  const notGitClose = document.getElementById('not-git-close');
+  if (notGitClose) {
+    notGitClose.addEventListener('click', () => {
+      document.getElementById('not-git-modal').style.display = 'none';
+    });
+  }
+
+  // Not-git modal open another folder
+  const notGitOpenAnother = document.getElementById('not-git-open-another');
+  if (notGitOpenAnother) {
+    notGitOpenAnother.addEventListener('click', async () => {
+      document.getElementById('not-git-modal').style.display = 'none';
+      if (window.electronAPI && window.electronAPI.openDirectoryDialog) {
+        try {
+          const selectedPath = await window.electronAPI.openDirectoryDialog();
+          if (selectedPath) {
+            await handleFolderSelection(selectedPath);
+          }
+        } catch (error) {
+          console.error('Error opening directory dialog:', error);
+        }
+      }
+    });
+  }
+
+  // Not-documental modal buttons
+  const notDocCancel = document.getElementById('not-documental-cancel');
+  if (notDocCancel) {
+    notDocCancel.addEventListener('click', () => {
+      document.getElementById('not-documental-modal').style.display = 'none';
+    });
+  }
+
+  const notDocContinue = document.getElementById('not-documental-continue');
+  if (notDocContinue) {
+    notDocContinue.addEventListener('click', () => {
+      const notDocModal = document.getElementById('not-documental-modal');
+      const selectedPath = notDocModal.dataset.selectedPath;
+      notDocModal.style.display = 'none';
+      if (selectedPath) {
+        window.electronAPI.getFolderInfo(selectedPath).then(folderInfo => {
+          showFolderModal(selectedPath, folderInfo);
+        }).catch(err => {
+          console.error('Error getting folder info:', err);
+          showFolderModal(selectedPath, null);
+        });
+      }
     });
   }
 
