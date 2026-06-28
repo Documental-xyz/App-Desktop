@@ -71,6 +71,7 @@ class DatabaseManager {
           projectPath TEXT NOT NULL,
           repoFolderName TEXT,
           repoUrl TEXT,
+          repoFullName TEXT,
           createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
           updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -105,6 +106,13 @@ class DatabaseManager {
           reject(err);
           return;
         }
+
+        // Safe migration: add repoFullName column if it doesn't exist (for existing DBs)
+        this.db.run(`ALTER TABLE projects ADD COLUMN repoFullName TEXT`, (alterErr) => {
+          if (alterErr && !alterErr.message.includes('duplicate column')) {
+            this.logger?.error?.('Migration error (repoFullName):', alterErr.message);
+          }
+        });
         
         this.db.run(createUsersTable, (err) => {
           if (err) {
