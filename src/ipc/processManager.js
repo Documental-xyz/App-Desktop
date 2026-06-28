@@ -579,12 +579,14 @@ class ProcessManager {
       if (fs.existsSync(nestedPath)) {
         return nestedPath;
       }
+
+      if (fs.existsSync(projectPath) && fs.existsSync(path.join(projectPath, '.git'))) {
+        return projectPath;
+      }
     }
 
-    if (fs.existsSync(projectPath)) {
-      return projectPath;
-    }
-
+    // Security: never return a bare workspace parent folder when repoFolderName
+    // is null — cancelProjectCreation would rimraf ALL projects.
     return null;
   }
 
@@ -610,6 +612,12 @@ class ProcessManager {
 
       const repoPath = this.resolveRepoPath(projectPath, repoFolderName);
       if (repoPath && fs.existsSync(repoPath)) {
+        // Safety: refuse to delete the workspace root folder itself.
+        if (!repoFolderName && repoPath === projectPath) {
+          this.logger.warn(`Refusing to delete workspace root: ${repoPath}`);
+          if (sendOutput) sendOutput('⚠️ Refusing to delete workspace root folder.\n');
+          return;
+        }
         if (sendOutput) {
           sendOutput(`🗑️ Removing repository folder: ${repoPath}\n`);
         }
