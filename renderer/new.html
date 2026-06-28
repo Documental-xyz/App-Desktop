@@ -6,6 +6,12 @@
 <link href="./assets/css/fonts.css" rel="stylesheet"/>
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
+<style>
+.repo-header { padding-top: 12vh !important; }
+@media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
+@media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
+@media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+</style>
 <script src="./i18n.js"></script>
 <!-- Shared UI components (Tasks 3/4/6) -->
 <script src="./shared/layout.js"></script>
@@ -53,9 +59,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const selectedProjectPath = sessionStorage.getItem('selectedProjectPath');
   
   if (createFromFolder === 'true' && selectedProjectPath) {
-    console.log('Creating from folder:', selectedProjectPath);
+    // Set path SYNCHRONOUSLY to prevent script.js from overwriting with default Workspaces path
+    const pathInputSync = document.getElementById('project-path');
+    if (pathInputSync) {
+      pathInputSync.value = selectedProjectPath;
+    }
     
-    // Small delay to ensure script.js has finished
     setTimeout(async () => {
       // Pre-fill the project path
       const projectPathInput = document.getElementById('project-path');
@@ -71,10 +80,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         
         projectPathInput.value = normalizedPath;
-        console.log('Project path set to:', projectPathInput.value);
         
         // Trigger input event to ensure any listeners are notified
         projectPathInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+        // Path is fixed when coming from folder selection — make readonly and hide selector
+        projectPathInput.setAttribute('readonly', '');
+        projectPathInput.classList.add('opacity-70', 'cursor-not-allowed');
+
+        const selectFolderBtn = document.getElementById('select-folder-button');
+        if (selectFolderBtn) {
+          selectFolderBtn.style.display = 'none';
+        }
       } else {
         console.error('Project path input not found');
       }
@@ -104,6 +121,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             // Store folder info for later use
             sessionStorage.setItem('folderInfo', JSON.stringify(folderInfo));
+
+            // Make URL readonly when it was auto-filled from git remote
+            const githubUrlInput = document.getElementById('github-url');
+            if (githubUrlInput && githubUrlInput.value) {
+              githubUrlInput.setAttribute('readonly', '');
+              githubUrlInput.classList.add('opacity-70', 'cursor-not-allowed');
+            }
           } catch (error) {
             console.error('Error getting folder info:', error);
           }
@@ -113,7 +137,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         sessionStorage.removeItem('createFromFolder');
         sessionStorage.removeItem('selectedProjectPath');
       })();
-    }, 100); // Small delay to ensure script.js has finished
+    }, 100);
   }
 
   // Handle repo-select modes (existing repo prefill or fork defaults)
@@ -124,19 +148,118 @@ document.addEventListener('DOMContentLoaded', async () => {
     const urlInput = document.getElementById('github-url');
     if (nameInput && selectedRepo.name) {
       nameInput.value = selectedRepo.name;
-      nameInput.setAttribute('readonly', '');
-      nameInput.classList.add('bg-gray-800', 'opacity-70', 'cursor-not-allowed');
     }
     if (urlInput && selectedRepo.clone_url) {
       urlInput.value = selectedRepo.clone_url;
       urlInput.setAttribute('readonly', '');
-      urlInput.classList.add('bg-gray-800', 'opacity-70', 'cursor-not-allowed');
+      urlInput.classList.add('opacity-70', 'cursor-not-allowed');
     }
   } else if (repoSelectMode === 'fork') {
     const nameInput = document.getElementById('project-name');
     const urlInput = document.getElementById('github-url');
     if (nameInput) nameInput.value = 'Meu Documental';
     if (urlInput) urlInput.value = 'https://github.com/Documental-xyz/Documental.git';
+  }
+
+  // Show private toggle only in fork mode
+  const repoSelectMode2 = sessionStorage.getItem('repoSelectMode');
+  const privateWrapper = document.getElementById('private-toggle-wrapper');
+  if (repoSelectMode2 === 'fork' && privateWrapper) {
+    privateWrapper.style.display = 'flex';
+  }
+
+  // Private toggle disables + unchecks Pages
+  const privateToggle = document.getElementById('private-repo-toggle');
+  const pagesToggle = document.getElementById('enable-pages-toggle');
+  if (privateToggle && pagesToggle) {
+    privateToggle.addEventListener('change', function() {
+      if (this.checked) {
+        pagesToggle.checked = false;
+        pagesToggle.disabled = true;
+        pagesToggle.closest('label').classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        pagesToggle.disabled = false;
+        pagesToggle.closest('label').classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    });
+  }
+
+  // Slug preview — case-sensitive slug (lowercase, hyphens, preserve case of original)
+  const nameInputEl = document.getElementById('project-name');
+  const slugPreview = document.getElementById('slug-preview');
+  function updateSlugPreview() {
+    const name = nameInputEl.value;
+    if (!name) { slugPreview.textContent = ''; return; }
+    const slug = name.trim().replace(/\s+/g, '-').replace(/[^\w\-]+/g, '').replace(/\-\-+/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+    slugPreview.textContent = slug ? __t('new.project_slug_hint', { slug }) : '';
+  }
+  nameInputEl.addEventListener('input', updateSlugPreview);
+  updateSlugPreview();
+
+  // === Fork destination dropdown ===
+  const forkTargetWrapper = document.getElementById('fork-target-wrapper');
+  const forkTargetSelect = document.getElementById('fork-target-select');
+  const forkExistsModal = document.getElementById('fork-exists-modal');
+  const forkExistsClose = document.getElementById('fork-exists-close');
+
+  // Show fork target dropdown + load orgs in fork mode
+  if (repoSelectMode === 'fork' && forkTargetWrapper) {
+    forkTargetWrapper.style.display = 'block';
+    // Load orgs asynchronously
+    if (window.electronAPI && window.electronAPI.listUserOrgs) {
+      window.electronAPI.listUserOrgs().then(result => {
+        if (result.success && result.orgs && forkTargetSelect) {
+          result.orgs.forEach(org => {
+            const opt = document.createElement('option');
+            opt.value = org.login;
+            opt.textContent = __t('new.fork_target_org', { name: org.login });
+            forkTargetSelect.appendChild(opt);
+          });
+        }
+      }).catch(err => console.warn('Failed to load orgs:', err));
+    }
+  }
+
+  // Close fork-exists modal
+  if (forkExistsClose) {
+    forkExistsClose.addEventListener('click', () => {
+      if (forkExistsModal) forkExistsModal.style.display = 'none';
+    });
+  }
+
+  // Intercept create button to check fork existence first
+  const createBtn = document.getElementById('create-project-button');
+  if (createBtn) {
+    createBtn.addEventListener('click', async function(e) {
+      if (sessionStorage.getItem('repoSelectMode') !== 'fork') return; // Only in fork mode
+      // If already checked, let the original handler proceed
+      if (createBtn.dataset.forkChecked === 'true') {
+        createBtn.dataset.forkChecked = '';
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const selectedOrg = forkTargetSelect ? forkTargetSelect.value : '';
+      const urlInput = document.getElementById('github-url');
+      const forkUrl = urlInput ? urlInput.value : '';
+      const forkMatch = forkUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
+      if (!forkMatch) return;
+      const [, sourceOwner, sourceRepo] = forkMatch;
+      try {
+        const result = await window.electronAPI.checkForkExists(sourceOwner, sourceRepo, selectedOrg || null);
+        if (result.exists) {
+          if (forkExistsModal) forkExistsModal.style.display = 'flex';
+          return; // Don't proceed
+        }
+      } catch (err) {
+        console.warn('Fork check failed:', err);
+      }
+      // Store selected org for later use
+      sessionStorage.setItem('forkOrganization', selectedOrg || '');
+      // Proceed with original handler
+      createBtn.dataset.forkChecked = 'true';
+      createBtn.click();
+    }, true); // capture phase to run before other handlers
   }
 });
 </script>
@@ -145,13 +268,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 <div class="flex flex-col h-screen">
 
   <!-- ===== HEADER (shrink-0) ===== -->
-  <header class="shrink-0 pt-header px-8">
-    <div class="max-w-2xl mx-auto text-center">
-      <a class="btn-back" data-navigate="index.html" href="#">
-        <span class="material-symbols-outlined">arrow_back</span>
-        <span data-i18n="new.back_home"></span>
-      </a>
-      <div class="flex items-center justify-center gap-4 mb-4">
+  <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
+    <div class="max-w-4xl mx-auto mt-auto">
+      <div class="flex items-center justify-center gap-3 mb-2">
         <span id="page-logo"></span>
         <script>
           (function() {
@@ -161,21 +280,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
           })();
         </script>
-        <h1 class="text-4xl font-black text-text-dark" data-i18n="new.title"></h1>
+        <h1 class="text-5xl font-black text-text-dark" data-i18n="new.title"></h1>
       </div>
-      <p class="text-lg text-muted-dark whitespace-pre-line" data-i18n="new.subtitle"></p>
+      <p class="text-lg text-muted-dark text-center whitespace-pre-line" data-i18n="new.subtitle"></p>
     </div>
   </header>
 
   <!-- ===== MAIN (flex-1 overflow-hidden — Opção C: footer always visible) ===== -->
   <main class="flex-1 overflow-hidden flex flex-col">
-    <div class="flex-1 flex items-center justify-center px-8 pb-8 overflow-y-auto">
-      <div class="w-full max-w-2xl">
+    <div class="flex-1 flex items-start justify-center px-8 pb-8 overflow-y-auto">
+      <div class="w-full max-w-2xl" style="margin-top: 5vh;">
 
         <div class="bg-surface-dark rounded-lg p-8 space-y-6">
           <div>
             <label class="block text-sm font-medium text-muted-dark mb-2" for="project-name" data-i18n="new.project_name"></label>
             <input class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary" id="project-name" name="project-name" placeholder="" data-i18n-placeholder="new.project_name_placeholder" type="text"/>
+            <p id="slug-preview" class="text-xs text-muted-dark mt-1" style="min-height: 1rem;"></p>
           </div>
           <div>
             <label class="block text-sm font-medium text-muted-dark mb-2" for="github-url" data-i18n="new.github_url"></label>
@@ -191,39 +311,71 @@ document.addEventListener('DOMContentLoaded', async () => {
               </button>
             </div>
           </div>
+          <div id="fork-target-wrapper" style="display: none;">
+            <label class="block text-sm font-medium text-muted-dark mb-2" data-i18n="new.fork_target">Fork Destination</label>
+            <select id="fork-target-select" class="w-full bg-background-dark border-border-subtle text-text-dark rounded-md focus:ring-primary focus:border-primary py-2 px-3">
+              <option value="" data-i18n="new.fork_target_personal">Personal Account</option>
+            </select>
+          </div>
         </div>
 
-        <div class="flex items-center gap-3 pt-2">
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" id="enable-pages-toggle" class="sr-only peer" checked=""/>
-            <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
-            <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
-          </label>
-          <div class="flex items-center gap-1">
-            <span class="text-sm text-text-dark" data-i18n="new.enable_github_pages"></span>
-            <span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.github_pages_tooltip" title="">help</span>
+        <!-- Toggle row: Private (fork only) + GitHub Pages, side by side -->
+        <div class="flex items-center gap-6 mt-6 flex-wrap">
+          <!-- Private repo toggle (fork mode only, hidden by default) -->
+          <div id="private-toggle-wrapper" class="flex items-center gap-3" style="display: none;">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="private-repo-toggle" class="sr-only peer">
+              <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
+              <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
+            </label>
+            <div class="flex items-center gap-1">
+              <span class="text-sm text-text-dark" data-i18n="new.private_repo">Private Repository</span>
+              <span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.private_repo_tooltip" title="">help</span>
+            </div>
+          </div>
+
+          <!-- GitHub Pages toggle (conditionally disabled for private repos) -->
+          <div class="flex items-center gap-3">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="enable-pages-toggle" class="sr-only peer" checked>
+              <div class="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-primary transition-colors"></div>
+              <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform peer-checked:translate-x-5"></div>
+            </label>
+            <div class="flex items-center gap-1">
+              <span class="text-sm text-text-dark" data-i18n="new.enable_github_pages">Enable GitHub Pages</span>
+              <span class="material-symbols-outlined text-muted-dark text-base cursor-help" data-i18n-title="new.github_pages_tooltip" title="">help</span>
+            </div>
           </div>
         </div>
 
       </div>
     </div>
+  <div id="fork-exists-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;">
+    <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+      <div class="flex items-center gap-3 mb-4">
+        <span class="material-symbols-outlined text-2xl" style="color: var(--color-warning);">warning</span>
+        <h3 class="text-lg font-medium text-text-dark" data-i18n="new.fork_exists_title">Fork Already Exists</h3>
+      </div>
+      <p class="text-sm text-muted-dark mb-6" data-i18n="new.fork_exists_desc">A fork of this repository already exists in the selected account or organization.</p>
+      <div class="flex justify-end">
+        <button id="fork-exists-close" class="px-4 py-2 text-sm font-medium text-text-dark bg-surface-secondary rounded-md hover:bg-surface-dark transition-colors duration-200" data-i18n="new.fork_exists_go_back">Go Back</button>
+      </div>
+    </div>
+  </div>
+
   </main>
 
-  <!-- ===== FOOTER (shrink-0 — Opção C: always visible) ===== -->
-  <footer class="shrink-0">
-    <div class="p-4 border-t border-border-subtle bg-surface-dark mt-auto">
-      <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
-        <div class="flex-1 flex justify-start gap-2">
-          <span class="text-sm text-muted-dark" data-i18n="new.subtitle"></span>
-        </div>
-        <div class="flex justify-center gap-3">
-          <button class="btn-primary px-5 py-2 font-semibold text-sm flex items-center gap-2" id="create-project-button">
-            <span class="material-symbols-outlined">add_circle</span>
-            <span data-i18n="new.create_project"></span>
-          </button>
-        </div>
-        <div class="flex-1 flex justify-end gap-2"></div>
-      </div>
+  <!-- ===== FOOTER (shrink-0 — Voltar left / Criar Ambiente right) ===== -->
+  <footer class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+    <div class="flex justify-between items-center max-w-4xl mx-auto gap-3">
+      <button onclick="history.back()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+        <span class="material-symbols-outlined">arrow_back</span>
+        <span data-i18n="new.back">Back</span>
+      </button>
+      <button class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm" id="create-project-button">
+        <span class="material-symbols-outlined">add_circle</span>
+        <span data-i18n="new.create_project">Create Workspace</span>
+      </button>
     </div>
   </footer>
 
