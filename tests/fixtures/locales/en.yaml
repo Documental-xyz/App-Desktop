@@ -7,3 +7,25 @@ welcome:
   title: Welcome to Documental
   subtitle: Your documentation hub
   getStarted: Get Started
+main:
+  refresh_btn: Update
+  publish_preview_btn: Preview
+  publish_main_btn: Main
+  git_exec_refreshing: Updating...
+  git_exec_publishing_preview: Publishing to Preview...
+  git_exec_publishing_main: Publishing to Main...
+  git_exec_step_checking: Checking changes
+  git_exec_step_committing: Saving your changes
+  git_exec_step_fetching: Synchronizing with team
+  git_exec_step_merging: Integrating changes
+  git_exec_step_pushing: Publishing
+  git_exec_step_finalizing: Finishing
+  git_exec_success: Done!
+  git_exec_error_generic: Something went wrong. Try again.
+  git_exec_error_network: Network problem. Check your connection.
+  git_exec_error_auth: Authentication expired. Please sign in again.
+  git_exec_error_main_permission: You don't have permission to publish to Main.
+  discard_local_title: Discard local changes?
+  discard_local_desc: There are unpublished local changes. Updating will discard them permanently.
+  discard_local_btn: Discard and Update
+  commit_default_prefix: "Content update by {login} at {date}"

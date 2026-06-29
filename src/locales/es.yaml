@@ -501,6 +501,28 @@ main:
   error_capture: "Error al capturar"
   error_clear_cache: "Error al limpiar caché: {error}"
   error_clear_cache_unknown: "Error desconocido"
+  # Unified git workflow
+  refresh_btn: "Actualizar"
+  publish_preview_btn: "Preview"
+  publish_main_btn: "Main"
+  git_exec_refreshing: "Actualizando..."
+  git_exec_publishing_preview: "Publicando en Preview..."
+  git_exec_publishing_main: "Publicando en Main..."
+  git_exec_step_checking: "Verificando cambios"
+  git_exec_step_committing: "Guardando tus cambios"
+  git_exec_step_fetching: "Sincronizando con el equipo"
+  git_exec_step_merging: "Integrando cambios"
+  git_exec_step_pushing: "Publicando"
+  git_exec_step_finalizing: "Finalizando"
+  git_exec_success: "¡Listo!"
+  git_exec_error_generic: "Algo salió mal. Inténtelo de nuevo."
+  git_exec_error_network: "Problema de red. Verifique su conexión."
+  git_exec_error_auth: "Autenticación expirada. Inicie sesión de nuevo."
+  git_exec_error_main_permission: "No tiene permiso para publicar en Main."
+  discard_local_title: "¿Descartar cambios locales?"
+  discard_local_desc: "Hay cambios locales no publicados. Actualizar los descartará permanentemente."
+  discard_local_btn: "Descartar y Actualizar"
+  commit_default_prefix: "Content update by {login} at {date}"
 
 # script.js shared strings
 script:

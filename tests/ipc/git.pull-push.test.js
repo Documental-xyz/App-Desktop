@@ -223,11 +223,15 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
   });
 
   describe('Edge cases', () => {
-    it('lock auto-releases after 60s timeout', () => {
+    it('aborts the operation signal after LOCK_TIMEOUT_MS timeout', () => {
       vi.useFakeTimers();
       handlers.acquireGitLock();
       expect(handlers.gitOperationInProgress).toBe(true);
-      vi.advanceTimersByTime(60001);
+      const signal = handlers.getAbortSignal();
+      expect(signal.aborted).toBe(false);
+      vi.advanceTimersByTime(handlers.LOCK_TIMEOUT_MS + 1);
+      expect(signal.aborted).toBe(true);
+      handlers.releaseGitLock();
       expect(handlers.gitOperationInProgress).toBe(false);
       vi.useRealTimers();
     });
@@ -267,7 +271,7 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
         { ref: 'refs/heads/develop' },
       ]);
       const result = await handlers.gitListRemoteBranches('/test/path');
-      expect(result).toEqual(['main', 'develop']);
+      expect(result).toEqual({ success: true, branches: ['main', 'develop'], defaultBranch: 'main' });
       const refCall = git.listServerRefs.mock.calls[0]?.[0];
       expect(refCall.onAuth).toBeUndefined();
     });

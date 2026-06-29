@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkGitStatus: (projectId) => ipcRenderer.invoke('git:check-status', projectId),
   pullFromPreview: (projectId, commitMessage) => ipcRenderer.invoke('git:pull-from-preview', projectId, commitMessage),
   pushToBranch: (projectId, targetBranch, commitMessage) => ipcRenderer.invoke('git:push-to-branch', projectId, targetBranch, commitMessage),
+  checkMainPermission: (projectId) => ipcRenderer.invoke('git:check-main-permission', projectId),
+  invalidatePermissionCache: (projectId) => ipcRenderer.invoke('git:invalidate-permission-cache', projectId),
   listRemoteBranches: (projectId) => ipcRenderer.invoke('git:list-remote-branches', projectId),
   cancelGitOperation: () => ipcRenderer.invoke('git:cancel-operation'),
   openInFileExplorer: (path) => ipcRenderer.invoke('open-file-explorer', path),

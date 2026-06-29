@@ -12,6 +12,15 @@ const git = require('isomorphic-git');
 const http = require('isomorphic-git/http/node');
 const { GitOperations } = require('./gitOperations.js');
 
+// Resilient import: fallback to 120s if gitFlowTypes.js is unavailable yet.
+const { LOCK_TIMEOUT_MS: _IMPORTED_LOCK_TIMEOUT_MS } = (() => {
+  try {
+    return require('./gitFlowTypes.js');
+  } catch (_e) {
+    return { LOCK_TIMEOUT_MS: 120000 };
+  }
+})();
+
 /**
  * @typedef {Object} GitOperationResult
  * @property {boolean} success - Whether the operation succeeded
@@ -51,8 +60,9 @@ class GitHandlers {
     this.databaseManager = databaseManager;
     this.gitOps = new GitOperations({ logger, databaseManager });
     this.gitOperationInProgress = false;
-    this.LOCK_TIMEOUT_MS = 60000;
+    this.LOCK_TIMEOUT_MS = _IMPORTED_LOCK_TIMEOUT_MS;
     this._lockTimeout = null;
+    this._abortController = null;
     this._gitCache = {};
     this._sendOutputBuffer = [];
     this._sendOutputTimer = null;
@@ -78,10 +88,10 @@ class GitHandlers {
     }
     this.gitOperationInProgress = true;
     this.cancelRequested = false;
+    this._abortController = new AbortController();
     this._lockTimeout = setTimeout(() => {
-      this.logger.warn('Git operation lock auto-released after 60s timeout');
-      this.gitOperationInProgress = false;
-      this._lockTimeout = null;
+      this.logger.warn('Git operation auto-aborted after timeout');
+      this._abortController.abort(new Error('Operation timeout'));
     }, this.LOCK_TIMEOUT_MS);
     this.logger.info('Git operation lock acquired');
     return true;
@@ -97,7 +107,19 @@ class GitHandlers {
       clearTimeout(this._lockTimeout);
       this._lockTimeout = null;
     }
+    // Note: do NOT call _abortController.abort() here — the operation has
+    // already completed (success or error). We only clear the reference.
+    this._abortController = null;
     this.logger.info('Git operation lock released');
+  }
+
+  /**
+   * Returns the AbortSignal for the current operation. Pass this to isomorphic-git
+   * fetch/pull/push calls so they can be cancelled by timeout or user request.
+   * @returns {AbortSignal|null}
+   */
+  getAbortSignal() {
+    return this._abortController ? this._abortController.signal : null;
   }
 
   /**
@@ -106,6 +128,9 @@ class GitHandlers {
    */
   requestCancel() {
     this.cancelRequested = true;
+    if (this._abortController) {
+      this._abortController.abort(new Error('User requested cancel'));
+    }
     this.logger.info('Git operation cancellation requested');
   }
 
@@ -1187,7 +1212,13 @@ class GitHandlers {
         .map(ref => ref.ref.replace('refs/heads/', ''))
         .filter(name => name !== 'HEAD');
 
-      return branches;
+      // Determine default branch from HEAD symref or fallback
+      const headRef = refs.find(r => r.ref === 'HEAD');
+      const defaultBranch = headRef?.target
+        ? headRef.target.replace('refs/heads/', '')
+        : branches.find(b => ['main', 'master'].includes(b)) || branches[0] || 'main';
+
+      return { success: true, branches, defaultBranch };
     } catch (error) {
       this.logger.error('Error listing remote branches:', error);
       if (!error.message?.includes('auth') && !(await this.gitOps.getGitHubToken())) {
@@ -1311,8 +1342,7 @@ class GitHandlers {
     ipcMain.handle('git:list-remote-branches', async (event, projectId) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
-        const branches = await this.gitListRemoteBranches(projectPath);
-        return { success: true, branches };
+        return await this.gitListRemoteBranches(projectPath);
       } catch (error) {
         this.logger.error('Error in git:list-remote-branches handler:', error);
         return { success: false, error: error.message };

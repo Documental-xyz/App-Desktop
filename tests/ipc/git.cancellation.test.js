@@ -161,4 +161,75 @@ describe('GitHandlers - Cancellation', () => {
       expect(typeof gitHandlers.unregisterHandlers).toBe('function');
     });
   });
+
+  describe('AbortController Integration', () => {
+    it('should expose an AbortSignal via getAbortSignal after acquiring lock', () => {
+      gitHandlers.acquireGitLock();
+      const signal = gitHandlers.getAbortSignal();
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal.aborted).toBe(false);
+      gitHandlers.releaseGitLock();
+    });
+
+    it('should return null from getAbortSignal when no operation is in progress', () => {
+      expect(gitHandlers.getAbortSignal()).toBeNull();
+    });
+
+    it('should abort the signal when LOCK_TIMEOUT_MS elapses', () => {
+      vi.useFakeTimers();
+      gitHandlers.acquireGitLock();
+      const signal = gitHandlers.getAbortSignal();
+      expect(signal.aborted).toBe(false);
+
+      vi.advanceTimersByTime(gitHandlers.LOCK_TIMEOUT_MS);
+
+      expect(signal.aborted).toBe(true);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Git operation auto-aborted after timeout'
+      );
+      gitHandlers.releaseGitLock();
+      vi.useRealTimers();
+    });
+
+    it('should clear the AbortController on releaseGitLock without aborting', () => {
+      gitHandlers.acquireGitLock();
+      const signal = gitHandlers.getAbortSignal();
+      gitHandlers.releaseGitLock();
+      expect(signal.aborted).toBe(false);
+      expect(gitHandlers.getAbortSignal()).toBeNull();
+    });
+
+    it('should abort the controller when requestCancel is called during an operation', () => {
+      gitHandlers.acquireGitLock();
+      const signal = gitHandlers.getAbortSignal();
+      expect(signal.aborted).toBe(false);
+
+      gitHandlers.requestCancel();
+
+      expect(signal.aborted).toBe(true);
+      expect(gitHandlers.cancelRequested).toBe(true);
+      gitHandlers.releaseGitLock();
+    });
+
+    it('should not throw when requestCancel is called with no active controller', () => {
+      expect(() => gitHandlers.requestCancel()).not.toThrow();
+      expect(gitHandlers.cancelRequested).toBe(true);
+    });
+
+    it('should provide a fresh AbortSignal on each acquireGitLock', () => {
+      gitHandlers.acquireGitLock();
+      const first = gitHandlers.getAbortSignal();
+      gitHandlers.releaseGitLock();
+
+      gitHandlers.acquireGitLock();
+      const second = gitHandlers.getAbortSignal();
+      gitHandlers.releaseGitLock();
+
+      expect(first).not.toBe(second);
+    });
+
+    it('should use a LOCK_TIMEOUT_MS of at least 120000 (raised from 60s)', () => {
+      expect(gitHandlers.LOCK_TIMEOUT_MS).toBeGreaterThanOrEqual(120000);
+    });
+  });
 });

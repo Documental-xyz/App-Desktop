@@ -7,3 +7,25 @@ welcome:
   title: Bem-vindo ao Documental
   subtitle: Seu hub de documentacao
   getStarted: Comecar
+main:
+  refresh_btn: Atualizar
+  publish_preview_btn: Preview
+  publish_main_btn: Main
+  git_exec_refreshing: Atualizando...
+  git_exec_publishing_preview: Publicando em Preview...
+  git_exec_publishing_main: Publicando em Main...
+  git_exec_step_checking: Verificando alterações
+  git_exec_step_committing: Salvando suas alterações
+  git_exec_step_fetching: Sincronizando com o time
+  git_exec_step_merging: Integrando alterações
+  git_exec_step_pushing: Publicando
+  git_exec_step_finalizing: Finalizando
+  git_exec_success: Concluído!
+  git_exec_error_generic: Algo deu errado. Tente novamente.
+  git_exec_error_network: Problema de rede. Verifique sua conexão.
+  git_exec_error_auth: Autenticação expirada. Entre novamente.
+  git_exec_error_main_permission: Você não tem permissão para publicar em Main.
+  discard_local_title: Descartar alterações locais?
+  discard_local_desc: Existem alterações locais não publicadas. Atualizar irá descartá-las permanentemente.
+  discard_local_btn: Descartar e Atualizar
+  commit_default_prefix: "Content update by {login} at {date}"
