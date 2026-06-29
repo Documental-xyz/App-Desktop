@@ -102,7 +102,7 @@ class IpcRegistry {
       this.projectCreationHandler.registerHandlers();
       this.i18nHandlers.registerHandlers();
       this.githubReposHandlers.registerHandlers();
-      this.permissionHandlers.register(ipcMain);
+      this.permissionHandlers.register();
 
       this.isRegistered = true;
       this.logger.info('✅ All IPC handlers registered successfully');
@@ -133,7 +133,7 @@ class IpcRegistry {
       this.projectCreationHandler.unregisterHandlers();
       this.i18nHandlers.unregisterHandlers();
       this.githubReposHandlers.unregisterHandlers();
-      this.permissionHandlers.unregister(ipcMain);
+      this.permissionHandlers.unregister();
       this.fileHandlers.unregisterHandlers();
       this.browserHandlers.unregisterHandlers();
       this.gitHandlers.unregisterHandlers();
