@@ -179,9 +179,9 @@ clearingCache: false,
       },
       // Permission gating for publish-to-main
       canPublishToMain: false,
-      publishMenuOpen: false,
-      // Publish-preview modal (commit message editor)
-      publishPreviewModalOpen: false,
+      // Unified publish setup modal (branch selector + commit message)
+      publishSetupModalOpen: false,
+      publishTargetBranch: 'preview',
       commitPrefix: '',
       userCommitSuffix: '',
       // Discard-local confirmation modal (before refresh with force)
@@ -206,7 +206,7 @@ clearingCache: false,
         return this.devServerUrl || sessionStorage.getItem('devServerUrl') || this.baseURL;
     },
     get isAnyOverlayOpen() {
-        return this.menuOpen || this.publishPreviewModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen;
+        return this.menuOpen || this.publishSetupModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -766,9 +766,11 @@ clearingCache: false,
             this.canPublishToMain = false;
         }
     },
-    async openPublishPreviewModal() {
+    async openPublishSetupModal() {
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
+        await this.loadBranches();
+        this.publishTargetBranch = 'preview';
         try {
             const userInfo = await window.electronAPI.getUserInfo();
             const iso = new Date().toISOString();
@@ -777,8 +779,7 @@ clearingCache: false,
             this.commitPrefix = `Content update at ${new Date().toISOString()}`;
         }
         this.userCommitSuffix = '';
-        this.publishPreviewModalOpen = true;
-        this.publishMenuOpen = false;
+        this.publishSetupModalOpen = true;
     },
     get fullCommitMessage() {
         return this.userCommitSuffix.trim()
@@ -810,17 +811,23 @@ clearingCache: false,
             this.finishGitExecModal(result);
         } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
-    async onPublishPreviewClick() {
-        await this.openPublishPreviewModal();
-    },
-    async onPublishPreviewConfirm() {
-        this.publishPreviewModalOpen = false;
+    async onPublishSetupConfirm() {
+        this.publishSetupModalOpen = false;
         const projectId = sessionStorage.getItem('currentProjectId');
-        this.openGitExecModal('publish-preview', 5);
-        try {
-            const result = await window.electronAPI.publishToPreview(projectId, this.fullCommitMessage);
-            this.finishGitExecModal(result);
-        } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+        if (this.publishTargetBranch === 'main') {
+            if (!this.canPublishToMain) return;
+            this.openGitExecModal('publish-main', 4);
+            try {
+                const result = await window.electronAPI.publishToMain(projectId);
+                this.finishGitExecModal(result);
+            } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+        } else {
+            this.openGitExecModal('publish-preview', 5);
+            try {
+                const result = await window.electronAPI.publishToPreview(projectId, this.fullCommitMessage);
+                this.finishGitExecModal(result);
+            } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+        }
     },
     async onPublishMainClick() {
         if (!this.canPublishToMain) return;
@@ -1603,23 +1610,10 @@ clearingCache: false,
         class="px-4 py-2 text-sm font-semibold text-white bg-accent-orange rounded-md hover:bg-orange-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent-orange"
         x-text="$store.i18n.t('main.refresh_btn')"></button>
 
-<!-- Publicar dropdown -->
-<div class="relative" @click.away="publishMenuOpen = false">
-  <button @click="publishMenuOpen = !publishMenuOpen"
-          class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
-          x-text="$store.i18n.t('main.nav_publish')"></button>
-  <div x-show="publishMenuOpen" x-transition
-       class="absolute right-0 mt-2 w-40 bg-surface-dark rounded-md shadow-xl border border-border-default z-50">
-    <button @click="onPublishPreviewClick()"
-            class="block w-full text-left px-4 py-2 text-sm text-text-dark hover:bg-surface-secondary"
-            x-text="$store.i18n.t('main.publish_preview_btn')"></button>
-    <button @click="onPublishMainClick(); publishMenuOpen = false"
-            :disabled="!canPublishToMain"
-            :class="!canPublishToMain ? 'opacity-50 cursor-not-allowed' : 'hover:bg-surface-secondary'"
-            class="block w-full text-left px-4 py-2 text-sm text-text-dark"
-            x-text="$store.i18n.t('main.publish_main_btn')"></button>
-  </div>
-</div>
+<!-- Publicar button -->
+<button @click="openPublishSetupModal()"
+        class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
+        x-text="$store.i18n.t('main.nav_publish')"></button>
 <div class="relative">
 <button @click="menuOpen = !menuOpen" class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary">
 <span class="material-icons text-muted-dark">menu</span>
@@ -1912,26 +1906,35 @@ clearingCache: false,
   </div>
 </div>
 
-<!-- Publish Preview Modal (commit message editor) -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="publishPreviewModalOpen">
-  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <h3 class="text-lg font-medium text-text-dark mb-2" x-text="$store.i18n.t('main.nav_publish') + ' → ' + $store.i18n.t('main.publish_preview_btn')"></h3>
-    <p class="text-sm text-muted-dark mb-4" x-text="$store.i18n.t('main.commit_modal_desc')"></p>
+<!-- Unified Publish Setup Modal (branch selector + commit message) -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="publishSetupModalOpen">
+  <div @click.outside="publishSetupModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-medium text-text-dark mb-4" x-text="$store.i18n.t('main.nav_publish')"></h3>
 
-    <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_default_label')"></label>
-    <div class="mb-3 p-2 bg-background-dark border border-border-default rounded text-xs text-muted-dark font-mono" x-text="commitPrefix"></div>
+    <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.push_branch_label')"></label>
+    <select x-model="publishTargetBranch"
+            class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark mb-4">
+      <template x-for="branch in branches" :key="branch.name">
+        <option :value="branch.name" x-text="branch.name"></option>
+      </template>
+    </select>
 
-    <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_optional_label')"></label>
-    <textarea x-model="userCommitSuffix"
-              class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-primary focus:outline-none p-2 resize-none mb-4"
-              rows="3"
-              :placeholder="$store.i18n.t('main.commit_modal_optional_placeholder')"></textarea>
+    <div x-show="publishTargetBranch !== 'main'">
+      <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_default_label')"></label>
+      <div class="mb-3 p-2 bg-background-dark border border-border-default rounded text-xs text-muted-dark font-mono" x-text="commitPrefix"></div>
+
+      <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_optional_label')"></label>
+      <textarea x-model="userCommitSuffix"
+                class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-primary focus:outline-none p-2 resize-none mb-4"
+                rows="3"
+                :placeholder="$store.i18n.t('main.commit_modal_optional_placeholder')"></textarea>
+    </div>
 
     <div class="flex justify-end gap-2">
-      <button @click="publishPreviewModalOpen = false"
+      <button @click="publishSetupModalOpen = false"
               class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
               x-text="$store.i18n.t('common.cancel')"></button>
-      <button @click="onPublishPreviewConfirm()"
+      <button @click="onPublishSetupConfirm()"
               class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium"
               x-text="$store.i18n.t('main.nav_publish')"></button>
     </div>

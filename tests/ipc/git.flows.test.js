@@ -22,10 +22,10 @@ vi.mock('isomorphic-git', () => ({
   statusMatrix: vi.fn(),
   fetch: vi.fn(),
   checkout: vi.fn(),
-  reset: vi.fn(),
   push: vi.fn(),
   getConfig: vi.fn(),
   resolveRef: vi.fn(),
+  writeRef: vi.fn(),
   add: vi.fn(),
   remove: vi.fn(),
   commit: vi.fn(),
@@ -143,7 +143,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
     git.statusMatrix.mockResolvedValue([]); // clean
     git.fetch.mockResolvedValue({});
     git.checkout.mockResolvedValue(undefined);
-    git.reset.mockResolvedValue(undefined);
+    git.resolveRef.mockResolvedValue('fake-commit-oid');
+    git.writeRef.mockResolvedValue(undefined);
+    git.checkout.mockResolvedValue(undefined);
     git.push.mockResolvedValue(undefined);
     git.getConfig.mockResolvedValue('Test User');
     git.resolveRef.mockResolvedValue('abc1234567890abcdef');
@@ -167,7 +169,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           git.currentBranch.mockResolvedValue('preview');
           git.statusMatrix.mockResolvedValue([]); // clean
           git.fetch.mockResolvedValue({});
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
 
           const result = await handlers.gitRefresh(1);
 
@@ -186,15 +190,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
             remote: 'origin',
           });
 
-          // reset was hard to origin/preview
-          const resetCall = git.reset.mock.calls.find(
-            (c) => c[0] && c[0].ref === 'origin/preview'
-          );
-          expect(resetCall).toBeDefined();
-          expect(resetCall[0]).toMatchObject({
-            ref: 'origin/preview',
-            mode: 'hard',
-          });
+          // resolveRef was called (the hard-reset helper resolves the target ref first)
+          const resolveCall = git.resolveRef.mock.calls.find(c => c[0]?.ref && c[0].ref.includes('preview'));
+          expect(resolveCall).toBeDefined();
         });
 
         it('throws DIRTY_LOCAL when dirty and force=false', async () => {
@@ -212,8 +210,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(Array.isArray(result.files)).toBe(true);
           expect(result.files).toContain('dirty.txt');
 
-          // reset must NOT have been called on a dirty abort
-          expect(git.reset).not.toHaveBeenCalled();
+          // resolveRef must NOT have been called on a dirty abort
+          expect(git.resolveRef).not.toHaveBeenCalled();
         });
 
         it('resets with force=true even when dirty', async () => {
@@ -221,7 +219,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           git.statusMatrix.mockResolvedValue([['dirty.txt', 1, 2, 1]]);
           git.checkout.mockResolvedValue(undefined);
           git.fetch.mockResolvedValue({});
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
 
           const result = await handlers.gitRefresh(1, true);
 
@@ -230,14 +230,16 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(git.checkout).toHaveBeenCalledWith(
             expect.objectContaining({ ref: 'preview' })
           );
-          expect(git.reset).toHaveBeenCalled();
+          expect(git.resolveRef).toHaveBeenCalled();
         });
 
         it('releases lock on success, error, and cancel paths', async () => {
           // success path
           git.currentBranch.mockResolvedValue('preview');
           git.fetch.mockResolvedValue({});
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
 
           const spy = vi.spyOn(handlers, 'releaseGitLock');
 
@@ -276,7 +278,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(result.success).toBe(false);
           expect(result.cancelled).toBe(true);
           // hard reset must NOT have run after an aborted fetch
-          expect(git.reset).not.toHaveBeenCalled();
+          expect(git.resolveRef).not.toHaveBeenCalled();
         });
   });
 
@@ -448,7 +450,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -478,7 +482,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
           git.merge.mockRejectedValue(new Error('merge conflict on main'));
 
           const result = await handlers.gitPublishMain(1);
@@ -496,7 +502,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -516,7 +524,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.reset.mockResolvedValue(undefined);
+          git.resolveRef.mockResolvedValue('fake-commit-oid');
+          git.writeRef.mockResolvedValue(undefined);
+          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -527,6 +537,10 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
             expect(c[0].force).toBe(false);
             expect(c[0].ref).toBe('main');
           }
+        });
+
+        it('does NOT have git.reset (function does not exist in isomorphic-git v1.38.4)', () => {
+          expect(Object.keys(git)).not.toContain('reset');
         });
   });
 });

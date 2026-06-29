@@ -101,6 +101,27 @@ class GitHandlers {
   }
 
   /**
+   * Equivalent to `git reset --hard <targetRef>` using available isomorphic-git functions
+   * @param {string} projectPath - Absolute path to the git repository
+   * @param {string} targetRef - Ref to reset to (e.g., `'origin/preview'`)
+   * @returns {Promise<void>}
+   */
+  async _hardResetBranch(projectPath, targetRef) {
+    const fs = require('fs');
+    const gitMod = await this._getGit();
+    const oid = await gitMod.resolveRef({ fs, dir: projectPath, ref: targetRef });
+    const localBranch = targetRef.replace(/^origin\//, '');
+    await gitMod.writeRef({
+      fs,
+      dir: projectPath,
+      ref: `refs/heads/${localBranch}`,
+      value: oid,
+      force: true,
+    });
+    await gitMod.checkout({ fs, dir: projectPath, ref: localBranch, force: true });
+  }
+
+  /**
    * Acquire the git operation lock
    * @returns {boolean} True if lock was acquired, false if already in progress
    */
@@ -1289,7 +1310,7 @@ class GitHandlers {
       }
 
       this.sendOutput(`🔄 Atualizando para origin/${BRANCH_PREVIEW}...`);
-      await gitMod.reset({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, mode: 'hard' });
+      await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
 
       this.sendOutput(`✅ Atualizado para origin/${BRANCH_PREVIEW}`);
       return { success: true, branch: BRANCH_PREVIEW };
@@ -1540,7 +1561,7 @@ class GitHandlers {
 
       this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN}...`);
       await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_MAIN });
-      await gitMod.reset({ fs, dir: projectPath, ref: `origin/${BRANCH_MAIN}`, mode: 'hard' });
+      await this._hardResetBranch(projectPath, `origin/${BRANCH_MAIN}`);
 
       this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
       const [authorName, authorEmail] = await Promise.all([
@@ -1593,7 +1614,7 @@ class GitHandlers {
       try {
         const gitMod = await this._getGit();
         await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
-        await gitMod.reset({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, mode: 'hard' });
+        await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
       } catch (_e) { /* best effort */ }
       this.releaseGitLock();
     }
