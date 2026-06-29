@@ -523,6 +523,11 @@ main:
   discard_local_desc: "Hay cambios locales no publicados. Actualizar los descartará permanentemente."
   discard_local_btn: "Descartar y Actualizar"
   commit_default_prefix: "Content update by {login} at {date}"
+  commit_modal_desc: "Su mensaje de commit predeterminado ya está rellenado. Añada detalles opcionales abajo."
+  commit_modal_default_label: "Mensaje predeterminado"
+  commit_modal_optional_label: "Detalles opcionales"
+  commit_modal_optional_placeholder: "Describa lo que cambió (opcional)..."
+  git_exec_binaries_notice: "{count} archivo(s) fueron sobrescritos por la publicación."
 
 # script.js shared strings
 script:

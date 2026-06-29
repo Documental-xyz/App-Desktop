@@ -523,6 +523,11 @@ main:
   discard_local_desc: "There are unpublished local changes. Updating will discard them permanently."
   discard_local_btn: "Discard and Update"
   commit_default_prefix: "Content update by {login} at {date}"
+  commit_modal_desc: "Your default commit message is already filled in. Add optional details below."
+  commit_modal_default_label: "Default message"
+  commit_modal_optional_label: "Optional details"
+  commit_modal_optional_placeholder: "Describe what you changed (optional)..."
+  git_exec_binaries_notice: "{count} file(s) were overwritten by the publish."
 
 # script.js shared strings
 script:

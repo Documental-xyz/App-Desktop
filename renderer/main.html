@@ -1898,7 +1898,7 @@ clearingCache: false,
 
     <!-- Overlaid binaries notice -->
     <div x-show="gitExecution.binariesResolved > 0" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded-md">
-      <p class="text-xs text-yellow-400" x-text="gitExecution.binariesResolved + ' arquivos foram sobrepostos pela publicação.'"></p>
+      <p class="text-xs text-yellow-400" x-text="$store.i18n.t('main.git_exec_binaries_notice', {count: gitExecution.binariesResolved})"></p>
     </div>
 
     <!-- Actions -->
@@ -1917,16 +1917,16 @@ clearingCache: false,
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="publishPreviewModalOpen">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <h3 class="text-lg font-medium text-text-dark mb-2" x-text="$store.i18n.t('main.nav_publish') + ' → ' + $store.i18n.t('main.publish_preview_btn')"></h3>
-    <p class="text-sm text-muted-dark mb-4">Sua mensagem de commit padrão já está preenchida. Adicione detalhes opcionais abaixo.</p>
+    <p class="text-sm text-muted-dark mb-4" x-text="$store.i18n.t('main.commit_modal_desc')"></p>
 
-    <label class="block text-sm font-medium text-text-dark mb-1">Mensagem padrão</label>
+    <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_default_label')"></label>
     <div class="mb-3 p-2 bg-background-dark border border-border-default rounded text-xs text-muted-dark font-mono" x-text="commitPrefix"></div>
 
-    <label class="block text-sm font-medium text-text-dark mb-1">Detalhes opcionais</label>
+    <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.commit_modal_optional_label')"></label>
     <textarea x-model="userCommitSuffix"
               class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-primary focus:outline-none p-2 resize-none mb-4"
               rows="3"
-              placeholder="Descreva o que você alterou (opcional)..."></textarea>
+              :placeholder="$store.i18n.t('main.commit_modal_optional_placeholder')"></textarea>
 
     <div class="flex justify-end gap-2">
       <button @click="publishPreviewModalOpen = false"

@@ -29,3 +29,8 @@ main:
   discard_local_desc: Existem alterações locais não publicadas. Atualizar irá descartá-las permanentemente.
   discard_local_btn: Descartar e Atualizar
   commit_default_prefix: "Content update by {login} at {date}"
+  commit_modal_desc: "Sua mensagem de commit padrão já está preenchida. Adicione detalhes opcionais abaixo."
+  commit_modal_default_label: "Mensagem padrão"
+  commit_modal_optional_label: "Detalhes opcionais"
+  commit_modal_optional_placeholder: "Descreva o que você alterou (opcional)..."
+  git_exec_binaries_notice: "{count} arquivo(s) foram sobrepostos pela publicação."
