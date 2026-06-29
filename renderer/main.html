@@ -140,9 +140,7 @@
     editorUrl: null,
     isResizing: false,
     isResizingVertical: false,
-    publishModalOpen: false,
     branchModalOpen: false,
-    updateModalOpen: false,
     clearCacheModalOpen: false,
 clearingCache: false,
     helpModalOpen: false,
@@ -159,88 +157,37 @@ clearingCache: false,
     branches: [],
      branchLoading: false,
      branchSwitching: false,
-     copySuccess: false,
-     // Pull and push functionality
-     remoteBranches: [],
-     selectedPublishBranch: 'preview',
-     pullLoading: false,
-     pushLoading: false,
-     // Pull modal state machine
-     pullModalState: 'closed',
-     pullLogs: [],
-     pullResult: null,
-     pullCurrentBranch: '',
-     // Push modal state machine
-     pushModalState: 'closed',
-     pushBranches: [],
-     pushSelectedBranch: '',
-     pushBranchesLoading: false,
-      pushLogs: [],
-      pushResult: null,
-      pullIsDirty: false,
-      pullCommitMessage: '',
-      pullDirtyFiles: [],
-      pushIsDirty: false,
-      pushCommitMessage: '',
-      pushDirtyFiles: [],
+      copySuccess: false,
       initialLoading: true,
-     contentLoading: false,
-     contentReady: false,
-     viewerLoaded: false,
-     editorLoaded: false,
-     // Progress bar state
-     progress: {
-         visible: false,
-         stage: '',
-         percentage: 0,
-         message: '',
-         current: 0,
-         total: 0,
-
-         update(data) {
-             this.visible = true;
-             this.stage = this.getStageLabel(data.stage);
-             this.current = data.current || 0;
-             this.total = data.total || 0;
-             this.percentage = data.percentage || 0;
-             this.message = data.message || '';
-         },
-
-          complete() {
-              this.percentage = 100;
-              this.stage = __t('main.progress_completed');
-              this.message = __t('main.progress_finished');
-              setTimeout(() => this.reset(), 2000);
-          },
-
-          error(msg) {
-              this.stage = __t('main.progress_error');
-              this.message = msg;
-          },
-
-         reset() {
-             this.visible = false;
-             this.stage = '';
-             this.current = 0;
-             this.total = 0;
-             this.percentage = 0;
-             this.message = '';
-         },
-
-          getStageLabel(stage) {
-              const labels = {
-                  'checking': __t('main.progress_checking'),
-                  'staging': __t('main.progress_staging'),
-                  'committing': __t('main.progress_committing'),
-                  'fetching': __t('main.progress_fetching'),
-                  'pulling': __t('main.progress_pulling'),
-                  'pushing': __t('main.progress_pushing'),
-                  'complete': __t('main.progress_complete')
-              };
-              return labels[stage] || stage;
-          }
-     },
-    devServerUrl: 'https://documental.xyz/', // Default fallback
+      contentLoading: false,
+      contentReady: false,
+      viewerLoaded: false,
+      editorLoaded: false,
+      // Unified git execution modal (refresh / publish-preview / publish-main)
+      gitExecution: {
+          modalOpen: false,
+          operationType: null,
+          currentStep: 0,
+          totalSteps: 0,
+          stepLabel: '',
+          inProgress: false,
+          finished: false,
+          success: false,
+          error: null,
+          binariesResolved: 0,
+          cancelable: true,
+      },
+      // Permission gating for publish-to-main
+      canPublishToMain: false,
+      publishMenuOpen: false,
+      // Publish-preview modal (commit message editor)
+      publishPreviewModalOpen: false,
+      commitPrefix: '',
+      userCommitSuffix: '',
+      // Discard-local confirmation modal (before refresh with force)
+      discardModalOpen: false,
+      pendingRefresh: null,
+     devServerUrl: 'https://documental.xyz/', // Default fallback
     viewerScreenshot: null,
     editorScreenshot: null,
     overlaySequence: 0,
@@ -255,19 +202,11 @@ clearingCache: false,
         }
     },
     repoInfoLoading: false,
-    // Git operation progress modal state
-    gitOperationModalOpen: false,
-    gitOperationType: null,
-    gitOperationSteps: [],
-    gitOperationInProgress: false,
-    gitOperationFinished: false,
-    gitOperationSuccess: false,
-    gitOperationError: null,
     getDevServerUrl() {
         return this.devServerUrl || sessionStorage.getItem('devServerUrl') || this.baseURL;
     },
     get isAnyOverlayOpen() {
-        return this.menuOpen || this.publishModalOpen || this.branchModalOpen || this.updateModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.pullModalState !== 'closed' || this.pushModalState !== 'closed';
+        return this.menuOpen || this.publishPreviewModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -747,245 +686,150 @@ clearingCache: false,
             console.error(__t('main.error_create_branch', {error: error.message}));
         }
     },
-    async loadRemoteBranches() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) {
-            console.warn('No project ID found, cannot load remote branches');
-            return;
+    operationTitle() {
+        if (this.gitExecution.operationType === 'refresh') return __t('main.git_exec_refreshing');
+        if (this.gitExecution.operationType === 'publish-preview') return __t('main.git_exec_publishing_preview');
+        if (this.gitExecution.operationType === 'publish-main') return __t('main.git_exec_publishing_main');
+        return '';
+    },
+    stepLabelFor(stepIndex) {
+        const type = this.gitExecution.operationType;
+        if (type === 'refresh') {
+            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
         }
-        
+        if (type === 'publish-preview') {
+            return [__t('main.git_exec_step_committing'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
+        }
+        if (type === 'publish-main') {
+            return [__t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
+        }
+        return '';
+    },
+    stepClass(stepIndex) {
+        if (stepIndex < this.gitExecution.currentStep) return 'completed';
+        if (stepIndex === this.gitExecution.currentStep) return this.gitExecution.inProgress ? 'active' : 'completed';
+        return 'pending';
+    },
+    openGitExecModal(type, totalSteps) {
+        this.gitExecution.modalOpen = true;
+        this.gitExecution.operationType = type;
+        this.gitExecution.totalSteps = totalSteps;
+        this.gitExecution.currentStep = 1;
+        this.gitExecution.inProgress = true;
+        this.gitExecution.finished = false;
+        this.gitExecution.success = false;
+        this.gitExecution.error = null;
+        this.gitExecution.binariesResolved = 0;
+    },
+    finishGitExecModal(result) {
+        this.gitExecution.inProgress = false;
+        this.gitExecution.finished = true;
+        this.gitExecution.currentStep = this.gitExecution.totalSteps;
+        this.gitExecution.success = result.success;
+        if (!result.success) {
+            this.gitExecution.error = this.translateGitExecError(result);
+        }
+        if (result.binariesResolved) {
+            this.gitExecution.binariesResolved = result.binariesResolved;
+        }
+        if (result.success) {
+            this.loadRepositoryInfo();
+        }
+    },
+    closeGitExecModal() {
+        this.gitExecution.modalOpen = false;
+        this.gitExecution.operationType = null;
+        this.gitExecution.error = null;
+        this.gitExecution.finished = false;
+    },
+    cancelGitExec() {
+        window.electronAPI.cancelGitOperation();
+    },
+    translateGitExecError(result) {
+        if (result.code === 'DIRTY_LOCAL') return __t('main.discard_local_desc');
+        if (result.code === 'PERMISSION_DENIED') return __t('main.git_exec_error_main_permission');
+        if (result.code === 'MAIN_MERGE_CONFLICT') return __t('main.git_exec_error_generic');
+        if (result.cancelled) return __t('common.canceling');
+        const err = result.error || '';
+        if (err.includes('401') || err.includes('403')) return __t('main.git_exec_error_auth');
+        if (err.includes('network') || err.includes('ECONNREFUSED') || err.includes('ETIMEDOUT')) return __t('main.git_exec_error_network');
+        return err || __t('main.git_exec_error_generic');
+    },
+    async loadCanPublishToMain() {
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (!projectId) { this.canPublishToMain = false; return; }
         try {
-            const result = await window.electronAPI.listRemoteBranches(projectId);
-            if (result.success) {
-                this.remoteBranches = result.branches;
-                this.selectedPublishBranch = result.defaultBranch || 'preview';
-                console.log('✅ Remote branches loaded:', { branches: this.remoteBranches, default: this.selectedPublishBranch });
-            } else {
-                console.error('❌ Error loading remote branches:', result.error);
-                console.error(__t('main.error_remote_branches', {error: result.error}));
-            }
-        } catch (error) {
-            console.error('❌ Error loading remote branches:', error);
-            console.error(__t('main.error_remote_branches', {error: error.message}));
+            const result = await window.electronAPI.checkMainPermission(projectId);
+            this.canPublishToMain = result.canPushToMain;
+        } catch (e) {
+            console.error('Error checking main permission:', e);
+            this.canPublishToMain = false;
         }
     },
-    async pullFromPreview() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) {
-            console.warn('No project ID found, cannot pull from preview');
-            return;
-        }
-        
-        // Close confirmation modal
-        this.updateModalOpen = false;
-        
-        // Start progress modal
-        this.startGitOperation('pull');
-        
-        // Initialize steps
-        this.gitOperationSteps = [
-            { id: 'fetch', title: __t('main.git_op_fetching'), status: 'active', log: '', expanded: false },
-            { id: 'merge', title: __t('main.git_op_merging'), status: 'pending', log: '', expanded: false },
-            { id: 'complete', title: __t('main.git_op_finalizing'), status: 'pending', log: '', expanded: false }
-        ];
-        
-        try {
-            const result = await window.electronAPI.pullFromPreview(projectId);
-            
-            if (result.success) {
-                console.log('✅ Pull from preview successful:', result.message);
-                // Refresh repository info after pull
-                await this.loadRepositoryInfo();
-                await this.loadBranches();
-            } else {
-                console.error('❌ Error pulling from preview:', result.error);
-            }
-        } catch (error) {
-            console.error('❌ Error pulling from preview:', error);
-        } finally {
-            this.pullLoading = false;
-        }
-    },
-    async pushToBranch() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) {
-            console.warn('No project ID found, cannot push to branch');
-            return;
-        }
-        
-        if (!this.selectedPublishBranch) {
-            console.warn(__t('main.error_push_select'));
-            return;
-        }
-        
-        // Close selection modal
-        this.publishModalOpen = false;
-        
-        // Start progress modal
-        this.startGitOperation('push');
-        
-        // Initialize steps
-        this.gitOperationSteps = [
-            { id: 'prepare', title: __t('main.git_op_preparing'), status: 'active', log: '', expanded: false },
-            { id: 'push', title: __t('main.git_op_sending'), status: 'pending', log: '', expanded: false },
-            { id: 'complete', title: __t('main.git_op_finalizing'), status: 'pending', log: '', expanded: false }
-        ];
-        
-        try {
-            const result = await window.electronAPI.pushToBranch(projectId, this.selectedPublishBranch);
-            
-            if (result.success) {
-                console.log('✅ Push to branch successful:', result.message);
-                // Refresh repository info after push
-                await this.loadRepositoryInfo();
-            } else {
-                console.error('❌ Error pushing to branch:', result.error);
-            }
-        } catch (error) {
-            console.error('❌ Error pushing to branch:', error);
-        } finally {
-            this.pushLoading = false;
-        }
-    },
-    async openPullModal() {
-        this.pullLogs = [];
-        this.pullResult = null;
-        this.pullCurrentBranch = '';
-        this.pullIsDirty = false;
-        this.pullCommitMessage = '';
-        this.pullDirtyFiles = [];
-        this.pullModalState = 'confirm';
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (projectId) {
-            const [branchResult, statusResult] = await Promise.all([
-                window.electronAPI.getCurrentBranch(projectId),
-                window.electronAPI.checkGitStatus(projectId)
-            ]);
-            if (branchResult && branchResult.success) this.pullCurrentBranch = branchResult.currentBranch;
-            if (statusResult && statusResult.success) {
-                this.pullIsDirty = statusResult.isDirty;
-                this.pullDirtyFiles = statusResult.files || [];
-            }
-        }
-    },
-    async confirmPull() {
-        console.log('🔍 DEBUG: confirmPull() called');
-        const projectId = sessionStorage.getItem('currentProjectId');
-        console.log('🔍 DEBUG: projectId =', projectId);
-        if (!projectId) {
-            console.error('❌ DEBUG: No projectId found');
-            return;
-        }
-        // MOSTRAR PROGRESSO IMEDIATAMENTE
-        this.progress.update({
-            stage: 'checking',
-            current: 0,
-            total: 100,
-            percentage: 0,
-            message: __t('common.starting')
-        });
-        this.pullModalState = 'progress';
-        this.pullLogs = [];
-        console.log('🔍 DEBUG: Calling pullFromPreview...');
-        try {
-            const commitMsg = this.pullIsDirty ? this.pullCommitMessage.trim() : null;
-            console.log('🔍 DEBUG: commitMsg =', commitMsg);
-            const result = await window.electronAPI.pullFromPreview(projectId, commitMsg);
-            console.log('🔍 DEBUG: Result =', result);
-            this.pullResult = result;
-        } catch (error) {
-            console.error('❌ DEBUG: Error =', error);
-            this.pullResult = { success: false, error: error.message };
-        }
-        this.pullModalState = 'result';
-        console.log('🔍 DEBUG: Modal state changed to result');
-        // Refresh repo info after pull completes
-        if (this.pullResult && this.pullResult.success) {
-            await this.loadRepositoryInfo();
-            await this.loadBranches();
-        }
-    },
-    closePullModal() {
-        this.pullModalState = 'closed';
-        this.pullLogs = [];
-        this.pullResult = null;
-        this.pullIsDirty = false;
-        this.pullCommitMessage = '';
-        this.pullDirtyFiles = [];
-    },
-    async openPushModal() {
-        this.pushLogs = [];
-        this.pushResult = null;
-        this.pushSelectedBranch = '';
-        this.pushBranches = [];
-        this.pushBranchesLoading = true;
-        this.pushIsDirty = false;
-        this.pushCommitMessage = '';
-        this.pushDirtyFiles = [];
-        this.pushModalState = 'select';
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (projectId) {
-            try {
-                const [branchesResult, statusResult] = await Promise.all([
-                    window.electronAPI.listRemoteBranches(projectId),
-                    window.electronAPI.checkGitStatus(projectId)
-                ]);
-                this.pushBranchesLoading = false;
-                if (branchesResult && branchesResult.success) this.pushBranches = branchesResult.branches;
-                if (statusResult && statusResult.success) {
-                    this.pushIsDirty = statusResult.isDirty;
-                    this.pushDirtyFiles = statusResult.files || [];
-                }
-            } catch (error) {
-                this.pushBranchesLoading = false;
-                console.error('❌ Error loading push modal data:', error);
-            }
-        } else {
-            this.pushBranchesLoading = false;
-        }
-    },
-    async confirmPush() {
-        if (!this.pushSelectedBranch) return;
+    async openPublishPreviewModal() {
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
-        // MOSTRAR PROGRESSO IMEDIATAMENTE
-        this.progress.update({
-            stage: 'checking',
-            current: 0,
-            total: 100,
-            percentage: 0,
-            message: __t('common.starting')
-        });
-        this.pushModalState = 'progress';
-        this.pushLogs = [];
         try {
-            const commitMsg = this.pushIsDirty ? this.pushCommitMessage.trim() : null;
-            const result = await window.electronAPI.pushToBranch(projectId, this.pushSelectedBranch, commitMsg);
-            this.pushResult = result;
-        } catch (error) {
-            this.pushResult = { success: false, error: error.message };
+            const userInfo = await window.electronAPI.getUserInfo();
+            const iso = new Date().toISOString();
+            this.commitPrefix = __t('main.commit_default_prefix', { login: userInfo.login || 'user', date: iso });
+        } catch (e) {
+            this.commitPrefix = `Content update at ${new Date().toISOString()}`;
         }
-        this.pushModalState = 'result';
-        // Refresh repo info after push completes
-        if (this.pushResult && this.pushResult.success) {
-            await this.loadRepositoryInfo();
+        this.userCommitSuffix = '';
+        this.publishPreviewModalOpen = true;
+        this.publishMenuOpen = false;
+    },
+    get fullCommitMessage() {
+        return this.userCommitSuffix.trim()
+            ? `${this.commitPrefix}\n\n${this.userCommitSuffix.trim()}`
+            : this.commitPrefix;
+    },
+    async onRefreshClick() {
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (!projectId) return;
+        const status = await window.electronAPI.checkGitStatus(projectId);
+        if (status.isDirty) {
+            this.discardModalOpen = true;
+            this.pendingRefresh = { projectId };
+            return;
+        }
+        await this.executeRefresh(projectId, false);
+    },
+    async confirmDiscardAndRefresh() {
+        this.discardModalOpen = false;
+        if (this.pendingRefresh) {
+            await this.executeRefresh(this.pendingRefresh.projectId, true);
+            this.pendingRefresh = null;
         }
     },
-    closePushModal() {
-        this.pushModalState = 'closed';
-        this.pushLogs = [];
-        this.pushResult = null;
-        this.pushIsDirty = false;
-        this.pushCommitMessage = '';
-        this.pushDirtyFiles = [];
+    async executeRefresh(projectId, force) {
+        this.openGitExecModal('refresh', 3);
+        try {
+            const result = await window.electronAPI.refreshProject(projectId, force);
+            this.finishGitExecModal(result);
+        } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
-    cancelPull() {
-        this.pullLogs.push(__t('common.canceling'));
-        window.electronAPI.cancelGitOperation();
+    async onPublishPreviewClick() {
+        await this.openPublishPreviewModal();
     },
-    cancelPush() {
-        this.pushLogs.push(__t('common.canceling'));
-        window.electronAPI.cancelGitOperation();
+    async onPublishPreviewConfirm() {
+        this.publishPreviewModalOpen = false;
+        const projectId = sessionStorage.getItem('currentProjectId');
+        this.openGitExecModal('publish-preview', 5);
+        try {
+            const result = await window.electronAPI.publishToPreview(projectId, this.fullCommitMessage);
+            this.finishGitExecModal(result);
+        } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+    },
+    async onPublishMainClick() {
+        if (!this.canPublishToMain) return;
+        const projectId = sessionStorage.getItem('currentProjectId');
+        this.openGitExecModal('publish-main', 4);
+        try {
+            const result = await window.electronAPI.publishToMain(projectId);
+            this.finishGitExecModal(result);
+        } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
     async init() { // Make init an async function
         console.log('🚀 INIT STARTED - Renderer initialization beginning');
@@ -1090,20 +934,6 @@ clearingCache: false,
                 : payload || '';
             this.commandOutput += message;
             sessionStorage.setItem('commandOutput', this.commandOutput);
-            // Stream to pull modal if in progress
-            if (this.pullModalState === 'progress') {
-                this.pullLogs.push(message);
-                this.$nextTick(() => {
-                    if (this.$refs.pullLogArea) this.$refs.pullLogArea.scrollTop = this.$refs.pullLogArea.scrollHeight;
-                });
-            }
-            // Stream to push modal if in progress
-            if (this.pushModalState === 'progress') {
-                this.pushLogs.push(message);
-                this.$nextTick(() => {
-                    if (this.$refs.pushLogArea) this.$refs.pushLogArea.scrollTop = this.$refs.pushLogArea.scrollHeight;
-                });
-            }
             this.$nextTick(() => {
                 const activeTab = this.consoleTabs.find(tab => tab.id === this.activeConsoleTab);
                 if (activeTab && activeTab.type === 'commands') {
@@ -1111,20 +941,6 @@ clearingCache: false,
                 }
             });
         });
-
-        // Listen for git progress events
-        if (window.electronAPI && window.electronAPI.onGitProgress) {
-            window.electronAPI.onGitProgress((data) => {
-                console.log('📊 Git progress event received:', data);
-                this.progress.update(data);
-
-                if (data.stage === 'complete') {
-                    this.progress.complete();
-                } else if (data.stage === 'error') {
-                    this.progress.error(data.message || __t('main.progress_error_operation'));
-                }
-            });
-        }
 
         // Load initial app logs and restore from sessionStorage
         window.electronAPI.getAppLogs().then(initialLogs => {
@@ -1289,13 +1105,6 @@ clearingCache: false,
             }
         });
 
-        // Watch for publish modal opening to load remote branches
-        this.$watch('publishModalOpen', (isOpen) => {
-            if (isOpen) {
-                this.loadRemoteBranches();
-            }
-        });
-
         // Watch for console tab changes to scroll to bottom when switching tabs
         this.$watch('activeConsoleTab', () => {
             this.$nextTick(() => {
@@ -1433,6 +1242,9 @@ clearingCache: false,
         
         // Load repository information
         await this.loadRepositoryInfo();
+
+        // Check publish-to-main permission (Wave 3)
+        await this.loadCanPublishToMain();
         
         // Set up periodic refresh for repository info (every 30 seconds)
         setInterval(async () => {
@@ -1787,8 +1599,28 @@ clearingCache: false,
 </div>
 </div>
 <div class="flex items-center space-x-2">
-<button @click="openPullModal()" class="px-4 py-2 text-sm font-semibold text-white bg-accent-orange rounded-md hover:bg-orange-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent-orange" x-text="$store.i18n.t('main.nav_update')"></button>
-<button @click="openPushModal()" class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary" x-text="$store.i18n.t('main.nav_publish')"></button>
+<button @click="onRefreshClick()"
+        class="px-4 py-2 text-sm font-semibold text-white bg-accent-orange rounded-md hover:bg-orange-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent-orange"
+        x-text="$store.i18n.t('main.refresh_btn')"></button>
+
+<!-- Publicar dropdown -->
+<div class="relative">
+  <button @click="publishMenuOpen = !publishMenuOpen"
+          @click.away="publishMenuOpen = false"
+          class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
+          x-text="$store.i18n.t('main.nav_publish')"></button>
+  <div x-show="publishMenuOpen" x-transition
+       class="absolute right-0 mt-2 w-40 bg-surface-dark rounded-md shadow-xl border border-border-default z-50">
+    <button @click="onPublishPreviewClick()"
+            class="block w-full text-left px-4 py-2 text-sm text-text-dark hover:bg-surface-secondary"
+            x-text="$store.i18n.t('main.publish_preview_btn')"></button>
+    <button @click="onPublishMainClick(); publishMenuOpen = false"
+            :disabled="!canPublishToMain"
+            :class="!canPublishToMain ? 'opacity-50 cursor-not-allowed' : 'hover:bg-surface-secondary'"
+            class="block w-full text-left px-4 py-2 text-sm text-text-dark"
+            x-text="$store.i18n.t('main.publish_main_btn')"></button>
+  </div>
+</div>
 <div class="relative">
 <button @click="menuOpen = !menuOpen" class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary">
 <span class="material-icons text-muted-dark">menu</span>
@@ -1931,10 +1763,9 @@ clearingCache: false,
 </div>
 <footer x-ref="footer" class="flex items-center justify-between h-8 px-4 bg-surface-dark border-t border-border-subtle text-xs text-muted-dark shrink-0">
 <div class="flex items-center space-x-6">
-<button
-  @click="branchModalOpen = true"
-  class="flex items-center space-x-2 hover:text-text-dark"
-  :disabled="branchSwitching"
+<span
+  class="flex items-center space-x-2"
+  :class="{ 'opacity-50': branchSwitching }"
 >
   <span
     x-show="!branchSwitching"
@@ -1949,7 +1780,7 @@ clearingCache: false,
     refresh
   </span>
   <span class="font-bold" x-text="currentBranch"></span>
-</button>
+</span>
 <button @click="openProjectDirectory()" class="flex items-center space-x-2 hover:text-text-dark" :title="repoInfo.workingDirectory || __t('main.footer_open_dir')">
 <span class="material-icons text-sm">folder_open</span>
 <span class="truncate max-w-xs" x-text="repoInfo.workingDirectory || __t('main.footer_project_path')"></span>
@@ -2034,159 +1865,96 @@ clearingCache: false,
 </nav>
 </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="pullModalState !== 'closed'">
-  <div class="bg-surface-dark rounded-lg p-6 max-w-lg w-full mx-4 shadow-xl">
-    <div x-show="pullModalState === 'confirm'">
-      <h3 class="text-lg font-semibold text-white mb-2" x-text="__t('main.pull_title')"></h3>
-      <p class="text-text-dark text-sm mb-4" x-text="__t('main.pull_desc')"></p>
-      <p class="text-sm text-muted-dark mb-4" x-show="pullCurrentBranch"><span x-text="__t('main.pull_branch')"></span><span class="text-green-400 font-mono" x-text="pullCurrentBranch"></span></p>
-      <div x-show="pullIsDirty" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded">
-        <p class="text-yellow-400 text-sm font-medium mb-1" x-text="__t('main.pull_unsaved')"></p>
-        <p class="text-muted-dark text-xs mb-2 whitespace-pre-line" x-text="__t('main.pull_files_modified', {count: pullDirtyFiles.length})"></p>
-        <label class="block text-sm text-text-dark mb-1"><span x-text="__t('main.pull_commit_message')"></span> <span class="text-red-400">*</span></label>
-        <textarea x-model="pullCommitMessage"
-          class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-green-500 focus:outline-none p-2 resize-none"
-          rows="2"
-          :placeholder="__t('main.pull_commit_placeholder')"></textarea>
-      </div>
-      <div class="flex space-x-3">
-        <button @click="confirmPull()" :disabled="pullIsDirty && !pullCommitMessage.trim()" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-hover text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed" x-text="__t('common.confirm')"></button>
-        <button @click="closePullModal()" class="px-4 py-2 bg-muted-dark text-white rounded hover:bg-muted text-sm font-medium" x-text="__t('common.cancel')"></button>
-      </div>
-    </div>
-    <div x-show="pullModalState === 'progress'" class="space-y-4">
-      <h3 class="text-lg font-semibold text-white" x-text="__t('main.pull_updating')"></h3>
+<!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main) -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="gitExecution.modalOpen">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-medium text-text-dark mb-4" x-text="operationTitle()"></h3>
 
-      <!-- Spinner (quando percentage === 0) -->
-      <div x-show="progress.percentage === 0" class="flex items-center justify-center py-4">
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
-        <span class="ml-3 text-text-dark text-sm" x-text="__t('common.starting')"></span>
-      </div>
-
-      <!-- Barra de Progresso (quando percentage > 0) -->
-      <div x-show="progress.percentage > 0" class="space-y-2">
-        <div class="flex justify-between items-center text-sm">
-          <span x-text="progress.stage" class="text-text-dark"></span>
-          <span x-text="progress.percentage + '%'" class="text-blue-400 font-mono font-bold"></span>
-        </div>
-
-        <div class="w-full bg-surface-secondary rounded-full h-2.5 overflow-hidden">
-          <div class="bg-gradient-to-r from-blue-500 via-cyan-400 to-blue-500 h-full rounded-full transition-all duration-300 relative overflow-hidden"
-               :style="`width: ${progress.percentage}%`">
-            <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-20 animate-shimmer"></div>
+    <!-- Stepper -->
+    <div class="space-y-3 mb-4">
+      <template x-for="i in gitExecution.totalSteps" :key="i">
+        <div class="flex items-center gap-3">
+          <div class="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+               :class="{
+                 'bg-green-500 text-white': stepClass(i) === 'completed',
+                 'bg-primary text-white animate-pulse': stepClass(i) === 'active',
+                 'bg-surface-secondary text-muted-dark': stepClass(i) === 'pending'
+               }">
+            <template x-if="stepClass(i) === 'completed'"><span>✓</span></template>
+            <template x-if="stepClass(i) === 'active'"><span x-text="i"></span></template>
+            <template x-if="stepClass(i) === 'pending'"><span x-text="i"></span></template>
           </div>
+          <span class="text-sm"
+                :class="{ 'text-text-dark font-medium': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
+                x-text="stepLabelFor(i)"></span>
         </div>
-      </div>
-
-      <div x-ref="pullLogArea" class="bg-background-dark rounded p-3 max-h-40 overflow-y-auto font-mono text-xs text-text-dark space-y-1">
-        <template x-for="(log, i) in pullLogs" :key="i">
-          <div x-text="log" class="break-words whitespace-pre-wrap py-0.5"></div>
-        </template>
-      </div>
-
-      <div class="flex justify-end">
-        <button @click="cancelPull()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm transition-colors" x-text="__t('common.cancel')">
-        </button>
-      </div>
+      </template>
     </div>
-    <div x-show="pullModalState === 'result'">
-      <h3 class="text-lg font-semibold text-white mb-4" x-text="__t('main.pull_result')"></h3>
-      <div x-show="pullResult && pullResult.success" class="flex items-center text-green-400 mb-4">
-        <span class="text-2xl mr-2">✅</span>
-        <span class="text-sm" x-text="__t('main.pull_success')"></span>
-      </div>
-      <div x-show="pullResult && !pullResult.success" class="flex items-center text-red-400 mb-4">
-        <span class="text-2xl mr-2">❌</span>
-        <span class="text-sm" x-text="pullResult ? (pullResult.error || __t('main.pull_error_unknown')) : __t('main.pull_error_unknown')"></span>
-      </div>
-      <button @click="closePullModal()" class="px-4 py-2 bg-muted-dark text-white rounded hover:bg-muted text-sm font-medium" x-text="__t('common.close')"></button>
+
+    <!-- Error -->
+    <div x-show="gitExecution.error" class="mb-4 p-3 bg-red-900 bg-opacity-50 border border-red-700 rounded-md">
+      <p class="text-sm text-red-200" x-text="gitExecution.error"></p>
+    </div>
+
+    <!-- Overlaid binaries notice -->
+    <div x-show="gitExecution.binariesResolved > 0" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded-md">
+      <p class="text-xs text-yellow-400" x-text="gitExecution.binariesResolved + ' arquivos foram sobrepostos pela publicação.'"></p>
+    </div>
+
+    <!-- Actions -->
+    <div class="flex justify-end gap-2">
+      <button x-show="gitExecution.inProgress" @click="cancelGitExec()"
+              class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('common.cancel')"></button>
+      <button x-show="gitExecution.finished" @click="closeGitExecModal()"
+              :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : 'bg-red-600 hover:bg-red-500'"
+              class="px-4 py-2 text-white rounded-md text-sm font-medium">OK</button>
     </div>
   </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="pushModalState !== 'closed'">
-  <div class="bg-surface-dark rounded-lg p-6 max-w-lg w-full mx-4 shadow-xl">
-    <div x-show="pushModalState === 'select'">
-      <h3 class="text-lg font-semibold text-white mb-2" x-text="__t('main.push_title')"></h3>
-      <p class="text-text-dark text-sm mb-4" x-text="__t('main.push_desc')"></p>
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-text-dark mb-1" x-text="__t('main.push_branch_label')"></label>
-        <div class="relative">
-          <select x-model="pushSelectedBranch" :disabled="pushBranchesLoading || pushBranches.length === 0" class="block w-full pl-3 pr-10 py-2 text-sm border border-border-default bg-background-dark text-white rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50">
-            <option value="" disabled x-show="!pushSelectedBranch" x-text="__t('main.push_select_branch')"></option>
-            <template x-for="branch in pushBranches" :key="branch">
-              <option :value="branch" x-text="branch"></option>
-            </template>
-          </select>
-          <div x-show="pushBranchesLoading" class="absolute inset-0 flex items-center justify-center bg-background-dark bg-opacity-75 rounded-md">
-            <div class="w-4 h-4 border-2 border-border-default border-t-green-400 rounded-full animate-spin"></div>
-          </div>
-        </div>
-        <p x-show="!pushBranchesLoading && pushBranches.length === 0" class="mt-1 text-xs text-red-400" x-text="__t('main.push_branches_error')"></p>
-      </div>
-      <div x-show="pushIsDirty" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded">
-        <p class="text-yellow-400 text-sm font-medium mb-1" x-text="__t('main.push_unsaved')"></p>
-        <p class="text-muted-dark text-xs mb-2 whitespace-pre-line" x-text="__t('main.push_files_modified', {count: pushDirtyFiles.length})"></p>
-        <label class="block text-sm text-text-dark mb-1"><span x-text="__t('main.push_commit_message')"></span> <span class="text-red-400">*</span></label>
-        <textarea x-model="pushCommitMessage"
-          class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-green-500 focus:outline-none p-2 resize-none"
-          rows="2"
-          :placeholder="__t('main.push_commit_placeholder')"></textarea>
-      </div>
-      <div class="flex space-x-3">
-        <button @click="confirmPush()" :disabled="!pushSelectedBranch || pushBranchesLoading || (pushIsDirty && !pushCommitMessage.trim())" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-hover text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed" x-text="__t('main.nav_publish')"></button>
-        <button @click="closePushModal()" class="px-4 py-2 bg-muted-dark text-white rounded hover:bg-muted text-sm font-medium" x-text="__t('common.cancel')"></button>
-      </div>
-    </div>
-    <div x-show="pushModalState === 'progress'" class="space-y-4">
-      <h3 class="text-lg font-semibold text-white" x-text="__t('main.push_publishing')"></h3>
 
-      <!-- Spinner (quando percentage === 0) -->
-      <div x-show="progress.percentage === 0" class="flex items-center justify-center py-4">
-        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
-        <span class="ml-3 text-text-dark text-sm" x-text="__t('common.starting')"></span>
-      </div>
+<!-- Publish Preview Modal (commit message editor) -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="publishPreviewModalOpen">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-medium text-text-dark mb-2" x-text="$store.i18n.t('main.nav_publish') + ' → ' + $store.i18n.t('main.publish_preview_btn')"></h3>
+    <p class="text-sm text-muted-dark mb-4">Sua mensagem de commit padrão já está preenchida. Adicione detalhes opcionais abaixo.</p>
 
-      <!-- Barra de Progresso (quando percentage > 0) -->
-      <div x-show="progress.percentage > 0" class="space-y-2">
-        <div class="flex justify-between items-center text-sm">
-          <span x-text="progress.stage" class="text-text-dark"></span>
-          <span x-text="progress.percentage + '%'" class="text-blue-400 font-mono font-bold"></span>
-        </div>
+    <label class="block text-sm font-medium text-text-dark mb-1">Mensagem padrão</label>
+    <div class="mb-3 p-2 bg-background-dark border border-border-default rounded text-xs text-muted-dark font-mono" x-text="commitPrefix"></div>
 
-        <div class="w-full bg-surface-secondary rounded-full h-2.5 overflow-hidden">
-          <div class="bg-gradient-to-r from-blue-500 via-cyan-400 to-blue-500 h-full rounded-full transition-all duration-300 relative overflow-hidden"
-               :style="`width: ${progress.percentage}%`">
-            <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-20 animate-shimmer"></div>
-          </div>
-        </div>
-      </div>
+    <label class="block text-sm font-medium text-text-dark mb-1">Detalhes opcionais</label>
+    <textarea x-model="userCommitSuffix"
+              class="w-full bg-background-dark text-text-dark text-sm rounded border border-border-default focus:border-primary focus:outline-none p-2 resize-none mb-4"
+              rows="3"
+              placeholder="Descreva o que você alterou (opcional)..."></textarea>
 
-      <!-- Logs -->
-      <div x-ref="pushLogArea" class="bg-background-dark rounded p-3 max-h-40 overflow-y-auto font-mono text-xs text-text-dark space-y-1">
-        <template x-for="(log, i) in pushLogs" :key="i">
-          <div x-text="log" class="break-words whitespace-pre-wrap py-0.5"></div>
-        </template>
-      </div>
-
-      <div class="flex justify-end">
-        <button @click="cancelPush()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm transition-colors" x-text="__t('common.cancel')">
-        </button>
-      </div>
-    </div>
-    <div x-show="pushModalState === 'result'">
-      <h3 class="text-lg font-semibold text-white mb-4" x-text="__t('main.push_result')"></h3>
-      <div x-show="pushResult && pushResult.success" class="flex items-center text-green-400 mb-4">
-        <span class="text-2xl mr-2">✅</span>
-        <span class="text-sm" x-text="__t('main.push_success')"></span>
-      </div>
-      <div x-show="pushResult && !pushResult.success" class="flex items-center text-red-400 mb-4">
-        <span class="text-2xl mr-2">❌</span>
-        <span class="text-sm" x-text="pushResult ? (pushResult.error || __t('main.push_error_unknown')) : __t('main.push_error_unknown')"></span>
-      </div>
-      <button @click="closePushModal()" class="px-4 py-2 bg-muted-dark text-white rounded hover:bg-muted text-sm font-medium" x-text="__t('common.close')"></button>
+    <div class="flex justify-end gap-2">
+      <button @click="publishPreviewModalOpen = false"
+              class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('common.cancel')"></button>
+      <button @click="onPublishPreviewConfirm()"
+              class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('main.nav_publish')"></button>
     </div>
   </div>
 </div>
+
+<!-- Discard Local Confirmation Modal -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="discardModalOpen">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-medium text-text-dark mb-2" x-text="$store.i18n.t('main.discard_local_title')"></h3>
+    <p class="text-sm text-muted-dark mb-4" x-text="$store.i18n.t('main.discard_local_desc')"></p>
+    <div class="flex justify-end gap-2">
+      <button @click="discardModalOpen = false; pendingRefresh = null"
+              class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('common.cancel')"></button>
+      <button @click="confirmDiscardAndRefresh()"
+              class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('main.discard_local_btn')"></button>
+    </div>
+  </div>
+</div>
+
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="branchModalOpen">
 <div @click.outside="branchModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-lg">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.branch_title')"></h3>
@@ -2302,90 +2070,6 @@ clearingCache: false,
     <div class="mt-4 flex justify-end space-x-2">
       <button @click="cancelCloseProject()" class="px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-muted-dark" x-text="__t('common.cancel')"></button>
       <button @click="confirmCloseProject()" class="px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-500" x-text="__t('main.close_project_confirm')"></button>
-    </div>
-  </div>
-</div>
-
-<!-- Git Operation Progress Modal -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="gitOperationModalOpen">
-  <div @click.outside="!gitOperationInProgress ? (gitOperationModalOpen = false) : null" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-lg">
-    <!-- Header with loader -->
-    <div class="flex items-center gap-3 mb-4">
-      <div x-show="gitOperationInProgress" class="flex items-center justify-center gap-1">
-        <div class="w-3 h-3 bg-primary rounded-full animate-pulse" style="animation-delay: 0s;"></div>
-        <div class="w-3 h-3 bg-primary rounded-full animate-pulse" style="animation-delay: 0.2s;"></div>
-        <div class="w-3 h-3 bg-primary rounded-full animate-pulse" style="animation-delay: 0.4s;"></div>
-      </div>
-      <div x-show="gitOperationFinished && gitOperationSuccess" class="flex items-center justify-center">
-        <span class="material-symbols-outlined text-green-500 text-2xl">check_circle</span>
-      </div>
-      <div x-show="gitOperationFinished && !gitOperationSuccess" class="flex items-center justify-center">
-        <span class="material-symbols-outlined text-red-500 text-2xl">error</span>
-      </div>
-      <h3 class="text-lg font-medium text-text-dark" x-text="gitOperationType === 'pull' ? __t('main.git_op_updating') : __t('main.git_op_publishing')"></h3>
-    </div>
-    
-    <!-- Steps list -->
-    <div class="bg-background-dark/50 rounded-lg p-4 space-y-2 max-h-80 overflow-y-auto">
-      <template x-for="step in gitOperationSteps" :key="step.id">
-        <div class="bg-surface-dark rounded-lg border text-sm" :class="{
-          'border-primary': step.status === 'active',
-          'border-green-500': step.status === 'success',
-          'border-red-500': step.status === 'failure',
-          'border-border-subtle': step.status === 'pending'
-        }">
-          <div class="flex items-center justify-between p-3" :class="{ 'cursor-pointer': step.status !== 'active' && step.log }" @click="step.log ? (step.expanded = !step.expanded) : null">
-            <div class="flex items-center gap-3">
-              <div class="flex items-center justify-center w-6 h-6">
-                <template x-if="step.status === 'active'">
-                  <span class="material-symbols-outlined text-primary text-xl animate-spin">autorenew</span>
-                </template>
-                <template x-if="step.status === 'success'">
-                  <span class="material-symbols-outlined text-green-500 text-xl">check_circle</span>
-                </template>
-                <template x-if="step.status === 'failure'">
-                  <span class="material-symbols-outlined text-red-500 text-xl">error</span>
-                </template>
-                <template x-if="step.status === 'pending'">
-                  <div class="w-4 h-4 border-2 border-border-default rounded-full"></div>
-                </template>
-              </div>
-              <span class="font-medium" :class="{ 
-                'text-muted-dark': step.status === 'pending', 
-                'text-text-dark font-semibold': step.status === 'success', 
-                'text-text-dark': step.status === 'active', 
-                'text-red-400': step.status === 'failure' 
-              }" x-text="step.title"></span>
-            </div>
-            <span x-show="step.log" class="material-symbols-outlined transition-transform" :class="{ 'rotate-180': step.expanded }">expand_more</span>
-          </div>
-          <!-- Expandable log -->
-          <div x-cloak x-show="step.expanded" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 -translate-y-2" x-transition:enter-end="opacity-100 translate-y-0" x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100 translate-y-0" x-transition:leave-end="opacity-0 -translate-y-2">
-            <div class="px-3 pb-3">
-              <div class="bg-background-dark rounded-md p-3 max-h-40 overflow-y-auto border border-border-subtle">
-                <pre class="text-xs text-muted-dark whitespace-pre-wrap font-mono" x-text="step.log"></pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
-    </div>
-    
-    <!-- Error message -->
-    <div x-show="gitOperationError" class="mt-4 p-3 bg-red-900/50 text-red-200 rounded-md border border-red-700">
-      <p class="text-sm font-medium" x-text="gitOperationError"></p>
-    </div>
-    
-    <!-- OK button -->
-    <div class="mt-6 flex justify-end">
-      <button 
-        x-show="gitOperationFinished"
-        @click="closeGitOperationModal()"
-        :class="gitOperationSuccess ? 'bg-primary hover:bg-primary-hover' : 'bg-red-600 hover:bg-red-500'"
-        class="px-4 py-2 text-sm font-medium text-white rounded-md transition-colors duration-300"
-      >
-        OK
-      </button>
     </div>
   </div>
 </div>
