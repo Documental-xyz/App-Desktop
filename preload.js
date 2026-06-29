@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRepositoryInfo: (projectId) => ipcRenderer.invoke('git:get-repository-info', projectId),
   // Git pull, push, and status functions
   checkGitStatus: (projectId) => ipcRenderer.invoke('git:check-status', projectId),
+  checkUnpushed: (projectId) => ipcRenderer.invoke('git:check-unpushed', projectId),
   pullFromPreview: (projectId, commitMessage) => ipcRenderer.invoke('git:pull-from-preview', projectId, commitMessage),
   pushToBranch: (projectId, targetBranch, commitMessage) => ipcRenderer.invoke('git:push-to-branch', projectId, targetBranch, commitMessage),
   refreshProject: (projectId, force) => ipcRenderer.invoke('git:refresh', projectId, force),

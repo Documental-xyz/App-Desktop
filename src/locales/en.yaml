@@ -528,6 +528,26 @@ main:
   commit_modal_optional_label: "Optional details"
   commit_modal_optional_placeholder: "Describe what you changed (optional)..."
   git_exec_binaries_notice: "{count} file(s) were overwritten by the publish."
+  # Refresh confirmation modal
+  refresh_confirm_title: "Update Project"
+  refresh_confirm_desc: "Update your local workspace with the latest changes from the remote repository."
+  refresh_confirm_btn: "Update"
+  # Unpushed changes modal (in refresh flow)
+  unpushed_title: "Unpublished Changes Detected"
+  unpushed_desc: "You have local commits that haven't been published yet."
+  unpushed_discard_btn: "Discard"
+  unpushed_publish_first_btn: "Publish First"
+  unpushed_cancel_btn: "Cancel"
+  unpushed_discard_confirm_title: "Discard Unpublished Changes?"
+  unpushed_discard_confirm_desc: "Any unpublished changes will be lost forever. This cannot be undone."
+  unpushed_discard_confirm_btn: "Yes, Discard Everything"
+  # Progress bar labels
+  git_exec_progress_label: "Progress"
+  git_exec_success_title: "Completed Successfully"
+  git_exec_failure_title: "Operation Failed"
+  git_exec_close_btn: "Close"
+  # Publish modal (additional)
+  publish_modal_desc: "Select the target branch and optionally add commit details."
 
 # script.js shared strings
 script:

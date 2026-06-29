@@ -353,6 +353,31 @@ class GitHandlers {
   }
 
   /**
+   * Check if local branch has commits not yet pushed to remote.
+   * Uses local remote-tracking refs only (no network fetch).
+   * @param {string} projectPath - Path to the git repository
+   * @returns {Promise<{success: boolean, hasUnpushed: boolean, currentBranch?: string, localSha?: string, remoteSha?: string}>}
+   */
+  async gitCheckUnpushed(projectPath) {
+    try {
+      const fs = require('fs');
+      const gitMod = await this._getGit();
+      const currentBranch = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+      const localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+      let remoteSha = null;
+      try {
+        remoteSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${currentBranch}` });
+      } catch (_e) {
+        return { success: true, hasUnpushed: true, currentBranch, localSha, remoteSha: null };
+      }
+      return { success: true, hasUnpushed: localSha !== remoteSha, currentBranch, localSha, remoteSha };
+    } catch (error) {
+      this.logger.error('Error checking unpushed commits:', error);
+      return { success: false, hasUnpushed: false, error: error.message };
+    }
+  }
+
+  /**
    * Stage all dirty files and create a commit
    * @param {Object} gitMod - isomorphic-git module
    * @param {Object} fs - filesystem module
@@ -1756,6 +1781,16 @@ class GitHandlers {
       }
     });
 
+    ipcMain.handle('git:check-unpushed', async (event, projectId) => {
+      try {
+        const projectPath = await this.getProjectPath(projectId);
+        return await this.gitCheckUnpushed(projectPath);
+      } catch (error) {
+        this.logger.error('Error in git:check-unpushed handler:', error);
+        return { success: false, hasUnpushed: false, error: error.message };
+      }
+    });
+
     ipcMain.handle('git:pull-from-preview', async (event, projectId, commitMessage) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
@@ -1842,6 +1877,7 @@ class GitHandlers {
     ipcMain.removeHandler('git:get-current-branch');
     ipcMain.removeHandler('git:get-repository-info');
     ipcMain.removeHandler('git:check-status');
+    ipcMain.removeHandler('git:check-unpushed');
     ipcMain.removeHandler('git:pull-from-preview');
     ipcMain.removeHandler('git:push-to-branch');
     ipcMain.removeHandler('git:refresh');

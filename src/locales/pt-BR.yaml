@@ -536,6 +536,26 @@ main:
   commit_modal_optional_label: "Detalhes opcionais"
   commit_modal_optional_placeholder: "Descreva o que você alterou (opcional)..."
   git_exec_binaries_notice: "{count} arquivo(s) foram sobrepostos pela publicação."
+  # Refresh confirmation modal
+  refresh_confirm_title: "Atualizar Projeto"
+  refresh_confirm_desc: "Atualize seu workspace local com as últimas alterações do repositório remoto."
+  refresh_confirm_btn: "Atualizar"
+  # Unpushed changes modal (in refresh flow)
+  unpushed_title: "Alterações Não Publicadas Detectadas"
+  unpushed_desc: "Você tem commits locais que ainda não foram publicados."
+  unpushed_discard_btn: "Descartar"
+  unpushed_publish_first_btn: "Publicar Primeiro"
+  unpushed_cancel_btn: "Cancelar"
+  unpushed_discard_confirm_title: "Descartar Alterações Não Publicadas?"
+  unpushed_discard_confirm_desc: "Qualquer alteração não publicada será perdida para sempre. Isso não pode ser desfeito."
+  unpushed_discard_confirm_btn: "Sim, Descartar Tudo"
+  # Progress bar labels
+  git_exec_progress_label: "Progresso"
+  git_exec_success_title: "Concluído com Sucesso"
+  git_exec_failure_title: "Operação Falhou"
+  git_exec_close_btn: "Fechar"
+  # Publish modal (additional)
+  publish_modal_desc: "Selecione a branch de destino e opcionalmente adicione detalhes do commit."
 
 # script.js shared strings
 script:

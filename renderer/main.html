@@ -187,6 +187,11 @@ clearingCache: false,
       // Discard-local confirmation modal (before refresh with force)
       discardModalOpen: false,
       pendingRefresh: null,
+      // Refresh flow: confirmation + unpushed-changes detection
+      refreshConfirmModalOpen: false,
+      unpushedModalOpen: false,
+      unpushedDiscardConfirmOpen: false,
+      pendingRefreshProjectId: null,
      devServerUrl: 'https://documental.xyz/', // Default fallback
     viewerScreenshot: null,
     editorScreenshot: null,
@@ -206,7 +211,7 @@ clearingCache: false,
         return this.devServerUrl || sessionStorage.getItem('devServerUrl') || this.baseURL;
     },
     get isAnyOverlayOpen() {
-        return this.menuOpen || this.publishSetupModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen;
+        return this.menuOpen || this.publishSetupModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen || this.unpushedModalOpen || this.unpushedDiscardConfirmOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -770,7 +775,7 @@ clearingCache: false,
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         await this.loadBranches();
-        this.publishTargetBranch = 'preview';
+        this.publishTargetBranch = this.currentBranch || 'preview';
         try {
             const userInfo = await window.electronAPI.getUserInfo();
             const iso = new Date().toISOString();
@@ -789,13 +794,44 @@ clearingCache: false,
     async onRefreshClick() {
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
+        this.pendingRefreshProjectId = projectId;
+        this.refreshConfirmModalOpen = true;
+    },
+    async confirmRefresh() {
+        this.refreshConfirmModalOpen = false;
+        const projectId = this.pendingRefreshProjectId;
+        if (!projectId) return;
         const status = await window.electronAPI.checkGitStatus(projectId);
         if (status.isDirty) {
-            this.discardModalOpen = true;
             this.pendingRefresh = { projectId };
+            this.discardModalOpen = true;
+            return;
+        }
+        const unpushed = await window.electronAPI.checkUnpushed(projectId);
+        if (unpushed.hasUnpushed) {
+            this.unpushedModalOpen = true;
             return;
         }
         await this.executeRefresh(projectId, false);
+        this.pendingRefreshProjectId = null;
+    },
+    unpushedChooseDiscard() {
+        this.unpushedModalOpen = false;
+        this.unpushedDiscardConfirmOpen = true;
+    },
+    async confirmDiscardUnpushedAndRefresh() {
+        this.unpushedDiscardConfirmOpen = false;
+        await this.executeRefresh(this.pendingRefreshProjectId, true);
+        this.pendingRefreshProjectId = null;
+    },
+    unpushedChoosePublishFirst() {
+        this.unpushedModalOpen = false;
+        this.pendingRefreshProjectId = null;
+        this.openPublishSetupModal();
+    },
+    unpushedChooseCancel() {
+        this.unpushedModalOpen = false;
+        this.pendingRefreshProjectId = null;
     },
     async confirmDiscardAndRefresh() {
         this.discardModalOpen = false;
@@ -824,7 +860,7 @@ clearingCache: false,
         } else {
             this.openGitExecModal('publish-preview', 5);
             try {
-                const result = await window.electronAPI.publishToPreview(projectId, this.fullCommitMessage);
+                const result = await window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage);
                 this.finishGitExecModal(result);
             } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
         }
@@ -1859,7 +1895,7 @@ clearingCache: false,
 </div>
 </div>
 <!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main) -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="gitExecution.modalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <h3 class="text-lg font-medium text-text-dark mb-4" x-text="operationTitle()"></h3>
 
@@ -1884,9 +1920,31 @@ clearingCache: false,
       </template>
     </div>
 
-    <!-- Error -->
-    <div x-show="gitExecution.error" class="mb-4 p-3 bg-red-900 bg-opacity-50 border border-red-700 rounded-md">
-      <p class="text-sm text-red-200" x-text="gitExecution.error"></p>
+    <!-- Progress Bar -->
+    <div x-show="gitExecution.inProgress" class="mb-4">
+      <div class="w-full bg-surface-secondary rounded-full h-2 overflow-hidden">
+        <div class="bg-primary h-full rounded-full transition-all duration-500"
+             :style="{ width: (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }"></div>
+      </div>
+      <p class="text-xs text-muted-dark mt-1 text-center" x-text="gitExecution.currentStep + ' / ' + gitExecution.totalSteps"></p>
+    </div>
+
+    <!-- Success Banner -->
+    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-4 bg-green-900 bg-opacity-30 border border-green-600 rounded-md flex items-center gap-3">
+      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
+        <span class="text-white text-lg">✓</span>
+      </div>
+      <p class="text-sm font-medium text-green-200" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
+    </div>
+    <!-- Failure Banner -->
+    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-4 bg-red-900 bg-opacity-30 border border-red-600 rounded-md flex items-center gap-3">
+      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-500 flex items-center justify-center">
+        <span class="text-white text-lg">✕</span>
+      </div>
+      <div>
+        <p class="text-sm font-medium text-red-200" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
+        <p x-show="gitExecution.error" class="text-xs text-red-300 mt-1" x-text="gitExecution.error"></p>
+      </div>
     </div>
 
     <!-- Overlaid binaries notice -->
@@ -1901,15 +1959,24 @@ clearingCache: false,
               x-text="$store.i18n.t('common.cancel')"></button>
       <button x-show="gitExecution.finished" @click="closeGitExecModal()"
               :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : 'bg-red-600 hover:bg-red-500'"
-              class="px-4 py-2 text-white rounded-md text-sm font-medium">OK</button>
+               class="px-4 py-2 text-white rounded-md text-sm font-medium"
+               x-text="$store.i18n.t('main.git_exec_close_btn')"></button>
     </div>
   </div>
 </div>
 
 <!-- Unified Publish Setup Modal (branch selector + commit message) -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="publishSetupModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="publishSetupModalOpen">
   <div @click.outside="publishSetupModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <h3 class="text-lg font-medium text-text-dark mb-4" x-text="$store.i18n.t('main.nav_publish')"></h3>
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+        <span class="material-icons text-primary">publish</span>
+      </div>
+      <div>
+        <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.nav_publish')"></h3>
+        <p class="text-xs text-muted-dark" x-text="$store.i18n.t('main.publish_modal_desc')"></p>
+      </div>
+    </div>
 
     <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.push_branch_label')"></label>
     <select x-model="publishTargetBranch"
@@ -1935,8 +2002,10 @@ clearingCache: false,
               class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
               x-text="$store.i18n.t('common.cancel')"></button>
       <button @click="onPublishSetupConfirm()"
-              class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium"
-              x-text="$store.i18n.t('main.nav_publish')"></button>
+              class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium flex items-center gap-2">
+        <span class="material-icons text-sm">publish</span>
+        <span x-text="$store.i18n.t('main.nav_publish')"></span>
+      </button>
     </div>
   </div>
 </div>
@@ -1953,6 +2022,67 @@ clearingCache: false,
       <button @click="confirmDiscardAndRefresh()"
               class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-md text-sm font-medium"
               x-text="$store.i18n.t('main.discard_local_btn')"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Refresh Confirmation Modal -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="refreshConfirmModalOpen">
+  <div @click.outside="refreshConfirmModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent-orange bg-opacity-20 flex items-center justify-center">
+        <span class="material-icons text-accent-orange">refresh</span>
+      </div>
+      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.refresh_confirm_title')"></h3>
+    </div>
+    <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.refresh_confirm_desc')"></p>
+    <div class="flex justify-end gap-2">
+      <button @click="refreshConfirmModalOpen = false" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('common.cancel')"></button>
+      <button @click="confirmRefresh()" class="px-4 py-2 bg-accent-orange hover:bg-orange-500 text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('main.refresh_confirm_btn')"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Unpushed Changes Modal -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="unpushedModalOpen">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
+        <span class="material-icons text-yellow-500">warning</span>
+      </div>
+      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_title')"></h3>
+    </div>
+    <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.unpushed_desc')"></p>
+    <div class="flex flex-col gap-2">
+      <button @click="unpushedChoosePublishFirst()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
+        <span class="material-icons text-sm">publish</span>
+        <span x-text="$store.i18n.t('main.unpushed_publish_first_btn')"></span>
+      </button>
+      <button @click="unpushedChooseDiscard()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
+        <span class="material-icons text-sm">delete</span>
+        <span x-text="$store.i18n.t('main.unpushed_discard_btn')"></span>
+      </button>
+      <button @click="unpushedChooseCancel()" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
+        <span class="material-icons text-sm">close</span>
+        <span x-text="$store.i18n.t('main.unpushed_cancel_btn')"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Discard Unpushed Confirmation Modal -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="unpushedDiscardConfirmOpen">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center">
+        <span class="material-icons text-red-500">dangerous</span>
+      </div>
+      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_discard_confirm_title')"></h3>
+    </div>
+    <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.unpushed_discard_confirm_desc')"></p>
+    <div class="flex justify-end gap-2">
+      <button @click="unpushedDiscardConfirmOpen = false; unpushedModalOpen = true" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('common.cancel')"></button>
+      <button @click="confirmDiscardUnpushedAndRefresh()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('main.unpushed_discard_confirm_btn')"></button>
     </div>
   </div>
 </div>
