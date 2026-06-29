@@ -114,6 +114,14 @@
         .animate-shimmer {
             animation: shimmer 2s infinite;
         }
+        /* Step icon animations (matching create.html pattern) */
+        .step-icon-active {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
     </style>
 
 </head>
@@ -1897,9 +1905,9 @@ clearingCache: false,
 <!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main) -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <div class="flex items-center gap-3 mb-5">
-      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
-        <span class="material-icons text-primary" x-text="gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'sync'"></span>
+    <div class="flex items-center gap-3 mb-6">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
+        <span class="material-symbols-outlined text-primary" x-text="gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'autorenew'"></span>
       </div>
       <h3 class="text-lg font-medium text-text-dark" x-text="operationTitle()"></h3>
     </div>
@@ -1908,18 +1916,21 @@ clearingCache: false,
     <div class="bg-background-dark rounded-lg p-4 mb-4 border border-border-default">
       <template x-for="i in gitExecution.totalSteps" :key="i">
         <div class="flex items-center gap-3 py-1.5">
-          <div class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all"
-               :class="{
-                 'bg-green-500 text-white shadow-lg shadow-green-500/30': stepClass(i) === 'completed',
-                 'bg-primary text-white animate-pulse ring-2 ring-primary ring-opacity-40': stepClass(i) === 'active',
-                 'bg-surface-secondary text-muted-dark': stepClass(i) === 'pending'
-               }">
-            <template x-if="stepClass(i) === 'completed'"><span class="material-icons text-sm">check</span></template>
-            <template x-if="stepClass(i) === 'active'"><span x-text="i"></span></template>
-            <template x-if="stepClass(i) === 'pending'"><span x-text="i"></span></template>
+          <div class="flex items-center justify-center w-7 h-7">
+            <template x-if="stepClass(i) === 'active'">
+              <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
+            </template>
+            <template x-if="stepClass(i) === 'completed'">
+              <span class="inline-flex items-center justify-center w-7 h-7 rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);">
+                <span class="material-symbols-outlined text-xl">check_circle</span>
+              </span>
+            </template>
+            <template x-if="stepClass(i) === 'pending'">
+              <div class="w-4 h-4 border-2 border-border-subtle rounded-full"></div>
+            </template>
           </div>
-          <span class="text-sm"
-                :class="{ 'text-text-dark font-medium': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
+          <span class="text-sm font-medium"
+                :class="{ 'text-text-dark': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
                 x-text="stepLabelFor(i)"></span>
         </div>
       </template>
@@ -1937,19 +1948,19 @@ clearingCache: false,
     </div>
 
     <!-- Success Banner -->
-    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-5 bg-green-900 bg-opacity-20 border-2 border-green-500 rounded-lg text-center">
-      <div class="flex-shrink-0 w-14 h-14 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-green-500/40">
-        <span class="material-icons text-white text-3xl">check_circle</span>
+    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 2px solid var(--color-primary);">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-primary); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 40%, transparent);">
+        <span class="material-symbols-outlined text-white text-3xl">check_circle</span>
       </div>
-      <p class="text-base font-semibold text-green-200" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
+      <p class="text-base font-semibold" style="color: var(--color-primary);" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
     </div>
     <!-- Failure Banner -->
-    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-5 bg-red-900 bg-opacity-20 border-2 border-red-500 rounded-lg text-center">
-      <div class="flex-shrink-0 w-14 h-14 rounded-full bg-red-500 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-red-500/40">
-        <span class="material-icons text-white text-3xl">cancel</span>
+    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 2px solid var(--color-danger);">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-danger); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-danger) 40%, transparent);">
+        <span class="material-symbols-outlined text-white text-3xl">cancel</span>
       </div>
-      <p class="text-base font-semibold text-red-200" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
-      <p x-show="gitExecution.error" class="text-sm text-red-300 mt-2" x-text="gitExecution.error"></p>
+      <p class="text-base font-semibold" style="color: var(--color-danger);" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
+      <p x-show="gitExecution.error" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecution.error"></p>
     </div>
 
     <!-- Overlaid binaries notice -->
@@ -1974,8 +1985,8 @@ clearingCache: false,
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="publishSetupModalOpen">
   <div @click.outside="publishSetupModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center gap-3 mb-4">
-      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
-        <span class="material-icons text-primary">publish</span>
+      <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
+        <span class="material-symbols-outlined text-primary">publish</span>
       </div>
       <div>
         <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.nav_publish')"></h3>
@@ -2036,7 +2047,7 @@ clearingCache: false,
   <div @click.outside="refreshConfirmModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent-orange bg-opacity-20 flex items-center justify-center">
-        <span class="material-icons text-accent-orange">refresh</span>
+        <span class="material-symbols-outlined text-accent-orange">refresh</span>
       </div>
       <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.refresh_confirm_title')"></h3>
     </div>
@@ -2053,22 +2064,22 @@ clearingCache: false,
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
-        <span class="material-icons text-yellow-500">warning</span>
+        <span class="material-symbols-outlined text-yellow-500">warning</span>
       </div>
       <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_title')"></h3>
     </div>
     <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.unpushed_desc')"></p>
     <div class="flex flex-col gap-2">
       <button @click="unpushedChoosePublishFirst()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-icons text-sm">publish</span>
+        <span class="material-symbols-outlined text-sm">publish</span>
         <span x-text="$store.i18n.t('main.unpushed_publish_first_btn')"></span>
       </button>
       <button @click="unpushedChooseDiscard()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-icons text-sm">delete</span>
+        <span class="material-symbols-outlined text-sm">delete</span>
         <span x-text="$store.i18n.t('main.unpushed_discard_btn')"></span>
       </button>
       <button @click="unpushedChooseCancel()" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-icons text-sm">close</span>
+        <span class="material-symbols-outlined text-sm">close</span>
         <span x-text="$store.i18n.t('main.unpushed_cancel_btn')"></span>
       </button>
     </div>
@@ -2080,7 +2091,7 @@ clearingCache: false,
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center">
-        <span class="material-icons text-red-500">dangerous</span>
+        <span class="material-symbols-outlined text-red-500">dangerous</span>
       </div>
       <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_discard_confirm_title')"></h3>
     </div>
