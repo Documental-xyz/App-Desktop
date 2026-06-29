@@ -1897,19 +1897,24 @@ clearingCache: false,
 <!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main) -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <h3 class="text-lg font-medium text-text-dark mb-4" x-text="operationTitle()"></h3>
+    <div class="flex items-center gap-3 mb-5">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-primary bg-opacity-20 flex items-center justify-center">
+        <span class="material-icons text-primary" x-text="gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'sync'"></span>
+      </div>
+      <h3 class="text-lg font-medium text-text-dark" x-text="operationTitle()"></h3>
+    </div>
 
-    <!-- Stepper -->
-    <div class="space-y-3 mb-4">
+    <!-- Stepper Card -->
+    <div class="bg-background-dark rounded-lg p-4 mb-4 border border-border-default">
       <template x-for="i in gitExecution.totalSteps" :key="i">
-        <div class="flex items-center gap-3">
-          <div class="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+        <div class="flex items-center gap-3 py-1.5">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all"
                :class="{
-                 'bg-green-500 text-white': stepClass(i) === 'completed',
-                 'bg-primary text-white animate-pulse': stepClass(i) === 'active',
+                 'bg-green-500 text-white shadow-lg shadow-green-500/30': stepClass(i) === 'completed',
+                 'bg-primary text-white animate-pulse ring-2 ring-primary ring-opacity-40': stepClass(i) === 'active',
                  'bg-surface-secondary text-muted-dark': stepClass(i) === 'pending'
                }">
-            <template x-if="stepClass(i) === 'completed'"><span>✓</span></template>
+            <template x-if="stepClass(i) === 'completed'"><span class="material-icons text-sm">check</span></template>
             <template x-if="stepClass(i) === 'active'"><span x-text="i"></span></template>
             <template x-if="stepClass(i) === 'pending'"><span x-text="i"></span></template>
           </div>
@@ -1922,29 +1927,29 @@ clearingCache: false,
 
     <!-- Progress Bar -->
     <div x-show="gitExecution.inProgress" class="mb-4">
-      <div class="w-full bg-surface-secondary rounded-full h-2 overflow-hidden">
-        <div class="bg-primary h-full rounded-full transition-all duration-500"
-             :style="{ width: (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }"></div>
+      <div class="w-full bg-surface-secondary rounded-full h-2.5 overflow-hidden relative">
+        <div class="bg-primary h-full rounded-full transition-all duration-500 relative"
+             :style="{ width: (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }">
+          <div class="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
+        </div>
       </div>
-      <p class="text-xs text-muted-dark mt-1 text-center" x-text="gitExecution.currentStep + ' / ' + gitExecution.totalSteps"></p>
+      <p class="text-xs text-muted-dark mt-1.5 text-center" x-text="gitExecution.currentStep + ' / ' + gitExecution.totalSteps"></p>
     </div>
 
     <!-- Success Banner -->
-    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-4 bg-green-900 bg-opacity-30 border border-green-600 rounded-md flex items-center gap-3">
-      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
-        <span class="text-white text-lg">✓</span>
+    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-5 bg-green-900 bg-opacity-20 border-2 border-green-500 rounded-lg text-center">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-green-500/40">
+        <span class="material-icons text-white text-3xl">check_circle</span>
       </div>
-      <p class="text-sm font-medium text-green-200" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
+      <p class="text-base font-semibold text-green-200" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
     </div>
     <!-- Failure Banner -->
-    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-4 bg-red-900 bg-opacity-30 border border-red-600 rounded-md flex items-center gap-3">
-      <div class="flex-shrink-0 w-8 h-8 rounded-full bg-red-500 flex items-center justify-center">
-        <span class="text-white text-lg">✕</span>
+    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-5 bg-red-900 bg-opacity-20 border-2 border-red-500 rounded-lg text-center">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full bg-red-500 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-red-500/40">
+        <span class="material-icons text-white text-3xl">cancel</span>
       </div>
-      <div>
-        <p class="text-sm font-medium text-red-200" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
-        <p x-show="gitExecution.error" class="text-xs text-red-300 mt-1" x-text="gitExecution.error"></p>
-      </div>
+      <p class="text-base font-semibold text-red-200" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
+      <p x-show="gitExecution.error" class="text-sm text-red-300 mt-2" x-text="gitExecution.error"></p>
     </div>
 
     <!-- Overlaid binaries notice -->
