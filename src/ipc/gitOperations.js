@@ -28,6 +28,8 @@ class GitOperations {
     this.logger = logger;
     this.databaseManager = databaseManager;
     this._gitCache = {};
+    this._userInfoCache = null;
+    this._userInfoCacheAt = 0;
   }
 
   /**
@@ -100,6 +102,12 @@ class GitOperations {
    */
   async getGitHubUserInfo() {
     try {
+      // Return in-memory cache if fresh (< 10 minutes)
+      if (this._userInfoCache && (Date.now() - this._userInfoCacheAt) < 600000) {
+        this.logger.info(`✅ Returning cached GitHub user info: ${this._userInfoCache.login}`);
+        return this._userInfoCache;
+      }
+
       const token = await this.getGitHubToken();
       if (!token) {
         this.logger.warn('⚠️ No GitHub token available for user info lookup');
@@ -128,10 +136,15 @@ class GitOperations {
           cached: false,
           fetchedAt: new Date().toISOString()
         };
+
+        this._userInfoCache = userInfo;
+        this._userInfoCacheAt = Date.now();
         
         this.logger.info(`✅ GitHub user info fetched: ${userInfo.login}`);
         return userInfo;
       } catch (apiError) {
+        this._userInfoCache = null;
+
         this.logger.warn('⚠️ Failed to fetch from GitHub API, trying cache fallback:', apiError.message);
         
         // Fallback to database cache
@@ -481,7 +494,13 @@ class GitOperations {
       // Step 4: Configure git user in repository
       this.logger.info('⚙️ Applying git configuration...');
       await this.gitSetUserConfig(dir, userName, userEmail);
-      
+
+      // Step 5: Set core.autocrlf and core.filemode to avoid spurious diffs
+      // (CRLF/LF on Windows, file mode bit flips on Unix)
+      await git.setConfig({ fs, dir, path: 'core.autocrlf', value: 'true' });
+      await git.setConfig({ fs, dir, path: 'core.filemode', value: 'false' });
+      this.logger.info('✅ Set core.autocrlf=true and core.filemode=false');
+
       this.logger.info(`✅ Git user configured successfully: ${userName} <${userEmail}>`);
       return true;
     } catch (error) {

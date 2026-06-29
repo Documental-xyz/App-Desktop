@@ -33,7 +33,19 @@ class IpcRegistry {
     // Initialize handler instances
     this.authHandlers = new AuthHandlers(dependencies);
     this.projectHandlers = new ProjectHandlers(dependencies);
-    this.gitHandlers = new GitHandlers(dependencies);
+
+    // Initialize permissionHandlers BEFORE gitHandlers so the latter can
+    // receive it as a dependency (used by gitPublishMain for main-push gating).
+    this.permissionHandlers = new PermissionHandlers({
+      auth: this.authHandlers,
+      databaseManager: dependencies.databaseManager,
+      logger: this.logger,
+    });
+
+    this.gitHandlers = new GitHandlers({
+      ...dependencies,
+      permissionHandlers: this.permissionHandlers,
+    });
     
     // Initialize projectCreationHandler FIRST (needed by browserHandlers and systemHandlers)
     this.projectCreationHandler = new ProjectCreationHandler(dependencies);
@@ -63,12 +75,6 @@ class IpcRegistry {
     });
 
     this.githubReposHandlers = new GithubReposHandlers(dependencies);
-
-    this.permissionHandlers = new PermissionHandlers({
-      auth: this.authHandlers,
-      databaseManager: dependencies.databaseManager,
-      logger: this.logger,
-    });
 
     this.isRegistered = false;
   }
