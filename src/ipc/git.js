@@ -1072,6 +1072,8 @@ class GitHandlers {
 
     const fs = require('fs');
 
+    let tempBranchCreated = false;
+    let tempBranch = null;
     try {
       const gitMod = await this._getGit();
 
@@ -1133,71 +1135,94 @@ class GitHandlers {
           return { success: false, cancelled: true, message: 'Operation cancelled by user' };
         }
 
-        // First-push-wins: fetch + pull to integrate remote changes before pushing
-        try {
-          // 4. Fetching
-          this.sendProgress({
-            stage: 'fetching',
-            current: 3,
-            total: 6,
-            message: `Buscando alterações remotas de '${targetBranch}'...`
-          });
+        // Publisher-wins: fetch + merge with theirsMergeDriver (last writer wins)
+        const localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
 
-          this.sendOutput(`📥 Integrando alterações remotas de '${targetBranch}'...`);
+        // 4. Fetching
+        this.sendProgress({
+          stage: 'fetching',
+          current: 3,
+          total: 6,
+          message: `Buscando alterações remotas de '${targetBranch}'...`
+        });
+
+        tempBranchCreated = false;
+        tempBranch = `_push_${targetBranch}_${Date.now()}`;
+        try {
+          this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
           await gitMod.fetch({
-            fs,
-            http,
-            dir: projectPath,
-            remote: 'origin',
-            ref: targetBranch,
-            singleBranch: true,
-            onAuth: () => auth,
+            fs, http, dir: projectPath, remote: 'origin', ref: targetBranch,
+            singleBranch: true, onAuth: () => auth,
           });
           this._gitCache = {};
 
-          // Check for cancellation after fetch
           if (this.isCancelRequested()) {
-            this.logger.info('Push operation cancelled after fetch');
             this.releaseGitLock();
             return { success: false, cancelled: true, message: 'Operation cancelled by user' };
           }
 
-          // 5. Pulling
+          // 5. Merging (publisher wins strategy)
           this.sendProgress({
             stage: 'pulling',
             current: 4,
             total: 6,
-            message: 'Mesclando alterações remotas...'
+            message: 'Integrando alterações (suas alterações têm prioridade)...'
           });
 
-          await gitMod.pull({
-            fs,
-            http,
-            dir: projectPath,
-            ref: targetBranch,
-            singleBranch: true,
-            author: { name: authorName, email: authorEmail },
-            onAuth: () => auth,
-          });
-          this._gitCache = {};
+          // Create temp branch from remote state, merge local INTO it (publisher wins)
+          try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e) { /* not existent */ }
+          await gitMod.checkout({ fs, dir: projectPath, ref: `origin/${targetBranch}` });
+          await gitMod.branch({ fs, dir: projectPath, ref: tempBranch, checkout: true });
+          tempBranchCreated = true;
 
-          // Check for cancellation after pull
-          if (this.isCancelRequested()) {
-            this.logger.info('Push operation cancelled after pull');
-            this.releaseGitLock();
-            return { success: false, cancelled: true, message: 'Operation cancelled by user' };
-          }
-        } catch (fetchPullError) {
-          // Branch doesn't exist on remote yet — OK for first push
-          if (!fetchPullError.message.includes('Could not find') &&
-              !fetchPullError.message.includes('not found') &&
-              !fetchPullError.message.includes('404')) {
-            if (fetchPullError.message.includes('merge') || fetchPullError.message.includes('MERGE_HEAD')) {
-              this.sendOutput('❌ Conflito de merge detectado. Resolva manualmente.');
-              return { success: false, error: 'Conflito de merge. Resolva as diferenças manualmente antes de publicar.' };
+          this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
+          try {
+            await gitMod.merge({
+              fs, dir: projectPath,
+              ours: tempBranch,
+              theirs: localSha,
+              fastForward: false,
+              ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+              message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
+              author,
+            });
+          } catch (mergeErr) {
+            if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+              this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+              const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+              for (const filepath of conflictFiles) {
+                try {
+                  await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
+                } catch (resolveErr) {
+                  this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+                }
+              }
+              await gitMod.commit({
+                fs, dir: projectPath,
+                message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+                author,
+                parent: [tempBranch, localSha],
+              });
+            } else {
+              throw mergeErr;
             }
-            this.logger.warn('Fetch/pull before push warning:', fetchPullError.message);
           }
+        } catch (fetchErr) {
+          // Branch doesn't exist on remote yet — OK for first push (no merge needed)
+          if (!fetchErr.message.includes('Could not find') &&
+              !fetchErr.message.includes('not found') &&
+              !fetchErr.message.includes('404')) {
+            // Clean up temp branch if created before the error
+            if (tempBranchCreated) {
+              try {
+                await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
+                await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+                tempBranchCreated = false;
+              } catch (_e) { /* ignore cleanup */ }
+            }
+            throw fetchErr;
+          }
+          this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
         }
       }
 
@@ -1218,12 +1243,10 @@ class GitHandlers {
 
       this.sendOutput(`🚀 Publicando alterações na branch: ${targetBranch}...`);
 
+      const pushRef = tempBranchCreated ? tempBranch : targetBranch;
       await gitMod.push({
-        fs,
-        http,
-        dir: projectPath,
-        remote: 'origin',
-        ref: targetBranch,
+        fs, http, dir: projectPath, remote: 'origin', ref: pushRef, remoteRef: targetBranch,
+        force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
         onAuth: () => auth,
       });
       this._gitCache = {};
@@ -1238,6 +1261,16 @@ class GitHandlers {
 
       this.sendOutput(`✅ Push concluído com sucesso na branch: ${targetBranch}`);
       this.logger.info(`Successfully pushed to branch: ${targetBranch}`);
+
+      // Cleanup temp branch
+      if (tempBranchCreated) {
+        try {
+          await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
+          await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+          tempBranchCreated = false;
+        } catch (_e) { /* best effort cleanup */ }
+      }
+
       return { success: true, pushed: true, branch: targetBranch };
 
     } catch (error) {
@@ -1257,6 +1290,13 @@ class GitHandlers {
       return { success: false, error: errorMessage };
 
     } finally {
+      if (tempBranchCreated) {
+        try {
+          const gitMod2 = await this._getGit();
+          await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch });
+          await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+        } catch (_e) { /* best effort */ }
+      }
       this.releaseGitLock();
     }
   }
