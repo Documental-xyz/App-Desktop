@@ -1076,6 +1076,7 @@ class GitHandlers {
     let tempBranch = null;
     try {
       const gitMod = await this._getGit();
+      this._gitCache = {}; // Clear cache at start
 
       // 1. Início - verificando
       this.sendProgress({
@@ -1262,22 +1263,23 @@ class GitHandlers {
       this.sendOutput(`✅ Push concluído com sucesso na branch: ${targetBranch}`);
       this.logger.info(`Successfully pushed to branch: ${targetBranch}`);
 
-      // Sync local branch with merged result, then cleanup temp branch
+      // Sync local branch with remote state using _hardResetBranch
+      // This ensures: local HEAD = origin/branch, working tree matches HEAD
+      this._gitCache = {};
       if (tempBranchCreated) {
         try {
-          // Get the merged commit SHA from temp branch
-          const mergedSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: tempBranch });
-          // Update local targetBranch to point to merged state
-          await gitMod.writeRef({ fs, dir: projectPath, ref: `refs/heads/${targetBranch}`, value: mergedSha, force: true });
-          // Update remote tracking ref to match what we pushed
-          await gitMod.writeRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${targetBranch}`, value: mergedSha, force: true });
-          // Checkout back to targetBranch (now pointing to merged state)
+          // First, switch back to targetBranch
           await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch, force: true });
+          // Hard reset local branch to match what was pushed (origin/targetBranch)
+          await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
           // Delete temp branch
           await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
           tempBranchCreated = false;
-        } catch (_e) { /* best effort cleanup */ }
+        } catch (_e) {
+          this.logger.warn('Post-publish sync failed:', _e.message);
+        }
       }
+      this._gitCache = {};
 
       return { success: true, pushed: true, branch: targetBranch };
 
@@ -1301,16 +1303,16 @@ class GitHandlers {
       if (tempBranchCreated) {
         try {
           const gitMod2 = await this._getGit();
-          // Try to sync local branch with temp branch state
-          try {
-            const mergedSha = await gitMod2.resolveRef({ fs, dir: projectPath, ref: tempBranch });
-            await gitMod2.writeRef({ fs, dir: projectPath, ref: `refs/heads/${targetBranch}`, value: mergedSha, force: true });
-            await gitMod2.writeRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${targetBranch}`, value: mergedSha, force: true });
-            await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true });
-          } catch (_e2) { /* temp branch may not exist on error path */ }
+          this._gitCache = {};
+          // Switch back to targetBranch
+          try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true }); } catch (_e) { /* ignore */ }
+          // Hard reset to origin state if possible
+          try { await this._hardResetBranch(projectPath, `origin/${targetBranch}`); } catch (_e2) { /* origin ref may not exist */ }
+          // Delete temp branch
           try { await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e3) { /* ignore */ }
         } catch (_e) { /* best effort */ }
       }
+      this._gitCache = {};
       this.releaseGitLock();
     }
   }
