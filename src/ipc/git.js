@@ -1262,10 +1262,18 @@ class GitHandlers {
       this.sendOutput(`✅ Push concluído com sucesso na branch: ${targetBranch}`);
       this.logger.info(`Successfully pushed to branch: ${targetBranch}`);
 
-      // Cleanup temp branch
+      // Sync local branch with merged result, then cleanup temp branch
       if (tempBranchCreated) {
         try {
-          await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
+          // Get the merged commit SHA from temp branch
+          const mergedSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: tempBranch });
+          // Update local targetBranch to point to merged state
+          await gitMod.writeRef({ fs, dir: projectPath, ref: `refs/heads/${targetBranch}`, value: mergedSha, force: true });
+          // Update remote tracking ref to match what we pushed
+          await gitMod.writeRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${targetBranch}`, value: mergedSha, force: true });
+          // Checkout back to targetBranch (now pointing to merged state)
+          await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch, force: true });
+          // Delete temp branch
           await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
           tempBranchCreated = false;
         } catch (_e) { /* best effort cleanup */ }
@@ -1293,8 +1301,14 @@ class GitHandlers {
       if (tempBranchCreated) {
         try {
           const gitMod2 = await this._getGit();
-          await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch });
-          await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+          // Try to sync local branch with temp branch state
+          try {
+            const mergedSha = await gitMod2.resolveRef({ fs, dir: projectPath, ref: tempBranch });
+            await gitMod2.writeRef({ fs, dir: projectPath, ref: `refs/heads/${targetBranch}`, value: mergedSha, force: true });
+            await gitMod2.writeRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${targetBranch}`, value: mergedSha, force: true });
+            await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true });
+          } catch (_e2) { /* temp branch may not exist on error path */ }
+          try { await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e3) { /* ignore */ }
         } catch (_e) { /* best effort */ }
       }
       this.releaseGitLock();
