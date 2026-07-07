@@ -119,6 +119,15 @@ welcome:
   footer_link_license: "Licença"
   # Footer
   step_of: "Passo {current} de {total}"
+  # Step cards
+  step_card_github_title: "GitHub"
+  step_card_github_desc: "Conecte sua conta para versionar, sincronizar e publicar seus projetos com um clique."
+  step_card_node_title: "Node.js"
+  step_card_node_desc: "Baixe e instale automaticamente o runtime portátil necessário para rodar a plataforma."
+  step_card_env_title: "Ambiente"
+  step_card_env_desc: "Selecione um repositório existente ou crie um novo para organizar seu ambiente de trabalho."
+  # Footer link
+  install_guide_link: "Guia de Instalação e Uso"
 
 config:
   page_title: "Documental - Configurações"

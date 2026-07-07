@@ -111,6 +111,15 @@ welcome:
   footer_link_license: "License"
   # Footer
   step_of: "Step {current} of {total}"
+  # Step cards
+  step_card_github_title: "GitHub"
+  step_card_github_desc: "Connect your account to version, sync, and publish your projects in one click."
+  step_card_node_title: "Node.js"
+  step_card_node_desc: "Automatically download and install the portable runtime needed to run the platform."
+  step_card_env_title: "Workspace"
+  step_card_env_desc: "Select an existing repository or create a new one to organize your workspace."
+  # Footer link
+  install_guide_link: "Installation & Usage Guide"
 
 config:
   page_title: "Documental - Settings"
