@@ -132,6 +132,15 @@
             background: radial-gradient(circle, rgba(234, 179, 8, 0.12) 0%, transparent 70%);
         }
 
+        /* Language code text (replaces SVG flags) */
+        .lang-code {
+            font-size: 44px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--color-text-dark);
+            line-height: 1;
+        }
+
         /* Decorative dot grid */
         .dot-grid {
             position: absolute;
@@ -222,22 +231,7 @@
                      onclick="selectLanguage('en')"
                      onkeydown="if(event.key==='Enter')selectLanguage('en')">
                     <div class="flag-icon flag-bg-en">
-                        <svg viewBox="0 0 60 40" width="44" height="30" aria-hidden="true">
-                            <rect width="60" height="40" fill="#B31942"/>
-                            <rect y="3.08" width="60" height="3.08" fill="#fff"/>
-                            <rect y="9.24" width="60" height="3.08" fill="#fff"/>
-                            <rect y="15.4" width="60" height="3.08" fill="#fff"/>
-                            <rect y="21.56" width="60" height="3.08" fill="#fff"/>
-                            <rect y="27.72" width="60" height="3.08" fill="#fff"/>
-                            <rect y="33.88" width="60" height="3.08" fill="#fff"/>
-                            <rect y="36.92" width="60" height="3.08" fill="#0A3161"/>
-                            <rect width="24" height="21.56" fill="#0A3161"/>
-                            <circle cx="12" cy="10.78" r="5" fill="#fff"/>
-                            <circle cx="12" cy="10.78" r="4" fill="#0A3161"/>
-                            <circle cx="12" cy="10.78" r="3" fill="#fff"/>
-                            <circle cx="12" cy="10.78" r="2" fill="#0A3161"/>
-                            <circle cx="12" cy="10.78" r="1" fill="#fff"/>
-                        </svg>
+                        <span class="lang-code">EN</span>
                     </div>
                     <div class="text-lg font-bold text-text-dark mb-1">English</div>
                     <div class="text-sm text-muted-dark">Welcome</div>
@@ -251,13 +245,7 @@
                      onclick="selectLanguage('pt-BR')"
                      onkeydown="if(event.key==='Enter')selectLanguage('pt-BR')">
                     <div class="flag-icon flag-bg-pt">
-                        <svg viewBox="0 0 60 42" width="44" height="31" aria-hidden="true">
-                            <rect width="60" height="42" fill="#009B3A"/>
-                            <polygon points="4,21 30,4 56,21 30,38" fill="#FEDF00"/>
-                            <circle cx="30" cy="21" r="10" fill="#002776"/>
-                            <path d="M20,21 Q30,14 40,21" fill="none" stroke="#fff" stroke-width="1.5"/>
-                            <path d="M20,21 Q30,28 40,21" fill="none" stroke="#fff" stroke-width="1.5"/>
-                        </svg>
+                        <span class="lang-code">PT</span>
                     </div>
                     <div class="text-lg font-bold text-text-dark mb-1">Portugu&ecirc;s</div>
                     <div class="text-sm text-muted-dark">Bem-vindo</div>
@@ -271,10 +259,7 @@
                      onclick="selectLanguage('es')"
                      onkeydown="if(event.key==='Enter')selectLanguage('es')">
                     <div class="flag-icon flag-bg-es">
-                        <svg viewBox="0 0 60 40" width="44" height="30" aria-hidden="true">
-                            <rect width="60" height="40" fill="#c60b1e"/>
-                            <rect y="10" width="60" height="20" fill="#ffc400"/>
-                        </svg>
+                        <span class="lang-code">ES</span>
                     </div>
                     <div class="text-lg font-bold text-text-dark mb-1">Espa&ntilde;ol</div>
                     <div class="text-sm text-muted-dark">Bienvenido</div>
