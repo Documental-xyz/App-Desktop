@@ -141,7 +141,7 @@ const GITHUB_CONFIG = {
   SERVICE_NAME: 'documental-app',
 
   // Template repository for fork operations
-  TEMPLATE_REPO: { owner: 'Documental-xyz', repo: 'Documental', defaultForkName: 'Meu-Documental' },
+  TEMPLATE_REPO: { owner: 'Documental-xyz', repo: 'Template', defaultForkName: 'Meu-Documental' },
 
   // Fork polling configuration (fork creation is async on GitHub)
   FORK_POLLING: { intervalMs: 2000, timeoutMs: 60000 }
