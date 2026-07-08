@@ -138,7 +138,7 @@ class ProjectCreationHandler {
         http,
         dir,
         url,
-        auth,
+        onAuth: () => auth,
         singleBranch: true,
         depth: 10
       });
