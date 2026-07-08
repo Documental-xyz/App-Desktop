@@ -376,4 +376,54 @@ describe('GithubForkService', () => {
       expect(result.cloneUrl).toBe('https://github.com/test-user/my-repo.git');
     });
   });
+
+  describe('checkTemplateTargetExists', () => {
+    it('returns exists:true when repo exists at target owner', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { full_name: 'my-org/my-repo' }
+      });
+
+      const result = await service.checkTemplateTargetExists('my-org', 'my-repo');
+
+      expect(result.exists).toBe(true);
+      expect(result.fullName).toBe('my-org/my-repo');
+    });
+
+    it('returns exists:false when 404', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.get.mockRejectedValue({ status: 404, message: 'Not Found' });
+
+      const result = await service.checkTemplateTargetExists('my-org', 'nonexistent');
+
+      expect(result.exists).toBe(false);
+    });
+
+    it('uses targetOwner when provided', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { full_name: 'my-org/my-repo' }
+      });
+
+      await service.checkTemplateTargetExists('my-org', 'my-repo');
+
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledWith({ owner: 'my-org', repo: 'my-repo' });
+      expect(mockOctokitInstance.users.getAuthenticated).not.toHaveBeenCalled();
+    });
+
+    it('uses authenticated user login when targetOwner is null', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { full_name: 'test-user/my-repo' }
+      });
+
+      await service.checkTemplateTargetExists(null, 'my-repo');
+
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledWith({ owner: 'test-user', repo: 'my-repo' });
+    });
+  });
 });

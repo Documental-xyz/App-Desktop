@@ -873,6 +873,16 @@ class ProjectCreationHandler {
       }
     });
 
+    ipcMain.handle('check-template-target-exists', async (event, targetOwner, repoName) => {
+      try {
+        const { githubForkService } = require('../services/githubForkService.js');
+        return await githubForkService.checkTemplateTargetExists(targetOwner, repoName);
+      } catch (error) {
+        this.logger.error('Error in check-template-target-exists handler:', error);
+        return { exists: false, error: error.message };
+      }
+    });
+
     /**
      * Open project with preview branch check and dev server only
      */

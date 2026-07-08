@@ -365,6 +365,39 @@ class GithubForkService {
       repo: response.data
     };
   }
+
+  /**
+   * Check whether a repository with the given name already exists at the target owner.
+   * Used to prevent createUsingTemplate from failing with 422.
+   *
+   * @param {string|null} targetOwner - Target owner (org login or user login). If null/empty, uses authenticated user.
+   * @param {string} repoName - Repository name to check.
+   * @returns {Promise<{ exists: boolean, fullName?: string, error?: string }>}
+   */
+  async checkTemplateTargetExists(targetOwner, repoName) {
+    try {
+      const token = await secureTokenService.getToken();
+      if (!token) {
+        return { exists: false, error: 'Not authenticated' };
+      }
+      const { Octokit } = await import('@octokit/rest');
+      const octokit = new Octokit({ auth: token });
+
+      let owner = targetOwner;
+      if (!owner) {
+        const { data: user } = await octokit.users.getAuthenticated();
+        owner = user.login;
+      }
+
+      const { data } = await octokit.repos.get({ owner, repo: repoName });
+      return { exists: true, fullName: data.full_name };
+    } catch (error) {
+      if (error && error.status === 404) {
+        return { exists: false };
+      }
+      return { exists: false, error: error?.message || 'Unknown error' };
+    }
+  }
 }
 
 module.exports = {
