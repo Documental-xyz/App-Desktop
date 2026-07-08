@@ -125,11 +125,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      const isForkMode = sessionStorage.getItem('repoSelectMode') === 'fork';
-      console.log('[fork-check] isForkMode:', isForkMode, 'checkRepoExists available:', !!window.electronAPI?.checkRepoExists);
-      if (isForkMode) {
+      const isTemplateMode = sessionStorage.getItem('repoSelectMode') === 'template';
+      console.log('[template-check] isTemplateMode:', isTemplateMode, 'checkRepoExists available:', !!window.electronAPI?.checkRepoExists);
+      if (isTemplateMode) {
         if (!window.electronAPI || !window.electronAPI.checkRepoExists) {
-          console.warn('[fork-check] checkRepoExists IPC not available — preload may need app restart');
+          console.warn('[template-check] checkRepoExists IPC not available — preload may need app restart');
         } else {
           const slug = projectName.trim()
             .replace(/\s+/g, '-')
@@ -137,10 +137,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             .replace(/\-\-+/g, '-')
             .replace(/^-+/, '')
             .replace(/-+$/, '');
-          console.log('[fork-check] project name:', projectName, '→ slug:', slug);
+          console.log('[template-check] project name:', projectName, '→ slug:', slug);
           if (slug) {
             const result = await window.electronAPI.checkRepoExists(slug);
-            console.log('[fork-check] checkRepoExists result:', result);
+            console.log('[template-check] checkRepoExists result:', result);
             if (result.exists) {
               alert(__t('new.repo_exists_alert', { name: slug }));
               return;
@@ -162,12 +162,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Normalize project path before saving
         const normalizedProjectPath = await PathUtils.normalize(projectPath);
-        const shouldForkFirst = sessionStorage.getItem('repoSelectMode') === 'fork';
+        const useTemplate = sessionStorage.getItem('repoSelectMode') === 'template';
         const projectId = await window.electronAPI.saveProject({ projectName, repoUrl: githubUrl, projectPath: normalizedProjectPath });
         sessionStorage.setItem('currentProjectId', projectId);
         sessionStorage.setItem('isExistingGitRepo', isExistingGitRepo.toString());
         sessionStorage.setItem('isEmptyFolder', isEmptyFolder.toString());
-        sessionStorage.setItem('shouldForkFirst', shouldForkFirst.toString());
+        sessionStorage.setItem('useTemplate', useTemplate.toString());
         sessionStorage.setItem('projectName', projectName);
         const enablePagesToggle = document.getElementById('enable-pages-toggle');
         const enablePages = enablePagesToggle ? enablePagesToggle.checked : false;

@@ -197,7 +197,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       urlInput.setAttribute('readonly', '');
       urlInput.classList.add('opacity-70', 'cursor-not-allowed');
     }
-  } else if (repoSelectMode === 'fork') {
+  } else if (repoSelectMode === 'template') {
     const nameInput = document.getElementById('project-name');
     const urlInput = document.getElementById('github-url');
     if (nameInput) nameInput.value = 'Meu Documental';
@@ -210,7 +210,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Show private toggle only in fork mode
   const repoSelectMode2 = sessionStorage.getItem('repoSelectMode');
   const privateWrapper = document.getElementById('private-toggle-wrapper');
-  if (repoSelectMode2 === 'fork' && privateWrapper) {
+  if (repoSelectMode2 === 'template' && privateWrapper) {
     privateWrapper.style.display = 'flex';
   }
 
@@ -236,7 +236,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   function updateSlugPreview() {
     const name = nameInputEl.value;
     if (!name) { slugPreview.textContent = ''; return; }
-    const slug = name.trim().replace(/\s+/g, '-').replace(/[^\w\-]+/g, '').replace(/\-\-+/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+    const slug = name.trim()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // strip accents
+      .replace(/\s+/g, '-')
+      .replace(/[^\w\-]+/g, '')
+      .replace(/\-\-+/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
     slugPreview.textContent = slug ? __t('new.project_slug_hint', { slug }) : '';
   }
   nameInputEl.addEventListener('input', updateSlugPreview);
@@ -248,8 +254,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const forkExistsModal = document.getElementById('fork-exists-modal');
   const forkExistsClose = document.getElementById('fork-exists-close');
 
-  // Show fork target dropdown + load orgs in fork mode
-  if (repoSelectMode === 'fork' && forkTargetWrapper) {
+  // Show fork target dropdown + load orgs in template mode
+  if (repoSelectMode === 'template' && forkTargetWrapper) {
     forkTargetWrapper.style.display = 'block';
     // Load orgs asynchronously
     if (window.electronAPI && window.electronAPI.listUserOrgs) {
@@ -277,7 +283,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const createBtn = document.getElementById('create-project-button');
   if (createBtn) {
     createBtn.addEventListener('click', async function(e) {
-      if (sessionStorage.getItem('repoSelectMode') !== 'fork') return; // Only in fork mode
+      if (sessionStorage.getItem('repoSelectMode') !== 'template') return; // Only in template mode
       // If already checked, let the original handler proceed
       if (createBtn.dataset.forkChecked === 'true') {
         createBtn.dataset.forkChecked = '';
@@ -286,22 +292,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       e.preventDefault();
       e.stopImmediatePropagation();
       const selectedOrg = forkTargetSelect ? forkTargetSelect.value : '';
-      const urlInput = document.getElementById('github-url');
-      const forkUrl = urlInput ? urlInput.value : '';
-      const forkMatch = forkUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
-      if (!forkMatch) return;
-      const [, sourceOwner, sourceRepo] = forkMatch;
+      // Compute slug from project name (NFD-stripped) to check target existence
+      const nameInput = document.getElementById('project-name');
+      const slug = (nameInput && nameInput.value || '').trim()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/[^\w\-]+/g, '')
+        .replace(/\-\-+/g, '-')
+        .replace(/^-+/, '')
+        .replace(/-+$/, '');
       try {
-        const result = await window.electronAPI.checkForkExists(sourceOwner, sourceRepo, selectedOrg || null);
+        const result = await window.electronAPI.checkTemplateTargetExists(selectedOrg || null, slug);
         if (result.exists) {
           if (forkExistsModal) forkExistsModal.style.display = 'flex';
           return; // Don't proceed
         }
       } catch (err) {
-        console.warn('Fork check failed:', err);
+        console.warn('Template target check failed:', err);
       }
       // Store selected org for later use
-      sessionStorage.setItem('forkOrganization', selectedOrg || '');
+      sessionStorage.setItem('templateTargetOwner', selectedOrg || '');
       // Proceed with original handler
       createBtn.dataset.forkChecked = 'true';
       createBtn.click();

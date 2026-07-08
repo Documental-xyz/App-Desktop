@@ -157,7 +157,7 @@
             this.isReopenMode = sessionStorage.getItem('reopenMode') === 'true';
             this.isExistingGitRepo = sessionStorage.getItem('isExistingGitRepo') === 'true';
             this.isEmptyFolder = sessionStorage.getItem('isEmptyFolder') === 'true';
-            this.shouldForkFirst = sessionStorage.getItem('shouldForkFirst') === 'true';
+            this.useTemplate = sessionStorage.getItem('useTemplate') === 'true';
             this.projectName = sessionStorage.getItem('projectName') || '';
             this.enablePages = sessionStorage.getItem('enableGitHubPages') === 'true';
             
@@ -186,7 +186,7 @@
                 this.steps[3].status = 'active';
                 this.activeStepId = 2;
             } else if (this.isEmptyFolder) {
-                if (this.shouldForkFirst) {
+                if (this.useTemplate) {
                     this.steps[0].status = 'active';
                     this.activeStepId = 0;
                 } else if (this.enablePages) {
@@ -201,7 +201,7 @@
                     this.activeStepId = 1;
                 }
             } else {
-                if (this.shouldForkFirst) {
+                if (this.useTemplate) {
                     this.steps[0].status = 'active';
                     this.activeStepId = 0;
                 } else if (this.enablePages) {
@@ -355,9 +355,10 @@
                         await window.electronAPI.reopenProject(this.projectId, this.projectPath, this.githubUrl, this.repoFolderName);
                     } else {
                         // For new projects, run full creation process
-                        const forkOrg = sessionStorage.getItem('forkOrganization') || '';
-                        sessionStorage.removeItem('forkOrganization');
-                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.shouldForkFirst || false, this.projectName || '', this.enablePages || false, forkOrg || null);
+                        const templateTarget = sessionStorage.getItem('templateTargetOwner') || '';
+                        sessionStorage.removeItem('templateTargetOwner');
+                        this.isPrivateRepo = sessionStorage.getItem('isPrivateRepo') === 'true';
+                        await window.electronAPI.startProjectCreation(this.projectId, this.projectPath, this.githubUrl, this.isExistingGitRepo || false, this.isEmptyFolder || false, this.useTemplate || false, this.projectName || '', this.enablePages || false, templateTarget || null, this.isPrivateRepo || false);
                     }
                 }
             } catch (error) {
@@ -455,7 +456,7 @@
                     }
                 });
             } else {
-                if (this.shouldForkFirst) {
+                if (this.useTemplate) {
                     this.activeStepId = 0;
                     this.steps.forEach((step) => {
                         step.status = step.id === 0 ? 'active' : 'pending';
@@ -512,7 +513,7 @@
 </div>
 <div class="bg-surface-dark rounded-lg p-4 space-y-2">
 <template :key="step.id" x-for="(step, index) in steps">
-<div x-show="(step.id !== 0 || shouldForkFirst) && (step.id !== 6 || enablePages)" :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
+<div x-show="(step.id !== 0 || useTemplate) && (step.id !== 6 || enablePages)" :class="{ 'opacity-60': step.status !== 'active' && step.status !== 'failure' && step.status !== 'success'}" class="bg-background-dark/50 rounded-lg text-sm">
 <div :class="{'cursor-pointer': step.status !== 'active'}" @click="step.expanded = !step.expanded" class="flex items-center justify-between p-3">
 <div class="flex items-center gap-3">
 <div class="flex items-center justify-center w-6 h-6">
@@ -543,7 +544,7 @@
 </div>
 </template>
 </div>
-<p class="text-xs text-muted-dark text-center mt-3" x-text="steps.filter(s => s.status === 'success').length + ' / ' + steps.filter(s => (s.id !== 0 || shouldForkFirst) && (s.id !== 6 || enablePages)).length"></p>
+<p class="text-xs text-muted-dark text-center mt-3" x-text="steps.filter(s => s.status === 'success').length + ' / ' + steps.filter(s => (s.id !== 0 || useTemplate) && (s.id !== 6 || enablePages)).length"></p>
 </div>
 </div>
 </main>
