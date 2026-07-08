@@ -173,23 +173,17 @@ describe('GithubForkService', () => {
       await expect(promise).rejects.toThrow(/timed out/i);
     });
 
-    it('treats createFork idempotency (already exists) as success', async () => {
+    it('treats createFork idempotency (already exists) as error', async () => {
       setupAuth();
-      // createFork rejects with a status-202 / "already exist" error
+      // createFork throws with a status-202 / "already exist" error
       const forkExistsError = Object.assign(new Error('Repository already exists'), {
         status: 202
       });
       mockOctokitInstance.repos.createFork.mockRejectedValue(forkExistsError);
-      // First poll returns ready
-      mockOctokitInstance.repos.get.mockResolvedValue({
-        status: 200,
-        data: { parent: { full_name: 'owner/repo' } }
-      });
 
-      const result = await service.forkAndPoll('owner', 'repo');
-
-      expect(result.success).toBe(true);
-      expect(result.forkCloneUrl).toBe('https://github.com/currentuser/repo.git');
+      await expect(service.forkAndPoll('owner', 'repo')).rejects.toThrow(
+        'A repository with this name already exists in your account. Please choose a different workspace name.'
+      );
     });
 
     it('onProgress callback is called with messages during fork and polling', async () => {
@@ -211,8 +205,8 @@ describe('GithubForkService', () => {
       const result = await promise;
 
       // i18n defaults to 'en' in test environment
-      expect(onProgress).toHaveBeenCalledWith('Creating fork...');
-      expect(onProgress).toHaveBeenCalledWith('Waiting for fork to be ready...');
+      expect(onProgress).toHaveBeenCalledWith('Creating repository...');
+      expect(onProgress).toHaveBeenCalledWith('Waiting for repository to be ready...');
       expect(result.success).toBe(true);
     });
   });

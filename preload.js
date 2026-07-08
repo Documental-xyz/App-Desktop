@@ -13,8 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeProject: (projectId) => ipcRenderer.invoke('remove-project', projectId),
   checkProjectExists: (folderPath) => ipcRenderer.invoke('checkProjectExists', folderPath),
   getFolderInfo: (folderPath) => ipcRenderer.invoke('getFolderInfo', folderPath),
-  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null) =>
-    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, useTemplate, projectName, enablePages, organization),
+  startProjectCreation: (projectId, projectPath, githubUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false) =>
+    ipcRenderer.invoke('start-project-creation', projectId, projectPath, githubUrl, isExistingGitRepo, isEmptyFolder, useTemplate, projectName, enablePages, organization, isPrivateRepo),
   checkRepoExists: (repoName) => ipcRenderer.invoke('check-repo-exists', repoName),
   checkTemplateTargetExists: (targetOwner, repoName) => ipcRenderer.invoke('check-template-target-exists', targetOwner, repoName),
   reopenProject: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('reopen-project', projectId, projectPath, githubUrl, repoFolderName),
