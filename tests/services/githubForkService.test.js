@@ -16,12 +16,16 @@ const {
   const mockOctokitInstance = {
     repos: {
       createFork: vi.fn(),
+      createUsingTemplate: vi.fn(),
       get: vi.fn()
     },
     users: {
       getAuthenticated: vi.fn()
     }
   };
+  // Octokit exposes both `.repos.X` (legacy) and `.rest.repos.X` (current API).
+  // Aliasing `.rest` → self lets the same mocks serve both call styles.
+  mockOctokitInstance.rest = mockOctokitInstance;
   const mockElectron = {
     safeStorage: {
       encryptString: vi.fn(() => Buffer.from('encrypted')),
@@ -210,6 +214,166 @@ describe('GithubForkService', () => {
       expect(onProgress).toHaveBeenCalledWith('Creating fork...');
       expect(onProgress).toHaveBeenCalledWith('Waiting for fork to be ready...');
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe('createFromTemplate', () => {
+    // Common mock setup for createFromTemplate authenticated + resolved template call
+    function setupTemplateSuccess(overrides = {}) {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({
+        data: { login: 'test-user' }
+      });
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue(
+        Object.assign(
+          {
+            status: 201,
+            data: {
+              clone_url: 'https://github.com/test-user/test-repo.git',
+              name: 'test-repo'
+            }
+          },
+          overrides
+        )
+      );
+    }
+
+    it('calls octokit.rest.repos.createUsingTemplate with correct params', async () => {
+      setupTemplateSuccess({
+        data: { clone_url: 'https://github.com/test-user/test-repo.git', name: 'test-repo' }
+      });
+
+      await service.createFromTemplate(
+        'TemplateOwner',
+        'TemplateRepo',
+        'my-repo',
+        null,
+        { owner: 'my-org', private: true, description: 'Test desc' }
+      );
+
+      expect(mockOctokitInstance.repos.createUsingTemplate).toHaveBeenCalledWith({
+        template_owner: 'TemplateOwner',
+        template_repo: 'TemplateRepo',
+        name: 'my-repo',
+        description: 'Test desc',
+        include_all_branches: false,
+        private: true,
+        owner: 'my-org'
+      });
+    });
+
+    it('omits owner when not provided', async () => {
+      setupTemplateSuccess();
+
+      await service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo', null);
+
+      const callArgs = mockOctokitInstance.repos.createUsingTemplate.mock.calls[0][0];
+      expect(callArgs.owner).toBeUndefined();
+    });
+
+    it('passes private flag through', async () => {
+      // private: true
+      setupTemplateSuccess();
+      await service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo', null, { private: true });
+      expect(mockOctokitInstance.repos.createUsingTemplate.mock.calls[0][0].private).toBe(true);
+
+      vi.clearAllMocks();
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue({
+        status: 201,
+        data: { clone_url: 'https://github.com/test-user/test-repo.git', name: 'test-repo' }
+      });
+
+      // private: false
+      await service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo', null, { private: false });
+      expect(mockOctokitInstance.repos.createUsingTemplate.mock.calls[0][0].private).toBe(false);
+    });
+
+    it('passes owner for org destination', async () => {
+      setupTemplateSuccess();
+
+      await service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo', null, { owner: 'my-org' });
+
+      expect(mockOctokitInstance.repos.createUsingTemplate.mock.calls[0][0].owner).toBe('my-org');
+    });
+
+    it('does NOT include template_owner/template_repo as body params', async () => {
+      setupTemplateSuccess();
+
+      await service.createFromTemplate(
+        'TemplateOwner',
+        'TemplateRepo',
+        'my-repo',
+        null,
+        { description: 'd', private: false }
+      );
+
+      const callArg = mockOctokitInstance.repos.createUsingTemplate.mock.calls[0][0];
+      // template_owner and template_repo should appear exactly once (as path params),
+      // not duplicated as separate body-only entries.
+      expect(Object.keys(callArg).filter(k => k === 'template_owner')).toHaveLength(1);
+      expect(Object.keys(callArg).filter(k => k === 'template_repo')).toHaveLength(1);
+      // All keys are exactly the expected set
+      expect(Object.keys(callArg).sort()).toEqual(
+        ['description', 'include_all_branches', 'name', 'private', 'template_owner', 'template_repo'].sort()
+      );
+    });
+
+    it('maps 404 to template_not_found error', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.createUsingTemplate.mockRejectedValue({
+        status: 404,
+        message: 'Not Found'
+      });
+
+      await expect(
+        service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo')
+      ).rejects.toThrow(/template_not_found/i);
+    });
+
+    it('maps 422 to name_taken error', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.createUsingTemplate.mockRejectedValue({
+        status: 422,
+        message: 'name already exists'
+      });
+
+      await expect(
+        service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo')
+      ).rejects.toThrow(/template_name_taken/i);
+    });
+
+    it('maps 403 to no_permission error', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.createUsingTemplate.mockRejectedValue({
+        status: 403,
+        message: 'Forbidden'
+      });
+
+      await expect(
+        service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo')
+      ).rejects.toThrow(/template_no_permission/i);
+    });
+
+    it('returns cloneUrl from response', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.users.getAuthenticated.mockResolvedValue({ data: { login: 'test-user' } });
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue({
+        status: 201,
+        data: {
+          clone_url: 'https://github.com/test-user/my-repo.git',
+          name: 'my-repo'
+        }
+      });
+
+      const result = await service.createFromTemplate('TemplateOwner', 'TemplateRepo', 'my-repo');
+
+      expect(result.success).toBe(true);
+      expect(result.cloneUrl).toBe('https://github.com/test-user/my-repo.git');
     });
   });
 });

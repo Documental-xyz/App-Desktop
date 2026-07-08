@@ -271,6 +271,100 @@ class GithubForkService {
       fork: data
     };
   }
+
+  /**
+   * Create a new repository from a template repository.
+   *
+   * Unlike `forkAndPoll`, this operation is synchronous: GitHub returns 201
+   * with the fully-created repository, so no polling is required.
+   *
+   * @param {string} templateOwner - Template repository owner (e.g. "Documental-xyz").
+   * @param {string} templateRepo - Template repository name (e.g. "Template").
+   * @param {string} repoName - Name for the new repository.
+   * @param {(message: string) => void} [onProgress] - Optional progress callback.
+   * @param {Object} [options] - Optional creation parameters.
+   * @param {string} [options.owner] - Target org/account (omit to use authenticated user).
+   * @param {string} [options.description] - Repository description.
+   * @param {boolean} [options.private=false] - Whether to create a private repo.
+   * @param {boolean} [options.includeAllBranches=false] - Whether to include all branches from the template.
+   * @returns {Promise<{ success: boolean, cloneUrl: string, repo: Object }>}
+   * @throws {Error} When not authenticated, template is not found, name is taken, or permission is denied.
+   */
+  async createFromTemplate(templateOwner, templateRepo, repoName, onProgress, options = {}) {
+    // a. Retrieve token
+    const token = await secureTokenService.getToken();
+    if (!token) {
+      throw new Error('Not authenticated: no GitHub token found');
+    }
+
+    // b. Dynamic import + Octokit instance
+    let octokit;
+    try {
+      const { Octokit } = await import('@octokit/rest');
+      octokit = new Octokit({ auth: token });
+    } catch (error) {
+      throw new Error('Failed to initialize Octokit: ' + error.message);
+    }
+
+    // c. Authenticated user (validates token + provides fallback owner)
+    let userLogin;
+    try {
+      const { data: user } = await octokit.users.getAuthenticated();
+      userLogin = user.login;
+    } catch (error) {
+      throw new Error('Failed to get authenticated user: ' + error.message);
+    }
+
+    // d. Progress
+    if (onProgress) onProgress(t('create.template_creating'));
+
+    // e. Build params (template_owner/template_repo are path params managed by Octokit)
+    const params = {
+      template_owner: templateOwner,
+      template_repo: templateRepo,
+      name: repoName,
+      description: options.description || '',
+      include_all_branches: options.includeAllBranches !== undefined ? options.includeAllBranches : false,
+      private: options.private !== undefined ? options.private : false
+    };
+    if (options.owner) {
+      // When omitted, GitHub creates the repo under the authenticated user.
+      params.owner = options.owner;
+    }
+
+    // f. Create from template (201 is synchronous — no polling needed)
+    let response;
+    try {
+      response = await octokit.rest.repos.createUsingTemplate(params);
+    } catch (error) {
+      const status = error && error.status;
+      const message = (error && error.message) || '';
+      if (status === 404) {
+        throw new Error(t('create.template_not_found'));
+      }
+      if (status === 422) {
+        throw new Error(t('create.template_name_taken'));
+      }
+      if (status === 403) {
+        if (/scope|private/i.test(message)) {
+          throw new Error(t('create.template_invalid_scope'));
+        }
+        throw new Error(t('create.template_no_permission'));
+      }
+      throw new Error(t('create.template_error', { error: message }));
+    }
+
+    // g. Extract cloneUrl (prefer response, fallback to constructed URL)
+    const effectiveOwner = options.owner || userLogin;
+    const cloneUrl = (response && response.data && response.data.clone_url) ||
+      ('https://github.com/' + effectiveOwner + '/' + repoName + '.git');
+
+    return {
+      success: true,
+      cloneUrl,
+      repo: response.data
+    };
+  }
 }
 
 module.exports = {
