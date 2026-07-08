@@ -189,9 +189,73 @@
             height: 28px;
             color: white;
         }
+
+        /* Theme picker (top-right) */
+        .theme-picker {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .theme-picker-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 0;
+            padding: 0.25rem;
+            border-radius: 0.5rem;
+            background: var(--color-surface-dark);
+            border: 1px solid var(--color-border-subtle);
+        }
+
+        .theme-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            color: var(--color-muted-dark, var(--color-text-dark));
+        }
+
+        .theme-btn:hover {
+            color: var(--color-text-dark);
+        }
+
+        .theme-btn.active {
+            background: var(--color-surface-card);
+            color: var(--color-primary);
+        }
+
+        .theme-btn .material-symbols-outlined {
+            font-size: 1rem;
+        }
     </style>
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
+    <!-- Theme picker (top-right) -->
+    <div class="theme-picker">
+        <div class="theme-picker-group">
+            <button class="theme-btn" data-theme="auto" aria-label="Auto theme">
+                <span class="material-symbols-outlined">contrast</span>
+            </button>
+            <button class="theme-btn" data-theme="dark" aria-label="Dark theme">
+                <span class="material-symbols-outlined">dark_mode</span>
+            </button>
+            <button class="theme-btn" data-theme="light" aria-label="Light theme">
+                <span class="material-symbols-outlined">light_mode</span>
+            </button>
+        </div>
+    </div>
+
     <div class="bg-scene min-h-screen flex flex-col items-center justify-center relative">
         <!-- Decorative dot grid -->
         <div class="dot-grid"></div>
@@ -303,6 +367,73 @@
             } else {
                 window.location.href = 'welcome.html';
             }
+        }
+
+        // --- Theme picker ---
+        function applyThemeMode(mode) {
+            // Apply visually
+            var shouldBeDark;
+            if (mode === 'auto') {
+                shouldBeDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            } else {
+                shouldBeDark = mode === 'dark';
+            }
+            document.documentElement.classList.toggle('dark', shouldBeDark);
+
+            // Update active button state
+            document.querySelectorAll('.theme-btn').forEach(function (btn) {
+                btn.classList.toggle('active', btn.dataset.theme === mode);
+            });
+
+            // Persist via IPC
+            if (window.electronAPI && window.electronAPI.setThemeMode) {
+                window.electronAPI.setThemeMode(mode).then(function (result) {
+                    if (result && result.css) {
+                        var el = document.getElementById('__theme_injected');
+                        if (!el) {
+                            el = document.createElement('style');
+                            el.id = '__theme_injected';
+                            document.head.appendChild(el);
+                        }
+                        el.textContent = result.css;
+                    }
+                }).catch(function (e) { console.warn('setThemeMode error:', e); });
+            }
+        }
+
+        function initThemePicker() {
+            // Wire up click handlers
+            document.querySelectorAll('.theme-btn').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    applyThemeMode(btn.dataset.theme);
+                });
+            });
+
+            // Determine initial active state
+            if (window.electronAPI && window.electronAPI.getThemeMode) {
+                window.electronAPI.getThemeMode().then(function (r) {
+                    if (r && r.success) {
+                        var mode = r.mode || 'auto';
+                        document.querySelectorAll('.theme-btn').forEach(function (btn) {
+                            btn.classList.toggle('active', btn.dataset.theme === mode);
+                        });
+                    }
+                }).catch(function () {});
+            } else {
+                // Fallback: infer from current document class
+                var isDark = document.documentElement.classList.contains('dark');
+                var inferred = isDark ? 'dark' : 'light';
+                document.querySelectorAll('.theme-btn').forEach(function (btn) {
+                    btn.classList.toggle('active', btn.dataset.theme === inferred);
+                });
+            }
+        }
+
+        // Initialize on DOM ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initThemePicker);
+        } else {
+            initThemePicker();
         }
     </script>
 <script src="./shared/theme-init.js" defer></script>
