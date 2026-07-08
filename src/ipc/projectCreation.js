@@ -275,11 +275,14 @@ class ProjectCreationHandler {
    * @param {string} repoUrl - Repository URL
    * @param {boolean} isExistingGitRepo - Whether it's an existing git repo
    * @param {boolean} isEmptyFolder - Whether it's an empty folder
-   * @param {boolean} [shouldForkFirst] - Whether to fork before cloning
+   * @param {boolean} [useTemplate] - Whether to create from template repo before cloning
    * @param {string} [projectName] - User-provided project name (for folder slug)
+   * @param {boolean} [enablePages] - Whether to enable GitHub Pages
+   * @param {string} [organization] - Target organization (null = authenticated user)
+   * @param {boolean} [isPrivateRepo] - Whether the created repo should be private
    * @returns {Promise<Object>} Result object
    */
-    async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false, organization = null) {
+    async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false) {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -342,25 +345,22 @@ class ProjectCreationHandler {
       const getStepServerOutput = (stepId) => (message) => sendServerOutput(stepId, message);
       const getStepStatusSender = (stepId) => (status) => sendStatus(stepId, status);
 
-      if (shouldForkFirst) {
+      if (useTemplate) {
         const step0Output = getStepOutput(0);
         const step0Status = getStepStatusSender(0);
 
-        step0Output(t('create.fork_starting') + '\n');
+        step0Output(t('create.template_starting') + '\n');
         step0Status('active');
 
-        const forkMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
-        if (!forkMatch) {
-          step0Output(t('create.fork_invalid_url') + '\n');
-          step0Status('failure');
-          throw new Error('Invalid GitHub URL for fork: ' + repoUrl);
-        }
+        // Read template owner/repo from config (no longer parsed from URL)
+        const { GITHUB_CONFIG } = require('../config/github-config.js');
+        const templateOwner = GITHUB_CONFIG.TEMPLATE_REPO.owner;
+        const templateRepo = GITHUB_CONFIG.TEMPLATE_REPO.repo;
 
-        const [, forkOwner, forkRepo] = forkMatch;
-        const { githubForkService } = require('../services/githubForkService.js');
-
-        const forkSlug = projectName
+        // Generate slug from project name (same rule as fork + NFD accent strip)
+        const templateSlug = projectName
           ? projectName.toString().trim()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // strip accents
               .replace(/\s+/g, '-')
               .replace(/[^\w\-]+/g, '')
               .replace(/\-\-+/g, '-')
@@ -368,15 +368,32 @@ class ProjectCreationHandler {
               .replace(/-+$/, '')
           : null;
 
+        if (!templateSlug) {
+          step0Output('Invalid project name for template\n');
+          step0Status('failure');
+          throw new Error('Invalid project name for template creation: ' + projectName);
+        }
+
         try {
-          const result = await githubForkService.forkAndPoll(forkOwner, forkRepo, step0Output, forkSlug, organization);
+          const { githubForkService } = require('../services/githubForkService.js');
+          const result = await githubForkService.createFromTemplate(
+            templateOwner,
+            templateRepo,
+            templateSlug,
+            step0Output,
+            {
+              owner: organization || undefined,
+              private: isPrivateRepo || false,
+              description: 'Documental: ' + projectName
+            }
+          );
           if (result.success) {
-            repoUrl = result.forkCloneUrl;
-            step0Output(t('create.fork_ready') + '\n');
+            repoUrl = result.cloneUrl;
+            step0Output(t('create.template_ready') + '\n');
             step0Status('success');
           }
         } catch (error) {
-          step0Output(t('create.fork_error', { error: error.message }) + '\n');
+          step0Output(t('create.template_error', { error: error.message }) + '\n');
           step0Status('failure');
           throw error;
         }
@@ -841,9 +858,9 @@ class ProjectCreationHandler {
     /**
      * Start complete project creation
      */
-    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, shouldForkFirst = false, projectName = '', enablePages = false, organization = null) => {
+    ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false) => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, shouldForkFirst, projectName, enablePages, organization);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, useTemplate, projectName, enablePages, organization, isPrivateRepo);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;
