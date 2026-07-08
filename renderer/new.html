@@ -158,7 +158,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const nameInput = document.getElementById('project-name');
     const urlInput = document.getElementById('github-url');
     if (nameInput) nameInput.value = 'Meu Documental';
-    if (urlInput) urlInput.value = 'https://github.com/Documental-xyz/Documental.git';
+    if (urlInput) urlInput.value = 'https://github.com/Documental-xyz/Template.git';
+    // Hide URL field and label when creating a new repository
+    const urlFieldDiv = urlInput ? urlInput.closest('div') : null;
+    if (urlFieldDiv) urlFieldDiv.style.display = 'none';
   }
 
   // Show private toggle only in fork mode
