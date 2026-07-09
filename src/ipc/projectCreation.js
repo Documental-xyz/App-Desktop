@@ -1239,8 +1239,9 @@ class ProjectCreationHandler {
     ipcMain.removeHandler('reopen-project');
     ipcMain.removeHandler('cancel-project-creation');
     ipcMain.removeHandler('check-fork-exists');
+    ipcMain.removeHandler('check-repo-exists');
+    ipcMain.removeHandler('check-template-target-exists');
 
-    
     this.logger.info('✅ Project creation IPC handlers unregistered');
   }
 }

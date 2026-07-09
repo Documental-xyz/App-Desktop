@@ -149,4 +149,16 @@ function getInstallationGuide(platform) {
   return guides[platform] || guides.linux;
 }
 
-module.exports = { registerNodeDetectionHandlers };
+/**
+ * Unregister all Node.js runtime IPC handlers
+ * Must match the channels registered in registerNodeDetectionHandlers.
+ */
+function unregisterNodeDetectionHandlers() {
+  ipcMain.removeHandler('node:detect');
+  ipcMain.removeHandler('node:install');
+  ipcMain.removeHandler('node:get-executable');
+  ipcMain.removeHandler('node:get-installation-guide');
+  ipcMain.removeHandler('node:redetect');
+}
+
+module.exports = { registerNodeDetectionHandlers, unregisterNodeDetectionHandlers };

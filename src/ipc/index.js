@@ -13,7 +13,7 @@ const { BrowserHandlers } = require('./browser.js');
 const { SystemHandlers } = require('./system.js');
 const { FileHandlers } = require('./file.js');
 const { ProjectCreationHandler } = require('./projectCreation.js');
-const { registerNodeDetectionHandlers } = require('./nodeDetection.js');
+const { registerNodeDetectionHandlers, unregisterNodeDetectionHandlers } = require('./nodeDetection.js');
 const { I18nHandlers } = require('./i18n.js');
 const { GithubReposHandlers } = require('./githubRepos.js');
 const { PermissionHandlers } = require('./permissionHandlers.js');
@@ -140,6 +140,7 @@ class IpcRegistry {
       this.projectHandlers.unregisterHandlers();
       this.authHandlers.unregisterHandlers();
       this.systemHandlers.unregisterHandlers();
+      unregisterNodeDetectionHandlers();
 
       this.isRegistered = false;
       this.logger.info('✅ All IPC handlers unregistered successfully');
