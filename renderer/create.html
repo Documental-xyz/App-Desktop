@@ -216,6 +216,16 @@
                 }
             }
 
+            // Mark non-applicable steps as 'success' so they don't block allStepsSuccess.
+            // Step 6 (GitHub Pages) stays 'pending' when pages are disabled and can
+            // stall the entire flow if the next-step logic activates it.
+            if (!this.enablePages) {
+                const pagesStep = this.steps.find(s => s.id === 6);
+                if (pagesStep && pagesStep.status === 'pending') {
+                    pagesStep.status = 'success';
+                }
+            }
+
             this.$watch('steps', (newSteps) => {
                 sessionStorage.setItem(`projectCreationState-${this.projectId}`, JSON.stringify({
                     schemaVersion: 2,
@@ -459,7 +469,13 @@
                 if (this.useTemplate) {
                     this.activeStepId = 0;
                     this.steps.forEach((step) => {
-                        step.status = step.id === 0 ? 'active' : 'pending';
+                        if (step.id === 0) {
+                            step.status = 'active';
+                        } else if (step.id === 6 && !this.enablePages) {
+                            step.status = 'success';
+                        } else {
+                            step.status = 'pending';
+                        }
                         step.log = '';
                     });
                 } else if (this.enablePages) {

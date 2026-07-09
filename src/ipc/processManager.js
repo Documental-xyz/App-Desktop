@@ -405,6 +405,10 @@ class ProcessManager {
       sendStatus('failure');
     }
 
+    if (processStarted) {
+      sendStatus('success');
+    }
+
     sendServerOutput('Development server started in background. Waiting for readiness signal...\n');
     
     return {
