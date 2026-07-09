@@ -48,6 +48,9 @@ class Logger {
     };
     
     this.logBuffer = [];
+    // Debounce buffer for batched window broadcast
+    this._broadcastBuffer = [];
+    this._broadcastTimer = null;
     // Store references to the truly original console methods before any overrides
     this.trulyOriginalConsole = {
       log: console.log.bind(console),
@@ -100,20 +103,49 @@ class Logger {
   }
 
   /**
-   * Broadcast log entry to all browser windows
+   * Debounced broadcast: buffer entries and flush as a batch every 100ms.
    * @param {string} logEntry - Log entry to broadcast
    * @returns {void}
    */
   broadcastToWindows(logEntry) {
+    this._broadcastBuffer.push(logEntry);
+    if (!this._broadcastTimer) {
+      this._broadcastTimer = setTimeout(() => this._flushBroadcast(), 100);
+    }
+  }
+
+  /**
+   * Flush the broadcast buffer immediately (sends all pending entries as a
+   * single batch array). Used during shutdown to ensure no log is lost.
+   * @returns {void}
+   */
+  flushNow() {
+    if (this._broadcastTimer) {
+      clearTimeout(this._broadcastTimer);
+      this._broadcastTimer = null;
+    }
+    this._flushBroadcast();
+  }
+
+  /**
+   * Internal: send the accumulated buffer as a batch array to all windows.
+   * @private
+   */
+  _flushBroadcast() {
+    this._broadcastTimer = null;
+    const batch = this._broadcastBuffer.slice();
+    this._broadcastBuffer = [];
+    if (batch.length === 0) return;
+
     try {
       const allWindows = BrowserWindow.getAllWindows();
       allWindows.forEach(window => {
         if (!window.isDestroyed()) {
-          window.webContents.send('app-log-output', logEntry);
+          window.webContents.send('app-log-output', batch);
         }
       });
     } catch (error) {
-      this.originalConsole.error('Failed to broadcast log to windows:', error);
+      this.originalConsole.error('Failed to broadcast log batch to windows:', error);
     }
   }
 
@@ -145,6 +177,8 @@ class Logger {
    * @returns {void}
    */
   restoreConsoleMethods() {
+    // Flush any pending broadcast and stop the debounce timer
+    this.flushNow();
     console.log = this.originalConsole.log;
     console.error = this.originalConsole.error;
     console.warn = this.originalConsole.warn;
