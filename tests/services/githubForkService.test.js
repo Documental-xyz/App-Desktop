@@ -371,6 +371,259 @@ describe('GithubForkService', () => {
     });
   });
 
+  describe('waitForRepoReadiness', () => {
+    it('rejects when token is null ("Not authenticated")', async () => {
+      tokenMock.mockResolvedValue(null);
+
+      await expect(service.waitForRepoReadiness('owner', 'repo')).rejects.toThrow(/Not authenticated/i);
+      expect(mockOctokitInstance.repos.get).not.toHaveBeenCalled();
+    });
+
+    it('returns true immediately when default_branch populated and size > 0', async () => {
+      setupAuth();
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { default_branch: 'main', size: 42 }
+      });
+
+      const result = await service.waitForRepoReadiness('owner', 'repo');
+
+      expect(result).toBe(true);
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo' });
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('polls while size === 0, then resolves once size > 0', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 0 } })
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 0 } })
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 15 } });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo');
+
+      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const result = await promise;
+
+      expect(result).toBe(true);
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledTimes(3);
+    });
+
+    it('polls while default_branch is empty, then resolves once populated', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: null, size: 5 } })
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 5 } });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo');
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const result = await promise;
+
+      expect(result).toBe(true);
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps polling on 404 errors, then resolves', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      const notFoundError = { status: 404, message: 'Not Found' };
+      mockOctokitInstance.repos.get
+        .mockRejectedValueOnce(notFoundError)
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 10 } });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo');
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      const result = await promise;
+
+      expect(result).toBe(true);
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws after timeoutMs when repo never becomes ready', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { default_branch: null, size: 0 }
+      });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo', null, {
+        intervalMs: 1000,
+        timeoutMs: 5000
+      });
+      promise.catch(() => {});
+
+      await vi.advanceTimersByTimeAsync(6000);
+
+      await expect(promise).rejects.toThrow(/não ficou pronto/i);
+    });
+
+    it('honors custom intervalMs and timeoutMs options', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { default_branch: 'main', size: 0 }
+      });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo', null, {
+        intervalMs: 500,
+        timeoutMs: 2000
+      });
+      promise.catch(() => {});
+
+      await vi.advanceTimersByTimeAsync(3000);
+
+      await expect(promise).rejects.toThrow(/2s/);
+    });
+
+    it('onProgress is called with readiness messages', async () => {
+      setupAuth();
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { default_branch: 'main', size: 7 }
+      });
+
+      const onProgress = vi.fn();
+      await service.waitForRepoReadiness('owner', 'repo', onProgress);
+
+      expect(onProgress).toHaveBeenCalledWith(
+        expect.stringMatching(/✅ Repositório pronto.*branch: main.*tamanho: 7KB/)
+      );
+    });
+
+    it('onProgress is called with waiting message during polling', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: null, size: 0 } })
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 3 } });
+
+      const onProgress = vi.fn();
+      const promise = service.waitForRepoReadiness('owner', 'repo', onProgress);
+
+      await vi.advanceTimersByTimeAsync(2000);
+      await promise;
+
+      expect(onProgress).toHaveBeenCalledWith(expect.stringMatching(/⏳ Aguardando.*tentativa 1/));
+    });
+
+    it('uses default intervalMs=2000 and timeoutMs=30000 when options omitted', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.get.mockResolvedValue({
+        status: 200,
+        data: { default_branch: null, size: 0 }
+      });
+
+      const promise = service.waitForRepoReadiness('owner', 'repo');
+      promise.catch(() => {});
+
+      await vi.advanceTimersByTimeAsync(32000);
+
+      await expect(promise).rejects.toThrow(/30s/);
+    });
+  });
+
+  describe('full template flow', () => {
+    it('createFromTemplate returns cloneUrl matching expected format', async () => {
+      setupAuth();
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue({
+        status: 201,
+        data: {
+          clone_url: 'https://github.com/test-user/my-project.git',
+          full_name: 'test-user/my-project'
+        }
+      });
+
+      const result = await service.createFromTemplate('Documental-xyz', 'Template', 'my-project');
+
+      expect(result.success).toBe(true);
+      expect(result.cloneUrl).toMatch(/^https:\/\/github\.com\/.+\/.+\.git$/);
+      expect(result.cloneUrl).toBe('https://github.com/test-user/my-project.git');
+      expect(result.repo.full_name).toBe('test-user/my-project');
+    });
+
+    it('createFromTemplate works with options (private, description, owner)', async () => {
+      setupAuth();
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue({
+        status: 201,
+        data: {
+          clone_url: 'https://github.com/my-org/my-project.git',
+          full_name: 'my-org/my-project',
+          private: true,
+          description: 'Test project'
+        }
+      });
+
+      const result = await service.createFromTemplate(
+        'Documental-xyz', 'Template', 'my-project', null,
+        { owner: 'my-org', private: true, description: 'Test project' }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.cloneUrl).toContain('my-org');
+      expect(mockOctokitInstance.repos.createUsingTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owner: 'my-org',
+          private: true
+        })
+      );
+    });
+
+    it('createFromTemplate followed by waitForRepoReadiness completes successfully', async () => {
+      vi.useFakeTimers();
+
+      setupAuth();
+      mockOctokitInstance.repos.createUsingTemplate.mockResolvedValue({
+        status: 201,
+        data: {
+          clone_url: 'https://github.com/test-user/my-project.git',
+          full_name: 'test-user/my-project'
+        }
+      });
+
+      mockOctokitInstance.repos.get
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 0 } })
+        .mockResolvedValueOnce({ status: 200, data: { default_branch: 'main', size: 7951 } });
+
+      const createResult = await service.createFromTemplate('Documental-xyz', 'Template', 'my-project');
+      expect(createResult.success).toBe(true);
+
+      const match = createResult.cloneUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
+      expect(match).not.toBeNull();
+
+      const [, owner, repo] = match;
+      const readinessPromise = service.waitForRepoReadiness(owner, repo, null, {
+        intervalMs: 1000,
+        timeoutMs: 10000
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      const ready = await readinessPromise;
+
+      expect(ready).toBe(true);
+      expect(mockOctokitInstance.repos.get).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: 'test-user', repo: 'my-project' })
+      );
+    });
+  });
+
   describe('checkTemplateTargetExists', () => {
     it('returns exists:true when repo exists at target owner', async () => {
       tokenMock.mockResolvedValue('fake-token');

@@ -367,6 +367,74 @@ class GithubForkService {
   }
 
   /**
+   * Wait for a newly-created repository to be fully ready for cloning.
+   *
+   * After createUsingTemplate returns 201, the repo object exists but git
+   * objects may not yet be available via the git smart HTTP protocol
+   * (/info/refs?service=git-upload-pack). Cloning at that instant yields an
+   * empty repository (no branches, no files). This method polls repos.get()
+   * until the repo reports a populated default_branch AND non-zero size.
+   *
+   * @param {string} owner - Repo owner.
+   * @param {string} repo - Repo name.
+   * @param {(message: string) => void} [onProgress] - Optional progress callback.
+   * @param {Object} [options] - Polling options.
+   * @param {number} [options.intervalMs=2000] - Poll interval in ms.
+   * @param {number} [options.timeoutMs=30000] - Max total wait in ms.
+   * @returns {Promise<boolean>} Resolves true when the repo is ready for clone.
+   * @throws {Error} When not authenticated or the timeout is reached.
+   */
+  async waitForRepoReadiness(owner, repo, onProgress, options = {}) {
+    const intervalMs = options.intervalMs || 2000;
+    const timeoutMs = options.timeoutMs || 30000;
+
+    const token = await secureTokenService.getToken();
+    if (!token) {
+      throw new Error('Not authenticated: no GitHub token found');
+    }
+
+    const { Octokit } = await import('@octokit/rest');
+    const octokit = new Octokit({ auth: token });
+
+    const startedAt = Date.now();
+    let attempt = 0;
+
+    for (;;) {
+      attempt++;
+      try {
+        const { data } = await octokit.repos.get({ owner, repo });
+        // Repo is ready when it has a default_branch AND size > 0.
+        // size == 0 means git objects haven't been processed yet.
+        if (data && data.default_branch && data.size > 0) {
+          if (onProgress) {
+            onProgress(`✅ Repositório pronto (branch: ${data.default_branch}, tamanho: ${data.size}KB)\n`);
+          }
+          return true;
+        }
+        if (onProgress) {
+          onProgress(`⏳ Aguardando repositório ficar pronto... (tentativa ${attempt})\n`);
+        }
+      } catch (error) {
+        // 404 (or any transient error) is expected while GitHub is still
+        // processing the template copy — keep polling.
+        this.logger?.debug?.('waitForRepoReadiness check returned error:', error?.message);
+        if (onProgress) {
+          onProgress(`⏳ Aguardando repositório ficar pronto... (tentativa ${attempt})\n`);
+        }
+      }
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= timeoutMs) {
+        throw new Error(
+          `Repositório não ficou pronto após ${timeoutMs / 1000}s. Tente novamente.`
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  /**
    * Check whether a repository with the given name already exists at the target owner.
    * Used to prevent createUsingTemplate from failing with 422.
    *
