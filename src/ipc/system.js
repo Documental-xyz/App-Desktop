@@ -16,6 +16,98 @@ const os = require('os');
 const { PlatformService } = require('../main/services/platform/PlatformService.js');
 
 /**
+ * @type {import('child_process').ChildProcess[]} Currently active exec() child processes
+ * spawned by SystemHandlers. Tracked so killAllActiveExecs() (called from will-quit,
+ * Task 20) can terminate them during app shutdown and prevent perf-zombie children.
+ */
+const activeExecs = [];
+
+/**
+ * Lazily-loaded killPidTree (avoids loading tree-kill at module init time).
+ * @returns {Promise<(pid: number, gracePeriod?: number) => Promise<void>>}
+ */
+async function getKillPidTree() {
+  const { killPidTree } = require('../main/processes/killPidTree.js');
+  return killPidTree;
+}
+
+/**
+ * Get a snapshot of currently active exec() child processes.
+ * Used by Task 12 (killAll) via the will-quit handler (Task 20).
+ * @returns {import('child_process').ChildProcess[]}
+ */
+function getActiveExecs() {
+  return [...activeExecs];
+}
+
+/**
+ * Kill all currently active exec() child processes tracked by SystemHandlers.
+ * Two-phase: SIGTERM → grace period → SIGKILL via killPidTree (which also
+ * kills the descendant process group on Unix / taskkill /T on Windows).
+ *
+ * Safe to call during shutdown: never throws, logs errors, and removes
+ * killed entries from activeExecs.
+ * @param {number} [gracePeriod=1500] - SIGTERM→SIGKILL grace window in ms
+ * @returns {Promise<void>}
+ */
+async function killAllActiveExecs(gracePeriod = 1500) {
+  // Snapshot before iterating to avoid concurrent mutation from 'close' handlers.
+  const snapshot = [...activeExecs];
+  if (snapshot.length === 0) return;
+
+  let killPidTree;
+  try {
+    killPidTree = await getKillPidTree();
+  } catch (err) {
+    // Fall back to direct child.kill if killPidTree cannot be loaded
+    killPidTree = null;
+  }
+
+  await Promise.all(snapshot.map(async (child) => {
+    try {
+      // Already gone — nothing to do (the 'close' handler will splice it).
+      if (child.exitCode !== null || child.signalCode !== null) return;
+
+      if (killPidTree && typeof child.pid === 'number' && child.pid > 0) {
+        await killPidTree(child.pid, gracePeriod);
+      } else if (typeof child.kill === 'function') {
+        // Best-effort graceful kill, escalate to SIGKILL after gracePeriod
+        child.kill('SIGTERM');
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+            resolve();
+          }, gracePeriod);
+          child.once('close', () => { clearTimeout(timer); resolve(); });
+          child.once('exit', () => { clearTimeout(timer); resolve(); });
+        });
+      }
+    } catch (_) {
+      // Swallow — never throw during shutdown.
+    }
+  }));
+}
+
+/**
+ * Track an exec() child process: push to activeExecs and auto-remove on 'close'.
+ * @param {import('child_process').ChildProcess} child
+ * @returns {import('child_process').ChildProcess} The same child (passthrough)
+ */
+function trackExec(child) {
+  if (!child) return child;
+  activeExecs.push(child);
+  const cleanup = () => {
+    const idx = activeExecs.indexOf(child);
+    if (idx >= 0) activeExecs.splice(idx, 1);
+  };
+  // 'close' fires after all stdio streams are closed (later than 'exit').
+  // Listen once so removal happens exactly once even if both fire.
+  child.once('close', cleanup);
+  child.once('error', cleanup);
+  return child;
+}
+
+/**
  * @typedef {Object} NodeDetectionResult
  * @property {string} status - Detection status ('installed', 'not_found', 'error')
  * @property {string} version - Node.js version if found
@@ -451,7 +543,7 @@ async detectNVM() {
       const whichCommand = await this.platformService.adapter.getShellCommand('which');
       
       // Check if NVM command exists
-      exec(`${whichCommand} nvm`, (error, stdout, stderr) => {
+      trackExec(exec(`${whichCommand} nvm`, (error, stdout, stderr) => {
         if (!error && stdout.trim()) {
           resolve({
             exists: true,
@@ -478,7 +570,7 @@ async detectNVM() {
           path: null,
           type: null
         });
-      });
+      }));
     });
   }
 
@@ -506,7 +598,7 @@ async installNVM() {
         curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
       `;
       
-      exec(installScript, {
+      trackExec(exec(installScript, {
         env: {
           ...process.env,
           NVM_DIR: nvmDir
@@ -520,7 +612,7 @@ async installNVM() {
         
         this.logger.info('✅ NVM installed successfully');
         resolve();
-      });
+      }));
     });
   }
 
@@ -550,7 +642,7 @@ async installNodeVersion(version) {
         source ${nvmScript} && nvm install ${version} && nvm use ${version} && nvm alias default ${version}
       `;
       
-      exec(installCommand, {
+      trackExec(exec(installCommand, {
         env: {
           ...process.env,
           NVM_DIR: nvmDir,
@@ -566,7 +658,7 @@ async installNodeVersion(version) {
         
         this.logger.info(`✅ Node.js v${version} installed successfully`);
         resolve({ version, success: true });
-      });
+      }));
     });
   }
 
@@ -650,7 +742,7 @@ async verifyNodeInstallation() {
         const nodeCmd = this.platformService.adapter.getExecutableName('node');
         const npmCmd = this.platformService.adapter.getExecutableName('npm');
         
-        exec(`${nodeCmd} --version && ${npmCmd} --version`, (error, stdout, stderr) => {
+        trackExec(exec(`${nodeCmd} --version && ${npmCmd} --version`, (error, stdout, stderr) => {
           if (error) {
             resolve({ success: false, error: error.message });
           } else {
@@ -661,7 +753,7 @@ async verifyNodeInstallation() {
               npmVersion: lines[1] || 'unknown'
             });
           }
-        });
+        }));
         return;
       }
       
@@ -669,7 +761,7 @@ async verifyNodeInstallation() {
         source ${nvmScript} && node --version && npm --version && which node && which npm
       `;
       
-      exec(verifyCommand, {
+      trackExec(exec(verifyCommand, {
         env: {
           ...process.env,
           NVM_DIR: nvmDir,
@@ -706,7 +798,7 @@ async verifyNodeInstallation() {
           path: nodePath,
           npmPath: npmPath
         });
-      });
+      }));
     });
   }
 
@@ -1267,4 +1359,8 @@ async verifyNodeInstallation() {
   }
 }
 
-module.exports = { SystemHandlers };
+module.exports = {
+  SystemHandlers,
+  getActiveExecs,
+  killAllActiveExecs
+};
