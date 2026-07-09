@@ -70,6 +70,11 @@ class BrowserHandlers {
 
       this.windowBrowserViews.set(window, { editorView, viewerView });
       this.logger.info(`Created BrowserViews for window ${window.id}`);
+
+      // Evict from maps when the window closes (prevents Map leak)
+      window.on('closed', () => {
+        this.cleanupWindowBrowserViews(window);
+      });
     }
 
     return this.windowBrowserViews.get(window);
@@ -136,7 +141,8 @@ class BrowserHandlers {
       handleError(new Error(`${errorDescription} (${errorCode})`));
     });
 
-    // Monitor continuous navigation
+    // Monitor continuous navigation (replace semantics: remove stale before adding)
+    view.webContents.removeAllListeners('did-navigate');
     view.webContents.on('did-navigate', (event, url) => {
       // Broadcast navigation to all windows
       BrowserWindow.getAllWindows().forEach(w => {
@@ -147,7 +153,8 @@ class BrowserHandlers {
       this.logger.info(`🌐 ${viewName} navigated to: ${url}`);
     });
 
-    // Monitor SPA navigation (for Sveltia CMS)
+    // Monitor SPA navigation (replace semantics: remove stale before adding)
+    view.webContents.removeAllListeners('did-navigate-in-page');
     view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
       if (!isMainFrame) return;
       
