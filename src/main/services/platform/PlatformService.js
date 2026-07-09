@@ -10,6 +10,7 @@ const { PlatformAdapterFactory } = require('../../factories/PlatformAdapterFacto
 const { spawn } = require('child_process');
 const { killProcessTree } = require('../../processes/killProcessTree.js');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 
 /**
@@ -172,9 +173,12 @@ class PlatformService {
       const commonPaths = await this.adapter.getCommonPaths(executable);
       
       for (const execPath of commonPaths) {
-        if (fs.existsSync(execPath)) {
+        try {
+          await fsPromises.access(execPath);
           this.logger.info(`📍 Found ${executable} in common paths: ${execPath}`);
           return execPath;
+        } catch {
+          // not found at this path — continue
         }
       }
     } catch (error) {
@@ -269,7 +273,7 @@ class PlatformService {
     try {
       const { recursive = true, mode = 0o755 } = options;
       
-      fs.mkdirSync(dirPath, { recursive, mode });
+      await fsPromises.mkdir(dirPath, { recursive, mode });
       
       // Set platform-specific permissions if needed
       if (options.permissions) {
@@ -303,7 +307,9 @@ class PlatformService {
     try {
       const { recursive = false, force = false } = options;
       
-      if (!fs.existsSync(targetPath)) {
+      try {
+        await fsPromises.access(targetPath);
+      } catch {
         return {
           success: true,
           path: targetPath,
@@ -311,16 +317,16 @@ class PlatformService {
         };
       }
       
-      const stats = fs.statSync(targetPath);
+      const stats = await fsPromises.stat(targetPath);
       
       if (stats.isDirectory()) {
         if (recursive) {
-          fs.rmSync(targetPath, { recursive: true, force });
+          await fsPromises.rm(targetPath, { recursive: true, force });
         } else {
-          fs.rmdirSync(targetPath);
+          await fsPromises.rmdir(targetPath);
         }
       } else {
-        fs.unlinkSync(targetPath);
+        await fsPromises.unlink(targetPath);
       }
       
       this.logger.info(`🗑️ Removed ${stats.isDirectory() ? 'directory' : 'file'}: ${targetPath}`);
@@ -350,18 +356,20 @@ class PlatformService {
    */
   async copyPath(sourcePath, targetPath, options = {}) {
     try {
-      if (!fs.existsSync(sourcePath)) {
+      try {
+        await fsPromises.access(sourcePath);
+      } catch {
         throw new Error(`Source path does not exist: ${sourcePath}`);
       }
       
-      const stats = fs.statSync(sourcePath);
+      const stats = await fsPromises.stat(sourcePath);
       
       if (stats.isDirectory()) {
         // Copy directory recursively
         await this.copyDirectory(sourcePath, targetPath, options);
       } else {
         // Copy file
-        fs.copyFileSync(sourcePath, targetPath);
+        await fsPromises.copyFile(sourcePath, targetPath);
       }
       
       // Set platform-specific permissions if needed
@@ -397,11 +405,13 @@ class PlatformService {
    * @param {Object} options - Copy options
    */
   async copyDirectory(sourceDir, targetDir, options = {}) {
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
+    try {
+      await fsPromises.access(targetDir);
+    } catch {
+      await fsPromises.mkdir(targetDir, { recursive: true });
     }
     
-    const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+    const entries = await fsPromises.readdir(sourceDir, { withFileTypes: true });
     
     for (const entry of entries) {
       const sourcePath = path.join(sourceDir, entry.name);
@@ -410,7 +420,7 @@ class PlatformService {
       if (entry.isDirectory()) {
         await this.copyDirectory(sourcePath, targetPath, options);
       } else {
-        fs.copyFileSync(sourcePath, targetPath);
+        await fsPromises.copyFile(sourcePath, targetPath);
         
         if (options.preservePermissions) {
           const permissions = await this.adapter.getFilePermissions(sourcePath);
