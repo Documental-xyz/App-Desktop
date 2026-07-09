@@ -14,6 +14,19 @@ const yauzl = require('yauzl');
 const { app } = require('electron');
 
 /**
+ * Module-level extraction state.
+ *
+ * Extraction is library-based (tar/yauzl run in-process, no child subprocess),
+ * so `currentExtractionPid` tracks the main Electron process while it is
+ * performing the synchronous extraction work — not a child pid. Callers
+ * (e.g. will-quit handler) use `waitForExtractionComplete()` to coordinate
+ * graceful shutdown without interrupting an in-flight extraction that would
+ * leave a half-written runtime directory behind.
+ */
+let extractionInProgress = false;
+let currentExtractionPid = null;
+
+/**
  * @typedef {Object} RuntimeInfo
  * @property {boolean} installed - Whether the runtime exists locally
  * @property {boolean} isValid - Whether the runtime satisfies the required major version
@@ -217,6 +230,8 @@ class NodeRuntimeManager {
       if (onProgress) {
         onProgress({ stage: 'extracting', message: 'Extraindo Node.js...', percent: 65 });
       }
+      extractionInProgress = true;
+      currentExtractionPid = process.pid;
       await this.extractArchive(downloadInfo, archivePath, tempDir);
       await this.moveExtractedRuntime(tempDir);
       fs.unlinkSync(archivePath);
@@ -234,6 +249,8 @@ class NodeRuntimeManager {
       this.logger.error('❌ Erro durante a instalação do Node.js gerenciado:', error);
       throw error;
     } finally {
+      extractionInProgress = false;
+      currentExtractionPid = null;
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
@@ -486,6 +503,62 @@ class NodeRuntimeManager {
       minor: parsed.minor,
       patch: parsed.patch
     };
+  }
+
+  /**
+   * Wait for any in-flight extraction to finish. Resolves (never rejects) when
+   * `extractionInProgress` is false or after `timeoutMs` has elapsed. Use before
+   * tearing down the process so we don't leave a half-extracted runtime behind.
+   * @param {number} [timeoutMs=2000] - Maximum time to wait in milliseconds
+   * @returns {Promise<boolean>} true if extraction finished, false on timeout
+   */
+  async waitForExtractionComplete(timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    while (extractionInProgress && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return !extractionInProgress;
+  }
+
+  /**
+   * Remove partial extraction directories left behind by a killed install.
+   * Scans `runtimeRoot` for `node-v*-*` directories missing the runtime marker
+   * (`bin/node` on Unix, `node.exe` on Windows) and deletes them. Complete
+   * directories under the platform/arch install dir are left untouched.
+   * @returns {Promise<string[]>} Removed directory paths
+   */
+  async cleanupPartialExtractions() {
+    const removed = [];
+    let entries;
+    try {
+      entries = await fs.promises.readdir(this.runtimeRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return removed;
+      }
+      throw error;
+    }
+
+    const marker = this.platform === 'win32' ? 'node.exe' : path.join('bin', 'node');
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^node-v.*-.*$/.test(entry.name)) {
+        continue;
+      }
+      const dirPath = path.join(this.runtimeRoot, entry.name);
+      const markerPath = path.join(dirPath, marker);
+      try {
+        await fs.promises.access(markerPath);
+      } catch {
+        try {
+          await fs.promises.rm(dirPath, { recursive: true, force: true });
+          removed.push(dirPath);
+        } catch (rmError) {
+          this.logger.warn(`⚠️ Falha ao limpar extração parcial ${dirPath}:`, rmError);
+        }
+      }
+    }
+    return removed;
   }
 }
 
