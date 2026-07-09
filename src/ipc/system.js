@@ -1174,8 +1174,8 @@ async verifyNodeInstallation() {
 
     const { nativeTheme } = require('electron');
     this._lastBroadcastedMode = null;
-    this._themeChangeHandler = () => {
-      const osDark = this.themeService?._detectOsDarkPreference?.() ?? (nativeTheme.shouldUseDarkColors ?? false);
+    this._themeChangeHandler = async () => {
+      const osDark = await this.themeService?._detectOsDarkPreference?.() ?? (nativeTheme.shouldUseDarkColors ?? false);
       const resolvedMode = osDark ? 'dark' : 'light';
       if (resolvedMode !== this._lastBroadcastedMode) {
         this._lastBroadcastedMode = resolvedMode;
@@ -1227,7 +1227,7 @@ async verifyNodeInstallation() {
 
         let resolvedMode = mode;
         if (mode === 'auto') {
-          const osPrefersDark = this.themeService?._detectOsDarkPreference?.()
+          const osPrefersDark = await this.themeService?._detectOsDarkPreference?.()
             ?? ((require('electron').nativeTheme.shouldUseDarkColors ?? false));
           resolvedMode = osPrefersDark ? 'dark' : 'light';
         }
@@ -1302,7 +1302,7 @@ async verifyNodeInstallation() {
     ipcMain.handle('get-os-dark-preference', async () => {
       try {
         if (this.themeService && this.themeService._detectOsDarkPreference) {
-          return { success: true, prefersDark: this.themeService._detectOsDarkPreference() };
+          return { success: true, prefersDark: await this.themeService._detectOsDarkPreference() };
         }
         const { nativeTheme } = require('electron');
         return { success: true, prefersDark: nativeTheme.shouldUseDarkColors ?? false };
@@ -1326,8 +1326,8 @@ async verifyNodeInstallation() {
           const rawMode = this.themeService.getRawMode();
           let resolvedMode = rawMode;
           if (rawMode === 'auto') {
-            const osPrefersDark = this.themeService?._detectOsDarkPreference?.()
-              ?? ((require('electron').nativeTheme.shouldUseDarkColors ?? false));
+          const osPrefersDark = await this.themeService?._detectOsDarkPreference?.()
+            ?? ((require('electron').nativeTheme.shouldUseDarkColors ?? false));
             resolvedMode = osPrefersDark ? 'dark' : 'light';
           }
           return { success: true, mode: rawMode, resolvedMode };

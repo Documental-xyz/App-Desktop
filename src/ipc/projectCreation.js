@@ -232,7 +232,7 @@ class ProjectCreationHandler {
             try {
               const rmCommand = isWindows ? 'rmdir' : 'rm';
               const rmArgs = isWindows ? ['/s', '/q', targetPath] : ['-rf', targetPath];
-              await execa(rmCommand, rmArgs, { stdio: 'ignore' });
+              await execa(rmCommand, rmArgs, { stdio: 'ignore', killDescendants: true });
             } catch (execError) {
               try {
                 const stat = await fsPromises.lstat(targetPath);
@@ -340,7 +340,7 @@ class ProjectCreationHandler {
             try {
               const rmCommand = isWindows ? 'rmdir' : 'rm';
               const rmArgs = isWindows ? ['/s', '/q', dir] : ['-rf', dir];
-              await execa(rmCommand, rmArgs, { stdio: 'ignore' });
+              await execa(rmCommand, rmArgs, { stdio: 'ignore', killDescendants: true });
             } catch (rmErr) {
               this.logger.warn('[clone-diag] rm failed on retry, falling back to manual:', rmErr?.message);
             }

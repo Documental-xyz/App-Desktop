@@ -25,6 +25,7 @@ const { MenuManager } = require('./src/main/services/menuManager.js');
 const { NodeDetectionService } = require('./src/main/services/nodeDetectionService.js');
 const { ThemeService } = require('./src/main/services/themeService.js');
 const { createIpcRegistry } = require('./src/ipc/index.js');
+const { killAllActiveExecs } = require('./src/ipc/system.js');
 
 // Initialize modular logging system
 const logger = getLogger('MainProcess');
@@ -432,6 +433,12 @@ function setupAppEventHandlers() {
       if (processManager && typeof processManager.killAll === 'function') {
         await processManager.killAll();
         logger.info('✅ Child processes killed via killAll');
+      }
+
+      // 1.5 Kill active exec() children (nvm installer, etc.) tracked by system.js
+      if (typeof killAllActiveExecs === 'function') {
+        await killAllActiveExecs();
+        logger.info('✅ Active exec children killed via killAllActiveExecs');
       }
 
       // 2. Kill remaining tracked PIDs via DocumentalTracker

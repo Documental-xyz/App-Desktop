@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execa } = require('execa');
 
 function getNativeTheme() {
   try {
@@ -106,7 +107,7 @@ class ThemeService {
     this.themeDir = validated.themeDir;
 
     this.manifest = await this._loadManifest(this.themeDir);
-    this.themeMode = this._resolveMode(this.manifest);
+    this.themeMode = await this._resolveMode(this.manifest);
     this.cssFiles = await this._buildCssChain(this.themeDir, this.manifest, appRoot);
     await this._resolveAssetPaths(this.themeDir);
 
@@ -391,12 +392,12 @@ class ThemeService {
     }
   }
 
-  _resolveMode(manifest) {
+  async _resolveMode(manifest) {
     const availableModes = manifest.mode || ['dark', 'light'];
     const requestedMode = this._resolveThemeModeEnv();
 
     if (requestedMode === 'auto') {
-      const osPrefersDark = this._detectOsDarkPreference();
+      const osPrefersDark = await this._detectOsDarkPreference();
       const resolved = osPrefersDark ? 'dark' : 'light';
       if (availableModes.includes(resolved)) {
         return resolved;
@@ -417,7 +418,7 @@ class ThemeService {
     return availableModes[0];
   }
 
-  _detectOsDarkPreference() {
+  async _detectOsDarkPreference() {
     const nt = this._getNativeTheme();
     if (nt) {
       if (nt.shouldUseDarkColors) {
@@ -426,23 +427,21 @@ class ThemeService {
 
       if (process.platform === 'linux') {
         try {
-          const { execSync } = require('child_process');
-          const colorScheme = execSync(
-            'gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null',
-            { timeout: 2000, encoding: 'utf8' }
-          ).trim();
-          if (colorScheme.includes('dark')) {
+          const { stdout: colorScheme } = await execa(
+            'gsettings', ['get', 'org.gnome.desktop.interface', 'color-scheme'],
+            { timeout: 2000 }
+          );
+          if (colorScheme.trim().includes('dark')) {
             return true;
           }
         } catch (_e) { }
 
         try {
-          const { execSync } = require('child_process');
-          const gtkTheme = execSync(
-            'gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null',
-            { timeout: 2000, encoding: 'utf8' }
-          ).trim().toLowerCase();
-          if (gtkTheme.includes('dark')) {
+          const { stdout: gtkTheme } = await execa(
+            'gsettings', ['get', 'org.gnome.desktop.interface', 'gtk-theme'],
+            { timeout: 2000 }
+          );
+          if (gtkTheme.trim().toLowerCase().includes('dark')) {
             return true;
           }
         } catch (_e) { }
@@ -450,12 +449,11 @@ class ThemeService {
 
       if (process.platform === 'darwin') {
         try {
-          const { execSync } = require('child_process');
-          const output = execSync(
-            'defaults read -g AppleInterfaceStyle 2>/dev/null',
-            { timeout: 2000, encoding: 'utf8' }
-          ).trim();
-          if (output.toLowerCase().includes('dark')) {
+          const { stdout: output } = await execa(
+            'defaults', ['read', '-g', 'AppleInterfaceStyle'],
+            { timeout: 2000 }
+          );
+          if (output.trim().toLowerCase().includes('dark')) {
             return true;
           }
         } catch (_e) { }
