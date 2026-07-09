@@ -49,10 +49,12 @@ class ProcessManager {
    * @param {Object} dependencies.logger - Logger instance
    * @param {Object} dependencies.nodeDetectionService - Node.js detection service
    */
-  constructor({ logger, nodeDetectionService }) {
+  constructor({ logger, nodeDetectionService, killProcessTree }) {
     this.logger = logger;
     this.nodeDetectionService = nodeDetectionService;
     this.platformService = new PlatformService({ logger });
+    /** @type {Function|undefined} Optional injection for tests — defaults to killProcessTree from require */
+    this._killProcessTree = killProcessTree;
     this.processesFile = this.platformService.joinPath(this.platformService.getHomeDirectory(), '.documental-processes.json');
     this.loadDocumentalProcesses();
   }
@@ -236,7 +238,11 @@ class ProcessManager {
         const subprocess = execa(actualCommand, args, {
           cwd,
           env,
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          killDescendants: true,
+          forceKillAfterDelay: 1500,
+          killSignal: 'SIGTERM',
+          cleanup: true
         });
         
         activeProcesses[processId] = subprocess;
@@ -364,58 +370,104 @@ class ProcessManager {
 
       this.logger.info(`🚀 Starting dev server: ${actualNpmPath} run dev in ${repoDirPath}`);
 
+      let spawnFailedEarly = false;
+
       try {
-        devProcess = execa(actualNpmPath, ['run', 'dev'], { 
+        devProcess = execa(actualNpmPath, ['run', 'dev'], {
           cwd: repoDirPath,
           env,
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          killDescendants: true,
+          forceKillAfterDelay: 1500,
+          killSignal: 'SIGTERM',
+          cleanup: true
         });
-        
-        processStarted = true;
-        activeProcesses[`dev-${projectId}`] = devProcess;
 
-        // Track this as a Documental process
-        if (devProcess.pid) {
-          this.addDocumentalProcess(devProcess.pid, {
-            port: null, // Will be updated when URL is detected
-            projectId: projectId,
-            command: 'npm run dev',
-            cwd: repoDirPath
+        // Race 1 fix: execa's pid is undefined until 'spawn'. Wait for it so
+        // pid reads below are safe; reject on early 'error' (e.g. ENOENT).
+        if (!devProcess.pid) {
+          await new Promise((resolve, reject) => {
+            devProcess.once('spawn', resolve);
+            devProcess.once('error', (err) => {
+              spawnFailedEarly = true;
+              reject(err);
+            });
           });
         }
 
-        // Handle stdout
-        devProcess.stdout?.on('data', processOutput);
-        
-        // Handle stderr
-        devProcess.stderr?.on('data', processOutput);
+        processStarted = true;
+        const processId = `dev-${projectId}`;
+        activeProcesses[processId] = devProcess;
 
-        // Handle process completion
-        devProcess.on('exit', (code, signal) => {
-          delete activeProcesses[`dev-${projectId}`];
-          if (devProcess.pid) {
-            this.removeDocumentalProcess(devProcess.pid);
-          }
-          if (signal) {
-            sendServerOutput(`Development server killed with signal: ${signal}\n`);
-            sendStatus('failure');
-          } else if (code !== 0) {
-            sendServerOutput(`Development server exited with code ${code}\n`);
-            sendStatus('failure');
-          }
+        this.addDocumentalProcess(devProcess.pid, {
+          port: null, // Will be updated when URL is detected
+          projectId: projectId,
+          command: 'npm run dev',
+          cwd: repoDirPath
         });
 
-        // Handle process errors
-        devProcess.on('error', (err) => {
-          delete activeProcesses[`dev-${projectId}`];
+        // Race 3 fix: any error between spawn and listener attach must kill
+        // the child and clean up tracking, else devServerReady stays false
+        // forever with a leaked process.
+        try {
+          devProcess.stdout?.on('data', processOutput);
+          devProcess.stderr?.on('data', processOutput);
+
+          devProcess.on('exit', (code, signal) => {
+            delete activeProcesses[processId];
+            if (devProcess.pid) {
+              this.removeDocumentalProcess(devProcess.pid);
+            }
+            if (signal) {
+              sendServerOutput(`Development server killed with signal: ${signal}\n`);
+              sendStatus('failure');
+            } else if (code !== 0) {
+              sendServerOutput(`Development server exited with code ${code}\n`);
+              sendStatus('failure');
+            }
+          });
+
+          // Handle process errors
+          devProcess.on('error', (err) => {
+            delete activeProcesses[processId];
+            if (devProcess.pid) {
+              this.removeDocumentalProcess(devProcess.pid);
+            }
+            sendServerOutput(`Failed to start development server: ${err.message}\n`);
+            sendStatus('failure');
+          });
+        } catch (attachError) {
+          this.logger.error(`Failed to attach dev server listeners: ${attachError.message}`);
+          try {
+            devProcess.kill('SIGTERM');
+          } catch (killErr) {
+            // already exited
+          }
+          delete activeProcesses[processId];
           if (devProcess.pid) {
             this.removeDocumentalProcess(devProcess.pid);
           }
-          sendServerOutput(`Failed to start development server: ${err.message}\n`);
+          sendServerOutput(`Failed to start development server: ${attachError.message}\n`);
           sendStatus('failure');
-        });
+          throw attachError;
+        }
 
       } catch (error) {
+        // Race 3 fix: kill any spawned child on a later failure; skip when
+        // spawn itself rejected (no process to kill).
+        if (!spawnFailedEarly && devProcess && devProcess.pid && devProcess.exitCode === null) {
+          try {
+            devProcess.kill('SIGTERM');
+          } catch (killErr) {
+            // best-effort
+          }
+        }
+        if (processStarted) {
+          delete activeProcesses[`dev-${projectId}`];
+          if (devProcess && devProcess.pid) {
+            this.removeDocumentalProcess(devProcess.pid);
+          }
+        }
         sendServerOutput(`Failed to start development server: ${error.message}\n`);
         sendStatus('failure');
       }
@@ -425,9 +477,9 @@ class ProcessManager {
       sendStatus('failure');
     }
 
-    if (processStarted) {
-      sendStatus('success');
-    }
+    // Race 2 fix: success is now signalled only from checkServerReady() once
+    // the server is truly ready. The old unconditional sendStatus('success')
+    // that fired right after spawn (before URL detection) is intentionally gone.
 
     sendServerOutput('Development server started in background. Waiting for readiness signal...\n');
     
@@ -469,6 +521,62 @@ class ProcessManager {
    */
   getActiveDocumentalProcesses() {
     return activeDocumentalProcesses;
+  }
+
+  /**
+   * Kill ALL tracked processes (both regular and Documental) under a lock-guard.
+   *
+   * Contract:
+   *   - acquires the process manager lock before iterating (throws "Process
+   *     manager busy: killAll" if another op holds it)
+   *   - delegates to killProcessTree for each subprocess (SIGTERM -> grace -> SIGKILL)
+   *   - uses Promise.allSettled so one failure doesn't short-circuit the rest
+   *   - releases the lock in a `finally` block (even on error)
+   *   - idempotent: safe to call repeatedly; empty state is a no-op
+   *   - swallows ESRCH/EPERM (already-dead processes) so callers don't see them
+   *
+   * @param {number} [gracePeriod=1500] - Grace period in ms forwarded to killProcessTree
+   * @returns {Promise<void>}
+   */
+  async killAll(gracePeriod = 1500) {
+    acquireProcessManagerLock('killAll');
+    try {
+      // Snapshot via instance getters (tests override them); read under the lock.
+      const regular = this.getActiveProcesses() || {};
+      const documental = this.getActiveDocumentalProcesses() || {};
+
+      const targets = [
+        ...Object.values(regular),
+        ...Object.values(documental)
+      ].filter((proc) => proc && (proc.pid !== undefined || typeof proc.kill === 'function'));
+
+      if (targets.length > 0) {
+        // Prefer injected killProcessTree (for testability); fall back to lazy
+        // require which bypasses vi.mock in CJS context (see learnings Task 11).
+        const killFn = this._killProcessTree || require('../main/processes/killProcessTree').killProcessTree;
+        const results = await Promise.allSettled(
+          targets.map((proc) =>
+            killFn(proc, gracePeriod).catch((err) => {
+              // ESRCH = already dead, EPERM = not ours; both are safe to ignore.
+              const code = err && err.code;
+              if (code !== 'ESRCH' && code !== 'EPERM') {
+                this.logger?.warn?.('killAll: error killing process', err?.message || err);
+              }
+            })
+          )
+        );
+        const rejected = results.filter((r) => r.status === 'rejected');
+        if (rejected.length > 0) {
+          this.logger?.warn?.(`killAll: ${rejected.length} process kill(s) rejected`);
+        }
+      }
+
+      // Clear both maps so repeated calls are idempotent no-ops.
+      activeProcesses = {};
+      activeDocumentalProcesses = {};
+    } finally {
+      releaseProcessManagerLock();
+    }
   }
 
   /**
