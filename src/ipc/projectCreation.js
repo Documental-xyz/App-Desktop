@@ -106,22 +106,155 @@ class ProjectCreationHandler {
   }
 
   /**
-   * Clone repository
-   * @param {string} url - Repository URL
-   * @param {string} dir - Directory to clone into
-   * @param {Function} sendOutput - Output function
-   * @returns {Promise<void>}
+   * Mask a token for safe logging.
+   * @param {string} [token] - The token to mask.
+   * @returns {string} Masked representation (e.g. "ghp_…AB12" or "<none>").
+   * @private
+   */
+  _maskToken(token) {
+    if (!token) return '<none>';
+    if (token.length <= 8) return '***';
+    return `${token.slice(0, 4)}…${token.slice(-4)}`;
+  }
+
+  /**
+   * Probe the remote git smart-HTTP protocol for refs.
+   *
+   * Returns the discovered refs (branches/tags) and HEAD symref, or `null`
+   * if the remote reports zero refs (which is what happens right after a
+   * template/fork creation while GitHub is still populating git objects).
+   *
+   * @param {Object} git - isomorphic-git module.
+   * @param {Object} http - isomorphic-git http/node client.
+   * @param {string} url - Remote URL.
+   * @param {Object} [auth] - Auth object ({ username, password }) or undefined.
+   * @returns {Promise<{ head?: string, branches: string[] }|null>}
+   * @private
+   */
+  async _probeRemoteRefs(git, http, url, auth) {
+    try {
+      const info = await git.getRemoteInfo({
+        http,
+        url,
+        onAuth: () => auth,
+      });
+      const heads = (info && info.refs && info.refs.heads) || {};
+      const branches = Object.keys(heads);
+      if (branches.length === 0) {
+        return null;
+      }
+      
+      // Determine head source and validate
+      let head = info.HEAD;
+      let headSource = null;
+      
+      // Check if HEAD is a 40-character SHA (commit hash) - reject it
+      if (head && /^[0-9a-f]{40}$/i.test(head)) {
+        this.logger?.warn?.('_probeRemoteRefs: HEAD is a SHA, rejecting:', head);
+        head = null;
+        headSource = 'sha-rejected';
+      }
+      
+      // Use HEAD if it's a valid branch name
+      if (head) {
+        headSource = 'top';
+      } else {
+        // Fall back to first branch when HEAD is missing or SHA
+        head = branches[0];
+        headSource = 'first-branch';
+        this.logger?.info?.('_probeRemoteRefs: HEAD missing/SHA, using first branch:', head);
+      }
+      
+      return { head, headSource, branches };
+    } catch (error) {
+      this.logger?.warn?.('_probeRemoteRefs failed:', error?.message);
+      return null;
+    }
+  }
+
+  /**
+   * Clone repository.
+   *
+   * Robust against the "empty clone" race: when a template/fork has just been
+   * created, GitHub's REST API reports `size > 0` before the git smart-HTTP
+   * `/info/refs` endpoint actually serves any refs. `isomorphic-git` then
+   * silently completes a clone with zero branches and an empty working tree.
+   *
+   * To avoid this, we probe `/info/refs` (via `getRemoteInfo`) and retry for
+   * up to ~30s until the remote exposes at least one branch. We then pass the
+   * discovered default branch as an explicit `ref` to `git.clone`.
+   *
+   * @param {string} url - Repository URL.
+   * @param {string} dir - Directory to clone into.
+   * @param {Function} sendOutput - Output function.
+   * @returns {Promise<boolean>} Resolves true on success.
+   * @throws {Error} When the clone fails or yields an empty working tree.
    */
   async gitClone(url, dir, sendOutput) {
+    const git = require('isomorphic-git');
+    const http = require('isomorphic-git/http/node');
+    const nodeFs = require('fs');
+
     try {
+      // ── Diagnostic: pre-clone state ─────────────────────────────────────
+      const dirExistsBefore = fs.existsSync(dir);
+      const dirContentsBefore = dirExistsBefore ? fs.readdirSync(dir) : [];
       this.logger.info(`Cloning repository from ${url} to ${dir}`);
-      
+      this.logger.info(`[clone-diag] dir exists=${dirExistsBefore}, contents=${JSON.stringify(dirContentsBefore)}`);
+
       // Check for and clean partial .git before cloning
       if (await this.hasPartialGit(dir)) {
         sendOutput('🧹 Found partial git setup, cleaning before clone...\n');
         await this.cleanPartialGit(dir);
       }
-      
+
+      // ── Pre-clone cleanup: remove residual working-tree files ───────────
+      // A previous failed clone attempt may have left stale files in the
+      // target directory. Remove everything except .git so the clone starts
+      // from a clean state.
+      if (dirExistsBefore && dirContentsBefore.length > 0) {
+        const residualFiles = dirContentsBefore.filter((entry) => entry !== '.git');
+        if (residualFiles.length > 0) {
+          this.logger.info(`🧹 Cleaning residual files before clone: ${JSON.stringify(residualFiles)}`);
+          const { execSync } = require('child_process');
+          const isWindows = process.platform === 'win32';
+          for (const file of residualFiles) {
+            const targetPath = path.join(dir, file);
+            try {
+              const rmCommand = isWindows ? 'rmdir /s /q' : 'rm -rf';
+              execSync(`${rmCommand} "${targetPath}"`, { stdio: 'ignore' });
+            } catch (execError) {
+              try {
+                const stat = fs.lstatSync(targetPath);
+                if (stat.isDirectory()) {
+                  const removeRecursive = (dirPath) => {
+                    if (fs.existsSync(dirPath)) {
+                      const entries = fs.readdirSync(dirPath);
+                      for (const entry of entries) {
+                        const curPath = path.join(dirPath, entry);
+                        const curStat = fs.lstatSync(curPath);
+                        if (curStat.isDirectory()) {
+                          removeRecursive(curPath);
+                        } else {
+                          fs.unlinkSync(curPath);
+                        }
+                      }
+                      fs.rmdirSync(dirPath);
+                    }
+                  };
+                  removeRecursive(targetPath);
+                } else {
+                  fs.unlinkSync(targetPath);
+                }
+              } catch (fallbackError) {
+                this.logger.warn(`Could not remove residual file ${targetPath}:`, fallbackError?.message);
+              }
+            }
+          }
+          this.logger.info('✅ Residual files cleaned');
+        }
+      }
+
       const isGithubUrl = /^https:\/\/github\.com\//i.test(url);
       const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
@@ -129,22 +262,133 @@ class ProjectCreationHandler {
         this.logger.warn('Clone URL is not a GitHub URL — proceeding without token auth');
         sendOutput(t('create.non_github_warning') + '\n');
       }
-      
-      const git = require('isomorphic-git');
-      const http = require('isomorphic-git/http/node');
-      
-      await git.clone({
-        fs: require('fs'),
+
+      this.logger.info(`[clone-diag] url=${url} token=${this._maskToken(token)} auth=${auth ? 'present' : 'none'}`);
+
+      // ── Probe remote refs (guards against empty-clone race) ─────────────
+      // The REST API may report size > 0 while git-upload-pack still serves
+      // zero refs. Poll /info/refs until at least one branch appears.
+      let remoteInfo = await this._probeRemoteRefs(git, http, url, auth);
+      let attempt = 0;
+      const probeIntervalMs = 2000;
+      const probeTimeoutMs = 30000;
+      const probeStartedAt = Date.now();
+      while (!remoteInfo) {
+        attempt += 1;
+        const elapsed = Date.now() - probeStartedAt;
+        if (elapsed >= probeTimeoutMs) {
+          this.logger.warn(`[clone-diag] remote exposed 0 refs after ${attempt} probes (${elapsed}ms) — cloning anyway`);
+          sendOutput(`⚠️ Remote ainda sem branches após ${probeTimeoutMs / 1000}s; tentando clone mesmo assim...\n`);
+          break;
+        }
+        sendOutput(`⏳ Aguardando git objects ficarem disponíveis... (tentativa ${attempt})\n`);
+        this.logger.info(`[clone-diag] remote exposed 0 refs (attempt ${attempt}); retrying in ${probeIntervalMs}ms`);
+        await new Promise((resolve) => setTimeout(resolve, probeIntervalMs));
+        remoteInfo = await this._probeRemoteRefs(git, http, url, auth);
+      }
+
+      const ref = remoteInfo && remoteInfo.head ? remoteInfo.head : undefined;
+      this.logger.info(`[clone-diag] remote refs: head=${ref || '<unknown>'}, source=${remoteInfo?.headSource || '<none>'}, branches=${remoteInfo ? JSON.stringify(remoteInfo.branches) : '[]'}`);
+      if (ref) {
+        sendOutput(`🌿 Branch padrão do remote: ${ref}\n`);
+      }
+
+      const expectedBranch = ref ? ref.replace(/^refs\/heads\//, '') : null;
+
+      // ── Clone + branch verification (with retry on mismatch) ────────────
+      // After createUsingTemplate, git protocol may return a stale HEAD symref
+      // (e.g. "master" when the repo actually has "main"). Verify the cloned
+      // branch matches what we expect. If not, clean up and retry.
+      const cloneArgs = {
+        fs: nodeFs,
         http,
         dir,
         url,
         onAuth: () => auth,
         singleBranch: true,
-        depth: 10
-      });
-      
-      this.logger.info(`Repository cloned successfully to ${dir}`);
-      return true;
+        depth: 10,
+      };
+      if (ref) {
+        cloneArgs.ref = ref;
+      }
+
+      let cloneAttempt = 0;
+      const maxCloneAttempts = 3;
+
+      while (cloneAttempt < maxCloneAttempts) {
+        cloneAttempt += 1;
+
+        if (cloneAttempt > 1) {
+          sendOutput(`🔄 Tentativa ${cloneAttempt} de clone (branch incorreto)...\n`);
+          const { execSync } = require('child_process');
+          const isWindows = process.platform === 'win32';
+          if (fs.existsSync(dir)) {
+            try {
+              const rmCommand = isWindows ? 'rmdir /s /q' : 'rm -rf';
+              execSync(`${rmCommand} "${dir}"`, { stdio: 'ignore' });
+            } catch (rmErr) {
+              this.logger.warn('[clone-diag] rm failed on retry, falling back to manual:', rmErr?.message);
+            }
+          }
+          try {
+            fs.mkdirSync(dir, { recursive: true });
+          } catch (mkdirErr) {
+            this.logger.warn('[clone-diag] mkdir failed on retry:', mkdirErr?.message);
+          }
+        }
+
+        // ── Clone ───────────────────────────────────────────────────────────
+        await git.clone(cloneArgs);
+
+        // ── Diagnostic: post-clone state ────────────────────────────────────
+        const gitDirExists = fs.existsSync(path.join(dir, '.git'));
+        let postDirContents = [];
+        try {
+          postDirContents = fs.readdirSync(dir).filter((entry) => entry !== '.git');
+        } catch (readErr) {
+          this.logger.warn('[clone-diag] could not readdir post-clone:', readErr?.message);
+        }
+        let localBranches = [];
+        let remoteBranches = [];
+        try {
+          localBranches = await git.listBranches({ fs: nodeFs, dir });
+          remoteBranches = await git.listBranches({ fs: nodeFs, dir, remote: 'origin' });
+        } catch (branchErr) {
+          this.logger.warn('[clone-diag] listBranches failed:', branchErr?.message);
+        }
+        const hasPackageJson = fs.existsSync(path.join(dir, 'package.json'));
+
+        this.logger.info(
+          `[clone-diag] post-clone: attempt=${cloneAttempt} .git=${gitDirExists} files=${postDirContents.length} ` +
+          `localBranches=${JSON.stringify(localBranches)} remoteBranches=${JSON.stringify(remoteBranches)} ` +
+          `package.json=${hasPackageJson}`
+        );
+
+        // ── Empty clone detection ─────────────────────────────────────────
+        if (!gitDirExists || (postDirContents.length === 0 && localBranches.length === 0)) {
+          const detail = `gitDir=${gitDirExists} files=${postDirContents.length} branches=${localBranches.length}`;
+          this.logger.error(`[clone-diag] empty clone detected (${detail})`);
+          throw new Error(`Clone concluído mas o diretório está vazio (${detail}). O repositório pode ainda não estar totalmente propagado no GitHub.`);
+        }
+
+        // ── Branch match verification ─────────────────────────────────────
+        if (expectedBranch && localBranches.length > 0 && !localBranches.includes(expectedBranch)) {
+          this.logger.warn(
+            `[clone-diag] branch mismatch: expected '${expectedBranch}' but got '${localBranches.join(', ')}' ` +
+            `(attempt ${cloneAttempt})`
+          );
+          if (cloneAttempt < maxCloneAttempts) {
+            sendOutput(`⚠️ Branch incorreto (esperado: ${expectedBranch}, obtido: ${localBranches.join(', ')}). Tentando novamente...\n`);
+            continue;
+          }
+          throw new Error(
+            `Clone falhou após ${maxCloneAttempts} tentativas: branch esperado '${expectedBranch}' mas obteve '${localBranches.join(', ')}'`
+          );
+        }
+
+        this.logger.info(`Repository cloned successfully to ${dir}`);
+        return true;
+      }
     } catch (error) {
       this.logger.error(`Error cloning repository:`, error);
       throw error;
@@ -389,6 +633,48 @@ class ProjectCreationHandler {
           );
           if (result.success) {
             repoUrl = result.cloneUrl;
+
+            // Wait for git objects to be available — template creation returns
+            // 201 synchronously but the git smart HTTP protocol can lag by a
+            // few seconds; cloning immediately yields an empty repo.
+            step0Output('⏳ Aguardando repositório ficar pronto para clone...\n');
+            try {
+              const readinessMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
+              if (readinessMatch) {
+                const [, readyOwner, readyRepo] = readinessMatch;
+                await githubForkService.waitForRepoReadiness(readyOwner, readyRepo, step0Output);
+              }
+            } catch (readyError) {
+              step0Output(`⚠️ ${readyError.message}\n`);
+              // Continue anyway — clone may still succeed.
+            }
+
+            // NEW: git protocol readiness probe — guards against empty-clone race
+            // after template creation. REST API may report ready while git smart-HTTP
+            // /info/refs still serves zero refs. Probe up to 3 times (3s intervals).
+            const git = require('isomorphic-git');
+            const http = require('isomorphic-git/http/node');
+            const isGithubUrl = /^https:\/\/github\.com\//i.test(repoUrl);
+            const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
+            const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+            let probeSuccess = false;
+            for (let i = 0; i < 3; i++) {
+              const refs = await this._probeRemoteRefs(git, http, repoUrl, auth);
+              if (refs) {
+                this.logger?.info?.('[readiness-probe] attempt', i + 1, ': refs found:', refs);
+                step0Output('✅ Git objects confirmados via protocolo git\n');
+                probeSuccess = true;
+                break;
+              }
+              this.logger?.info?.('[readiness-probe] attempt', i + 1, ': no refs yet, retrying in 3s');
+              await new Promise((r) => setTimeout(r, 3000));
+            }
+            if (!probeSuccess) {
+              this.logger?.warn?.('[readiness-probe] git protocol still empty after 3 attempts, proceeding anyway');
+              step0Output('⚠️ Protocolo git ainda sem refs; clone tentará por até 30s\n');
+            }
+            // END NEW
+
             step0Output(t('create.template_ready') + '\n');
             step0Status('success');
           }
