@@ -152,6 +152,9 @@ class SystemHandlers {
       progress: 0,
       message: 'Ready to start installation'
     };
+
+    /** @type {Function|null} Saved reference for cleanup in unregisterHandlers */
+    this._themeChangeHandler = null;
   }
 
   /**
@@ -1165,7 +1168,7 @@ async verifyNodeInstallation() {
 
     const { nativeTheme } = require('electron');
     this._lastBroadcastedMode = null;
-    nativeTheme.on('updated', () => {
+    this._themeChangeHandler = () => {
       const osDark = this.themeService?._detectOsDarkPreference?.() ?? (nativeTheme.shouldUseDarkColors ?? false);
       const resolvedMode = osDark ? 'dark' : 'light';
       if (resolvedMode !== this._lastBroadcastedMode) {
@@ -1177,7 +1180,8 @@ async verifyNodeInstallation() {
         });
         this.logger.info(`🎨 OS theme changed → broadcasted resolvedMode=${resolvedMode}`);
       }
-    });
+    };
+    nativeTheme.on('updated', this._themeChangeHandler);
 
     /**
      * Set theme mode (auto/dark/light) — persists to runtime-env.json and
@@ -1351,6 +1355,13 @@ async verifyNodeInstallation() {
     ipcMain.removeHandler('get-os-dark-preference');
     ipcMain.removeHandler('get-theme-mode');
     
+    // Remove nativeTheme listener (saved reference prevents duplicate registration)
+    if (this._themeChangeHandler) {
+      const { nativeTheme } = require('electron');
+      nativeTheme.removeListener('updated', this._themeChangeHandler);
+      this._themeChangeHandler = null;
+    }
+
     // Remove all listeners for event-based handlers
     ipcMain.removeAllListeners('clear-console-output');
     ipcMain.removeAllListeners('navigate');
