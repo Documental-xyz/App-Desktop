@@ -8,8 +8,16 @@
 
 const { PlatformAdapterFactory } = require('../../factories/PlatformAdapterFactory.js');
 const { spawn } = require('child_process');
+const { killProcessTree } = require('../../processes/killProcessTree.js');
 const fs = require('fs');
 const path = require('path');
+
+/**
+ * Tracks all spawned child processes from executeCommand so they can be
+ * killed on reject or reaped wholesale via cleanupAll().
+ * @type {Array<import('child_process').ChildProcess>}
+ */
+const activeCommands = [];
 
 /**
  * Platform Service
@@ -58,7 +66,14 @@ class PlatformService {
 
       this.logger.info(`🚀 Executing command: ${command} ${args.join(' ')} on ${this.adapter.getPlatform()}`);
       
+      const startTime = Date.now();
       const child = spawn(command, args, mergedOptions);
+      activeCommands.push(child);
+      
+      const unregister = () => {
+        const idx = activeCommands.indexOf(child);
+        if (idx !== -1) activeCommands.splice(idx, 1);
+      };
       
       let stdout = '';
       let stderr = '';
@@ -72,6 +87,7 @@ class PlatformService {
       });
       
       child.on('close', (code) => {
+        unregister();
         const result = {
           success: code === 0,
           exitCode: code,
@@ -79,7 +95,7 @@ class PlatformService {
           stderr: stderr.trim(),
           command: `${command} ${args.join(' ')}`,
           platform: this.adapter.getPlatform(),
-          duration: Date.now() - (startTime || Date.now())
+          duration: Date.now() - startTime
         };
         
         if (result.success) {
@@ -93,12 +109,37 @@ class PlatformService {
       });
       
       child.on('error', (error) => {
+        unregister();
+        // Two-phase kill the still-running child on error path so it can't leak
+        killProcessTree(child).catch((killErr) => {
+          this.logger.error(`❌ Failed to clean up command on error: ${killErr.message}`);
+        });
         this.logger.error(`❌ Command error: ${error.message}`);
         reject(error);
       });
-      
-      const startTime = Date.now();
     });
+  }
+
+  /**
+   * Kill all currently active child processes spawned by executeCommand.
+   * Uses two-phase termination (SIGTERM → grace → SIGKILL) via killProcessTree.
+   * Safe to call when no commands are active (no-op).
+   * @param {number} [gracePeriod=1500] - Milliseconds to wait before SIGKILL escalation
+   * @returns {Promise<void>} Resolves when all children have been signalled/exited
+   */
+  async cleanupAll(gracePeriod = 1500) {
+    const snapshot = activeCommands.splice(0);
+    if (snapshot.length === 0) {
+      return;
+    }
+    this.logger.info(`🧹 Cleaning up ${snapshot.length} active command(s)`);
+    await Promise.all(
+      snapshot.map((child) =>
+        killProcessTree(child, gracePeriod).catch((err) => {
+          this.logger.error(`❌ Cleanup kill failed: ${err.message}`);
+        })
+      )
+    );
   }
 
   /**
