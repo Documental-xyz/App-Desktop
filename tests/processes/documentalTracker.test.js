@@ -18,6 +18,25 @@ vi.mock('path', () => ({
   join: vi.fn((...args) => args.join('/'))
 }));
 
+// Mock killPidTree (Wave 1 Task 1 helper) — asserted in killAllProcesses tests
+vi.mock('../../src/main/processes/killPidTree.js', () => ({
+  killPidTree: vi.fn().mockResolvedValue(undefined)
+}));
+
+// Mock PIDRegistryFile (Wave 1 Task 3 helper) — asserted in integration tests
+vi.mock('../../src/main/processes/PIDRegistryFile.js', () => {
+  const mockInstance = {
+    register: vi.fn().mockResolvedValue(undefined),
+    unregister: vi.fn().mockResolvedValue(undefined),
+    load: vi.fn().mockResolvedValue([]),
+    reapOrphans: vi.fn().mockResolvedValue({ reaped: [] })
+  };
+  return {
+    PIDRegistryFile: vi.fn(() => mockInstance),
+    __mockInstance: mockInstance
+  };
+});
+
 describe('DocumentalTracker Unit Tests', () => {
   let mockLogger;
 
@@ -203,6 +222,122 @@ describe('DocumentalTracker Unit Tests', () => {
       expect(typeof tracker.clearAllProcesses).toBe('function');
       expect(typeof tracker.getConfig).toBe('function');
       expect(typeof tracker.updateConfig).toBe('function');
+    });
+  });
+
+  // TDD RED — these describe post-refactor behavior (Task 13 Wave 3) and are
+  // EXPECTED TO FAIL until then. Do not make them green in this task.
+
+  describe('killAllProcesses', () => {
+    let tracker;
+    let killPidTree;
+
+    beforeEach(async () => {
+      ({ killPidTree } = await import('../../src/main/processes/killPidTree.js'));
+      const { DocumentalTracker } = await import('../../src/main/processes/documentalTracker.js');
+      tracker = new DocumentalTracker({ enablePersistence: false });
+      tracker.activeProcesses = {
+        1001: { pid: 1001, port: 3001, projectId: 'p1', command: 'npm start', cwd: '/a' },
+        1002: { pid: 1002, port: 3002, projectId: 'p2', command: 'npm start', cwd: '/b' },
+        1003: { pid: 1003, port: 3003, projectId: 'p3', command: 'npm start', cwd: '/c' }
+      };
+    });
+
+    it('should call killPidTree for each tracked PID', async () => {
+      await tracker.killAllProcesses();
+
+      expect(killPidTree).toHaveBeenCalledTimes(3);
+      expect(killPidTree).toHaveBeenCalledWith(1001, expect.any(Number));
+      expect(killPidTree).toHaveBeenCalledWith(1002, expect.any(Number));
+      expect(killPidTree).toHaveBeenCalledWith(1003, expect.any(Number));
+    });
+
+    it('should clear activeProcesses after killAll', async () => {
+      await tracker.killAllProcesses();
+
+      expect(tracker.activeProcesses).toEqual({});
+    });
+  });
+
+  describe('persistence removal', () => {
+    let tracker;
+
+    beforeEach(async () => {
+      const { DocumentalTracker } = await import('../../src/main/processes/documentalTracker.js');
+      tracker = new DocumentalTracker({ processesFile: '/test/regression/processes.json' });
+      tracker.activeProcesses = {
+        2001: { pid: 2001, port: 4001, projectId: 'p1', command: 'npm start', cwd: '/x' }
+      };
+    });
+
+    it('should NOT call saveProcesses on shutdown', async () => {
+      const spy = vi.spyOn(tracker, 'saveProcesses');
+
+      // Given/When: clearAllProcesses is today's shutdown path (replaced by
+      // killAllProcesses post-refactor). Then: shutdown must not persist.
+      if (typeof tracker.killAllProcesses === 'function') {
+        await tracker.killAllProcesses();
+      } else if (typeof tracker.clearAllProcesses === 'function') {
+        tracker.clearAllProcesses();
+      }
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('saveProcesses should be removed or no-op', () => {
+      // Given/Then: post-refactor the method is gone or writes nothing.
+      const spy = vi.spyOn(tracker, 'saveProcesses');
+
+      tracker.addProcess(2002, {
+        port: 4002,
+        projectId: 'p2',
+        command: 'npm start',
+        cwd: '/no-write'
+      });
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PIDRegistryFile integration', () => {
+    let tracker;
+    let registryInstance;
+
+    beforeEach(async () => {
+      const { PIDRegistryFile, __mockInstance } = await import('../../src/main/processes/PIDRegistryFile.js');
+      registryInstance = __mockInstance;
+      PIDRegistryFile.mockClear();
+      registryInstance.register.mockClear();
+      registryInstance.unregister.mockClear();
+
+      const { DocumentalTracker } = await import('../../src/main/processes/documentalTracker.js');
+      tracker = new DocumentalTracker({ enablePersistence: false });
+    });
+
+    it('should call pidRegistry.register when tracking a process', () => {
+      tracker.addProcess(3001, {
+        port: 5001,
+        projectId: 'p1',
+        command: 'npm start',
+        cwd: '/y'
+      });
+
+      expect(registryInstance.register).toHaveBeenCalledTimes(1);
+      expect(registryInstance.register).toHaveBeenCalledWith(3001, expect.objectContaining({
+        command: 'npm start',
+        cwd: '/y'
+      }));
+    });
+
+    it('should call pidRegistry.unregister when removing a process', () => {
+      tracker.activeProcesses = {
+        3002: { pid: 3002, port: 5002, projectId: 'p2', command: 'npm start', cwd: '/z' }
+      };
+
+      tracker.removeProcess(3002);
+
+      expect(registryInstance.unregister).toHaveBeenCalledTimes(1);
+      expect(registryInstance.unregister).toHaveBeenCalledWith(3002);
     });
   });
 });
