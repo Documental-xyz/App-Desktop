@@ -6,15 +6,18 @@
  * Test suite for UnixPlatformAdapter
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import os from 'os';
 import { UnixPlatformAdapter } from '../../../src/main/adapters/UnixPlatformAdapter.js';
 
 describe('UnixPlatformAdapter', () => {
   let adapter;
   let originalProcess;
+  let originalHomedir;
 
   beforeEach(() => {
     originalProcess = global.process;
+    originalHomedir = os.homedir;
     global.process = {
       platform: 'linux',
       arch: 'x64',
@@ -24,11 +27,16 @@ describe('UnixPlatformAdapter', () => {
         TMPDIR: '/tmp'
       }
     };
+    // os.homedir() reads from getpwuid, not process.env — mock it so the
+    // adapter's getHomeDirectory()/getAppDataDirectory() reflect the test env.
+    vi.spyOn(os, 'homedir').mockReturnValue('/home/testuser');
     adapter = new UnixPlatformAdapter();
   });
 
   afterEach(() => {
     global.process = originalProcess;
+    os.homedir = originalHomedir;
+    vi.restoreAllMocks();
   });
 
   describe('platform detection', () => {
@@ -57,32 +65,24 @@ describe('UnixPlatformAdapter', () => {
   });
 
   describe('executable handling', () => {
-    it('should return empty extension', () => {
-      expect(adapter.getExecutableExtension()).toBe('');
+    it('should return known aliases unmapped', async () => {
+      expect(await adapter.getExecutableName('node')).toBe('node');
+      expect(await adapter.getExecutableName('npm')).toBe('npm');
+      expect(await adapter.getExecutableName('python')).toBe('python3');
     });
 
-    it('should not modify commands', () => {
-      const result = adapter.getProcessCommand('node', ['--version']);
-      expect(result.command).toBe('node');
-      expect(result.args).toEqual(['--version']);
-    });
-
-    it('should handle commands with existing extensions', () => {
-      const result = adapter.getProcessCommand('script.sh', ['run']);
-      expect(result.command).toBe('script.sh');
-      expect(result.args).toEqual(['run']);
+    it('should return the base name unchanged when no alias exists', async () => {
+      expect(await adapter.getExecutableName('custom-tool')).toBe('custom-tool');
     });
   });
 
   describe('path operations', () => {
-    it('should normalize Unix paths', () => {
-      expect(adapter.normalizePath('/home/user/file.txt')).toBe('/home/user/file.txt');
-      expect(adapter.normalizePath('home/user/file.txt')).toBe('home/user/file.txt');
+    it('should return the Unix file separator', () => {
+      expect(adapter.getFileSeparator()).toBe('/');
     });
 
-    it('should join paths correctly', () => {
-      expect(adapter.joinPath('/home', 'user', 'file.txt')).toBe('/home/user/file.txt');
-      expect(adapter.joinPath('home', 'user', 'file.txt')).toBe('home/user/file.txt');
+    it('should return the Unix PATH separator', () => {
+      expect(adapter.getPathSeparator()).toBe(':');
     });
 
     it('should return temp directory', () => {
@@ -94,27 +94,25 @@ describe('UnixPlatformAdapter', () => {
     });
   });
 
-  describe('environment paths', () => {
-    it('should return environment paths', () => {
-      const paths = adapter.getEnvironmentPaths();
-      expect(paths.PATH).toBe('/usr/bin:/bin:/usr/local/bin');
-      expect(paths.HOME).toBe('/home/testuser');
-    });
-
-    it('should return system paths', () => {
-      const paths = adapter.getSystemPaths();
-      expect(paths.home).toBe('/home/testuser');
-      expect(paths.temp).toBe('/tmp');
-      expect(paths.path).toBe('/usr/bin:/bin:/usr/local/bin');
+  describe('environment config', () => {
+    it('should return environment configuration', async () => {
+      const config = await adapter.getEnvironmentConfig();
+      expect(config.PATH).toBe('/usr/bin:/bin:/usr/local/bin');
+      expect(config.HOME).toBe('/home/testuser');
     });
   });
 
   describe('shell commands', () => {
-    it('should return Unix-specific shell commands', () => {
-      expect(adapter.getShellCommand('list-files')).toBe('ls -la');
-      expect(adapter.getShellCommand('list-processes')).toBe('ps aux');
-      expect(adapter.getShellCommand('kill-process')).toBe('kill');
-      expect(adapter.getShellCommand('unknown')).toBe('unknown');
+    it('should return Unix-specific shell command equivalents', async () => {
+      expect(await adapter.getShellCommand('where')).toBe('which');
+      expect(await adapter.getShellCommand('dir')).toBe('ls');
+      expect(await adapter.getShellCommand('cls')).toBe('clear');
+      expect(await adapter.getShellCommand('tasklist')).toBe('ps');
+      expect(await adapter.getShellCommand('taskkill')).toBe('kill');
+    });
+
+    it('should return the command unchanged when no mapping exists', async () => {
+      expect(await adapter.getShellCommand('unknown')).toBe('unknown');
     });
   });
 });

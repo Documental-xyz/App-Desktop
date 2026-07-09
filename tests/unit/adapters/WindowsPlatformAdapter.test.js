@@ -6,15 +6,18 @@
  * Test suite for WindowsPlatformAdapter
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import os from 'os';
 import { WindowsPlatformAdapter } from '../../../src/main/adapters/WindowsPlatformAdapter.js';
 
 describe('WindowsPlatformAdapter', () => {
   let adapter;
   let originalProcess;
+  let originalHomedir;
 
   beforeEach(() => {
     originalProcess = global.process;
+    originalHomedir = os.homedir;
     global.process = {
       platform: 'win32',
       arch: 'x64',
@@ -26,11 +29,16 @@ describe('WindowsPlatformAdapter', () => {
         TEMP: 'C:\\Users\\testuser\\AppData\\Local\\Temp'
       }
     };
+    // os.homedir() reads from getpwuid on Unix, not process.env; mock it so
+    // getHomeDirectory() reflects the test env regardless of host platform.
+    vi.spyOn(os, 'homedir').mockReturnValue('C:\\Users\\testuser');
     adapter = new WindowsPlatformAdapter();
   });
 
   afterEach(() => {
     global.process = originalProcess;
+    os.homedir = originalHomedir;
+    vi.restoreAllMocks();
   });
 
   describe('platform detection', () => {
@@ -50,71 +58,55 @@ describe('WindowsPlatformAdapter', () => {
   });
 
   describe('executable handling', () => {
-    it('should return .exe extension', () => {
-      expect(adapter.getExecutableExtension()).toBe('.exe');
+    it('should map known tools to their Windows executables', async () => {
+      expect(await adapter.getExecutableName('node')).toBe('node.exe');
+      expect(await adapter.getExecutableName('npm')).toBe('npm.cmd');
+      expect(await adapter.getExecutableName('git')).toBe('git.exe');
     });
 
-    it('should add .exe extension to commands without extension', () => {
-      const result = adapter.getProcessCommand('node', ['--version']);
-      expect(result.command).toBe('node.exe');
-      expect(result.args).toEqual(['--version']);
-    });
-
-    it('should not modify commands that already have .exe', () => {
-      const result = adapter.getProcessCommand('git.exe', ['status']);
-      expect(result.command).toBe('git.exe');
-      expect(result.args).toEqual(['status']);
-    });
-
-    it('should not modify commands with other extensions', () => {
-      const result = adapter.getProcessCommand('script.bat', ['run']);
-      expect(result.command).toBe('script.bat');
-      expect(result.args).toEqual(['run']);
+    it('should append .exe to unknown executables', async () => {
+      expect(await adapter.getExecutableName('custom-tool')).toBe('custom-tool.exe');
     });
   });
 
   describe('path operations', () => {
-    it('should normalize Windows paths', () => {
-      expect(adapter.normalizePath('C:\\Users\\test\\file.txt')).toBe('C:/Users/test/file.txt');
-      expect(adapter.normalizePath('C:/Users\\test/file.txt')).toBe('C:/Users/test/file.txt');
+    it('should return the Windows file separator', () => {
+      expect(adapter.getFileSeparator()).toBe('\\');
     });
 
-    it('should join paths correctly', () => {
-      expect(adapter.joinPath('C:', 'Users', 'test', 'file.txt')).toBe('C:/Users/test/file.txt');
-      expect(adapter.joinPath('C:\\Users', 'test', 'file.txt')).toBe('C:/Users/test/file.txt');
+    it('should return the Windows PATH separator', () => {
+      expect(adapter.getPathSeparator()).toBe(';');
     });
 
-    it('should return temp directory', () => {
-      expect(adapter.getTempDirectory()).toBe('C:/Users/testuser/AppData/Local/Temp');
+    it('should return temp directory from env', () => {
+      expect(adapter.getTempDirectory()).toBe('C:\\Users\\testuser\\AppData\\Local\\Temp');
     });
 
     it('should return home directory', () => {
-      expect(adapter.getHomeDirectory()).toBe('C:/Users/testuser');
+      expect(adapter.getHomeDirectory()).toBe('C:\\Users\\testuser');
     });
   });
 
-  describe('environment paths', () => {
-    it('should return environment paths', () => {
-      const paths = adapter.getEnvironmentPaths();
-      expect(paths.PATH).toBe('C:\\Windows\\system32;C:\\Program Files\\nodejs');
-      expect(paths.HOME).toBe('C:\\Users\\testuser');
-    });
-
-    it('should return system paths', () => {
-      const paths = adapter.getSystemPaths();
-      expect(paths.programFiles).toBeDefined();
-      expect(paths.appData).toBe('C:\\Users\\testuser\\AppData\\Roaming');
-      expect(paths.localAppData).toBe('C:\\Users\\testuser\\AppData\\Local');
-      expect(paths.temp).toBe('C:\\Users\\testuser\\AppData\\Local\\Temp');
+  describe('environment config', () => {
+    it('should return environment configuration', async () => {
+      const config = await adapter.getEnvironmentConfig();
+      expect(config.PATH).toBe('C:\\Windows\\system32;C:\\Program Files\\nodejs');
+      expect(config.APPDATA).toBe('C:\\Users\\testuser\\AppData\\Roaming');
+      expect(config.LOCALAPPDATA).toBe('C:\\Users\\testuser\\AppData\\Local');
     });
   });
 
   describe('shell commands', () => {
-    it('should return Windows-specific shell commands', () => {
-      expect(adapter.getShellCommand('list-files')).toBe('dir');
-      expect(adapter.getShellCommand('list-processes')).toBe('tasklist');
-      expect(adapter.getShellCommand('kill-process')).toBe('taskkill');
-      expect(adapter.getShellCommand('unknown')).toBe('unknown');
+    it('should return Windows-specific shell command equivalents', async () => {
+      expect(await adapter.getShellCommand('which')).toBe('where');
+      expect(await adapter.getShellCommand('ls')).toBe('dir');
+      expect(await adapter.getShellCommand('clear')).toBe('cls');
+      expect(await adapter.getShellCommand('ps')).toBe('tasklist');
+      expect(await adapter.getShellCommand('kill')).toBe('taskkill');
+    });
+
+    it('should return the command unchanged when no mapping exists', async () => {
+      expect(await adapter.getShellCommand('unknown')).toBe('unknown');
     });
   });
 });

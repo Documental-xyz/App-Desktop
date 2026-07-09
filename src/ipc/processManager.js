@@ -18,6 +18,26 @@ const { PlatformService } = require('../main/services/platform/PlatformService')
 let globalDevServerUrl = null;
 let activeProcesses = {};
 let activeDocumentalProcesses = {};
+let processManagerLock = false;
+
+/**
+ * Acquire the process manager lock to prevent concurrent killAll races
+ * @param {string} operation - Name of the operation requesting the lock (used in error message)
+ * @throws {Error} If another operation is already holding the lock (message: "Process manager busy: <operation>")
+ */
+function acquireProcessManagerLock(operation) {
+  if (processManagerLock) {
+    throw new Error('Process manager busy: ' + operation);
+  }
+  processManagerLock = true;
+}
+
+/**
+ * Release the process manager lock
+ */
+function releaseProcessManagerLock() {
+  processManagerLock = false;
+}
 
 /**
  * Process Manager Class
@@ -643,4 +663,4 @@ class ProcessManager {
 
 }
 
-module.exports = { ProcessManager };
+module.exports = { ProcessManager, acquireProcessManagerLock, releaseProcessManagerLock };
