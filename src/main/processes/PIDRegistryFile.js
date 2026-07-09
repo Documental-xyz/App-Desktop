@@ -257,6 +257,20 @@ class PIDRegistryFile {
 
     return { reaped };
   }
+
+  /**
+   * Clear the entire registry — remove all entries from disk.
+   * Used after a successful shutdown to signal that no PIDs need recovery
+   * on the next launch.
+   * @returns {Promise<void>}
+   */
+  async clear() {
+    try {
+      await this._persist([]);
+    } catch (error) {
+      /* silent — next register/unregister will overwrite */
+    }
+  }
 }
 
 module.exports = { PIDRegistryFile };

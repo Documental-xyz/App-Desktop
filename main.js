@@ -16,6 +16,7 @@ const { app, BrowserWindow } = require('electron');
 const { getLogger } = require('./src/main/logging/logger.js');
 const { appTracker } = require('./src/main/processes/documentalTracker.js');
 const { ProcessInspectorFactory } = require('./src/main/platform/index.js');
+const { PIDRegistryFile } = require('./src/main/processes/PIDRegistryFile.js');
 const { DatabaseManager } = require('./src/main/database/database.js');
 const { WindowManager } = require('./src/main/window/windowManager.js');
 const { ProjectService } = require('./src/application/ProjectService.js');
@@ -42,6 +43,10 @@ let ipcRegistry;
 // Application state
 let isInitialized = false;
 let isCleaningUp = false;
+
+// Reference to processManager extracted from ipcRegistry for will-quit handler
+/** @type {import('./src/ipc/processManager.js')|null} */
+let processManager = null;
 
 /**
  * Initialize core services
@@ -131,6 +136,8 @@ async function initializeServices() {
       nodeDetectionService,
       themeService
     });
+    // Extract processManager reference for will-quit cleanup
+    processManager = ipcRegistry.projectCreationHandler.processManager;
     ipcRegistry.registerIpcHandlers();
     logger.info('✅ IPC registry initialized');
 
@@ -245,14 +252,12 @@ async function initializeProcessTracking() {
   try {
     logger.info('📊 Initializing process tracking...');
 
-    // Load previously tracked processes
-    await appTracker.loadProcesses();
-    logger.info('✅ Process tracking data loaded');
-
-    // Validate all tracked processes
-    const validationResults = await appTracker.validateAllProcesses();
-    logger.info(`📊 Process validation completed: ${validationResults.valid.length} valid, ${validationResults.invalid.length} removed`);
-
+    // Reap orphaned processes from PID registry (hard-crash recovery)
+    const inspector = ProcessInspectorFactory.getInspector();
+    const { reaped } = await appTracker.pidRegistry.reapOrphans(inspector);
+    if (reaped.length > 0) {
+      logger.info(`🧹 Reaped ${reaped.length} orphaned process(es) from PID registry`);
+    }
     logger.info('✅ Process tracking initialized');
   } catch (error) {
     logger.error('❌ Failed to initialize process tracking:', error);
@@ -364,16 +369,27 @@ function setupAppEventHandlers() {
     logger.info('✅ Confirmed app quit - proceeding with cleanup...');
     isCleaningUp = true;
     try {
-      // FIRST: Close all windows to prevent IPC calls from renderer
+      // FIRST: Unregister IPC handlers so windows cannot send more IPC calls
+      if (ipcRegistry) {
+        logger.info('🔌 Unregistering IPC handlers...');
+        ipcRegistry.unregisterIpcHandlers();
+        logger.info('✅ IPC handlers unregistered');
+      }
+
+      // SECOND: Kill all child processes before closing windows/DB
+      if (processManager && typeof processManager.killAll === 'function') {
+        logger.info('💀 Killing all child processes...');
+        await processManager.killAll();
+        logger.info('✅ Child processes killed');
+      }
+
+      // THIRD: Close all windows
       if (windowManager) {
-        logger.info('🪟 Closing all windows before cleanup...');
+        logger.info('🪟 Closing all windows...');
         windowManager.closeAllWindows();
         logger.info('✅ All windows closed');
       }
 
-      // Add a small delay to ensure all windows are fully closed
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
       // Double-check no windows remain after explicit close
       const finalWindowCount = BrowserWindow.getAllWindows().length;
       if (finalWindowCount > 0) {
@@ -384,27 +400,110 @@ function setupAppEventHandlers() {
           }
         });
       }
-      // Cleanup services in reverse order
-      if (ipcRegistry) {
-        logger.info('🔌 Unregistering IPC handlers...');
-        ipcRegistry.unregisterIpcHandlers();
-        logger.info('✅ IPC handlers unregistered');
-      }
+
       if (menuManager) {
         menuManager.cleanup();
         logger.info('✅ Menu manager cleaned up');
       }
-      if (appTracker) {
-        await appTracker.saveProcesses();
-        logger.info('✅ Process tracking data saved');
-      }
       if (databaseManager) {
+        // KillAll ran before DB — no zombie handles can corrupt writes
         await databaseManager.close();
         logger.info('✅ Database closed');
       }
       logger.info('✅ Application cleanup completed successfully');
     } catch (error) {
       logger.error('❌ Error during cleanup:', error);
+    }
+  });
+
+  // Will-quit — async cleanup BEFORE the app exits
+  app.on('will-quit', async (event) => {
+    event.preventDefault();
+    logger.info('🛑 will-quit: starting async cleanup...');
+
+    // Hard timeout: AC3 budget = 2000ms
+    const hardTimeout = setTimeout(() => {
+      logger.error('❌ will-quit cleanup timed out, forcing exit');
+      app.exit(0);
+    }, 2000);
+
+    try {
+      // 1. Kill all child processes via ProcessManager
+      if (processManager && typeof processManager.killAll === 'function') {
+        await processManager.killAll();
+        logger.info('✅ Child processes killed via killAll');
+      }
+
+      // 2. Kill remaining tracked PIDs via DocumentalTracker
+      const inspector = ProcessInspectorFactory.getInspector();
+      if (appTracker && typeof appTracker.killAllProcesses === 'function') {
+        await appTracker.killAllProcesses(inspector);
+        logger.info('✅ Remaining PIDs killed via killAllProcesses');
+      }
+
+      // 3. Clear PID registry so a crash-recovered startup won't reap us
+      if (appTracker && appTracker.pidRegistry && typeof appTracker.pidRegistry.clear === 'function') {
+        await appTracker.pidRegistry.clear();
+        logger.info('✅ PID registry cleared');
+      }
+
+      // 4. Stop theme file watcher
+      if (themeService && typeof themeService.stopWatching === 'function') {
+        themeService.stopWatching();
+        logger.info('✅ Theme watcher stopped');
+      }
+
+      // 5. Restore original console methods
+      if (logger && typeof logger.restoreConsoleMethods === 'function') {
+        logger.restoreConsoleMethods();
+      }
+
+      // 6. Cleanup browser views on all windows
+      if (ipcRegistry && ipcRegistry.browserHandlers &&
+          typeof ipcRegistry.browserHandlers.cleanupAllWindowBrowserViews === 'function') {
+        ipcRegistry.browserHandlers.cleanupAllWindowBrowserViews();
+        logger.info('✅ Browser views cleaned up');
+      }
+    } catch (error) {
+      logger.error('❌ Error during will-quit cleanup:', error);
+    } finally {
+      clearTimeout(hardTimeout);
+      app.exit(0);
+    }
+  });
+
+  // Process exit — synchronous SIGKILL fallback (last resort)
+  process.on('exit', () => {
+    // Sync only: send SIGKILL to any remaining known PIDs via PID registry
+    if (appTracker && appTracker.pidRegistry) {
+      // Load from in-memory cache — no async file reads in exit handler
+      // We send SIGKILL to everything; ESRCH (already dead) is silently ignored.
+      try {
+        // We cannot await, so we just iteratively kill PIDs synchronously
+        // The PID registry entries are loaded from disk at startup and kept
+        // in the pidRegistryFile's in-memory state; we attempt to sync-load
+        // the file as a last resort.
+        try {
+          const fs = require('fs');
+          const raw = fs.readFileSync(appTracker.pidRegistry.filePath, 'utf8');
+          const entries = JSON.parse(raw);
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              if (entry && typeof entry.pid === 'number') {
+                try {
+                  process.kill(-entry.pid, 'SIGKILL');
+                } catch (e) {
+                  // ESRCH — already dead, ignore
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // File missing or corrupt — nothing to kill
+        }
+      } catch (e) {
+        // Silent — this is last-resort cleanup
+      }
     }
   });
 
