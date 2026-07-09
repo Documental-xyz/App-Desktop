@@ -161,14 +161,14 @@ const observeSlugField = () => {
   return true;
 };
 
-// Polling de backup a cada 100ms para garantir que temos o valor mais recente
-setInterval(() => {
+// Polling de backup a cada 500ms para garantir que temos o valor mais recente
+const SLUG_POLL_INTERVAL_ID = setInterval(() => {
   const input = document.querySelector(CONFIG.SELECTOR);
   if (input && input.value !== currentSlugValue) {
     log(`🔄 Polling update: "${currentSlugValue}" → "${input.value}"`);
     currentSlugValue = input.value;
   }
-}, 100);
+}, 500);
 
 /**
  * Log with prefix for debugging
@@ -384,6 +384,7 @@ const initPostSaveListener = () => {
 
 // Beforeunload - last resort backup (for when page is being unloaded)
 window.addEventListener('beforeunload', () => {
+  clearInterval(SLUG_POLL_INTERVAL_ID);
   if (!slugChangeSent && initialSlug && isEditPage()) {
     log('⚠️ Beforeunload triggered, checking slug change as last resort...');
     checkAndSendSlugChange('beforeunload');
