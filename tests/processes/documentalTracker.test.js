@@ -230,12 +230,13 @@ describe('DocumentalTracker Unit Tests', () => {
 
   describe('killAllProcesses', () => {
     let tracker;
-    let killPidTree;
+    let killPidTreeMock;
 
     beforeEach(async () => {
-      ({ killPidTree } = await import('../../src/main/processes/killPidTree.js'));
+      const { killPidTree } = await import('../../src/main/processes/killPidTree.js');
+      killPidTreeMock = killPidTree;
       const { DocumentalTracker } = await import('../../src/main/processes/documentalTracker.js');
-      tracker = new DocumentalTracker({ enablePersistence: false });
+      tracker = new DocumentalTracker({ enablePersistence: false, killPidTree: killPidTreeMock });
       tracker.activeProcesses = {
         1001: { pid: 1001, port: 3001, projectId: 'p1', command: 'npm start', cwd: '/a' },
         1002: { pid: 1002, port: 3002, projectId: 'p2', command: 'npm start', cwd: '/b' },
@@ -246,10 +247,10 @@ describe('DocumentalTracker Unit Tests', () => {
     it('should call killPidTree for each tracked PID', async () => {
       await tracker.killAllProcesses();
 
-      expect(killPidTree).toHaveBeenCalledTimes(3);
-      expect(killPidTree).toHaveBeenCalledWith(1001, expect.any(Number));
-      expect(killPidTree).toHaveBeenCalledWith(1002, expect.any(Number));
-      expect(killPidTree).toHaveBeenCalledWith(1003, expect.any(Number));
+      expect(killPidTreeMock).toHaveBeenCalledTimes(3);
+      expect(killPidTreeMock).toHaveBeenCalledWith(1001, expect.any(Number));
+      expect(killPidTreeMock).toHaveBeenCalledWith(1002, expect.any(Number));
+      expect(killPidTreeMock).toHaveBeenCalledWith(1003, expect.any(Number));
     });
 
     it('should clear activeProcesses after killAll', async () => {
@@ -311,7 +312,9 @@ describe('DocumentalTracker Unit Tests', () => {
       registryInstance.unregister.mockClear();
 
       const { DocumentalTracker } = await import('../../src/main/processes/documentalTracker.js');
-      tracker = new DocumentalTracker({ enablePersistence: false });
+      // Inject the mock PIDRegistryFile via DI — CJS require inside the SUT
+      // bypasses vi.mock (see learnings.md Task 11).
+      tracker = new DocumentalTracker({ enablePersistence: false, pidRegistry: registryInstance });
     });
 
     it('should call pidRegistry.register when tracking a process', () => {

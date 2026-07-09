@@ -9,6 +9,8 @@
 const fs = require('fs');
 const path = require('path');
 const { ProcessInspectorFactory } = require('../platform/index.js');
+const { killPidTree } = require('./killPidTree.js');
+const { PIDRegistryFile } = require('./PIDRegistryFile.js');
 
 /**
  * @typedef {Object} ProcessInfo
@@ -48,6 +50,10 @@ class DocumentalTracker {
     };
     
     this.activeProcesses = {};
+    /** @type {PIDRegistryFile} */
+    this.pidRegistry = config.pidRegistry || new PIDRegistryFile();
+    /** @type {Function|undefined} Optional injection for tests — defaults to killPidTree from require */
+    this._killPidTree = config.killPidTree;
     this.loadProcesses();
   }
 
@@ -77,22 +83,13 @@ class DocumentalTracker {
   }
 
   /**
-   * Save processes to persistence file
+   * Save processes to persistence file.
    * @returns {boolean} Success status
    */
   saveProcesses() {
-    if (!this.config.enablePersistence) {
-      return true;
-    }
-
-    try {
-      fs.writeFileSync(this.config.processesFile, JSON.stringify(this.activeProcesses, null, 2));
-      console.log('💾 Saved Documental processes to file');
-      return true;
-    } catch (error) {
-      console.error('Error saving Documental processes:', error);
-      return false;
-    }
+    // DEPRECATED: replaced by killAllProcesses in perf-zombie-refactor.
+    // Persistence removed to prevent zombie survival across sessions.
+    return true;
   }
 
   /**
@@ -122,12 +119,17 @@ class DocumentalTracker {
       cwd: processInfo.cwd
     };
 
-    const saved = this.saveProcesses();
-    if (saved) {
-      console.log(`➕ Added Documental process to tracking: PID ${pid}, Port ${processInfo.port}`);
-    }
-    
-    return saved;
+    // Register in the async PID registry (orphan reaping on next boot).
+    // Fire-and-forget: registration must not block the caller; failures are
+    // swallowed inside PIDRegistryFile.
+    this.pidRegistry.register(pid, {
+      command: processInfo.command,
+      cwd: processInfo.cwd,
+      startedAt: this.activeProcesses[pid].startTime
+    }).catch(() => { /* registry write best-effort */ });
+
+    console.log(`➕ Added Documental process to tracking: PID ${pid}, Port ${processInfo.port}`);
+    return true;
   }
 
   /**
@@ -141,12 +143,12 @@ class DocumentalTracker {
     }
 
     delete this.activeProcesses[pid];
-    const saved = this.saveProcesses();
-    
-    if (saved) {
-      console.log(`➖ Removed Documental process from tracking: PID ${pid}`);
-    }
-    
+
+    // Remove from the async PID registry. Fire-and-forget — unregister is
+    // best-effort and silently no-ops if the PID isn't present.
+    this.pidRegistry.unregister(pid).catch(() => { /* registry write best-effort */ });
+
+    console.log(`➖ Removed Documental process from tracking: PID ${pid}`);
     return true;
   }
 
@@ -369,6 +371,37 @@ class DocumentalTracker {
       console.error(`Error killing process ${pid}:`, error);
       return false;
     }
+  }
+
+  /**
+   * Kill all tracked processes by sending SIGTERM (then SIGKILL) to each
+   * process tree, then clear the in-memory registry. Errors per PID are
+   * isolated so one unkillable PID doesn't prevent killing the others.
+   * @param {Object} [inspector] - Optional platform inspector (unused; kept
+   *   for API compatibility with future callers). killPidTree handles
+   *   platform dispatch internally.
+   * @returns {Promise<{killed: number[], failed: number[]}>}
+   */
+  async killAllProcesses(inspector) {
+    const pids = Object.keys(this.activeProcesses).map((pid) => parseInt(pid, 10));
+    const killed = [];
+    const failed = [];
+
+    // Use injected killPidTree (for testability) or fall back to the required one.
+    const killFn = this._killPidTree || killPidTree;
+
+    for (const pid of pids) {
+      try {
+        await killFn(pid, 1500);
+        killed.push(pid);
+      } catch (error) {
+        console.error(`killAllProcesses: failed to kill PID ${pid}:`, error);
+        failed.push(pid);
+      }
+    }
+
+    this.activeProcesses = {};
+    return { killed, failed };
   }
 
   /**
