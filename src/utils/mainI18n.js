@@ -10,26 +10,25 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 
+const fsp = fs.promises;
+
 let _locale = 'en';
 let _cache = {};
 
 function getLocalesDir() {
   if (process.resourcesPath) {
-    const packaged = path.join(process.resourcesPath, 'src', 'locales');
-    if (fs.existsSync(packaged)) return packaged;
+    return path.join(process.resourcesPath, 'src', 'locales');
   }
   return path.join(process.cwd(), 'src', 'locales');
 }
 
-function loadLocale(locale) {
+async function loadLocale(locale) {
   if (_cache[locale]) return _cache[locale];
   const filePath = path.join(getLocalesDir(), `${locale}.yaml`);
   try {
-    if (fs.existsSync(filePath)) {
-      const data = yaml.load(fs.readFileSync(filePath, 'utf8'));
-      _cache[locale] = data || {};
-      return _cache[locale];
-    }
+    const data = yaml.load(await fsp.readFile(filePath, 'utf8'));
+    _cache[locale] = data || {};
+    return _cache[locale];
   } catch (error) {
     // fall through to default
   }
@@ -54,8 +53,8 @@ function getLocale() {
  * @param {Object} [vars] - Interpolation variables
  * @returns {string} Translated string (falls back to key if not found)
  */
-function t(key, vars) {
-  const translations = loadLocale(_locale);
+async function t(key, vars) {
+  const translations = await loadLocale(_locale);
   const parts = key.split('.');
   let val = translations;
   for (const p of parts) {

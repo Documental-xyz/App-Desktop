@@ -11,6 +11,8 @@ const path = require('path');
 const yaml = require('js-yaml');
 const { app, ipcMain: electronIpcMain } = require('electron');
 
+const fsp = fs.promises;
+
 const AVAILABLE_LOCALES = ['en', 'pt-BR', 'es'];
 const DEFAULT_LOCALE = 'en';
 let _cachedLocale = DEFAULT_LOCALE;
@@ -22,12 +24,14 @@ function getLocalesPath(isPackaged, appPath) {
   return path.join(process.cwd(), 'src', 'locales');
 }
 
-function readYamlTranslations(locale, localesPath) {
+async function readYamlTranslations(locale, localesPath) {
   const filePath = path.join(localesPath, `${locale}.yaml`);
-  if (!fs.existsSync(filePath)) {
+  try {
+    await fsp.access(filePath);
+  } catch {
     return null;
   }
-  const content = fs.readFileSync(filePath, 'utf8');
+  const content = await fsp.readFile(filePath, 'utf8');
   return yaml.load(content);
 }
 
@@ -46,12 +50,12 @@ async function setLocale(db, locale) {
   );
 }
 
-function getTranslations(locale, localesPath) {
-  const translations = readYamlTranslations(locale, localesPath);
+async function getTranslations(locale, localesPath) {
+  const translations = await readYamlTranslations(locale, localesPath);
   if (translations) {
     return translations;
   }
-  return readYamlTranslations(DEFAULT_LOCALE, localesPath);
+  return await readYamlTranslations(DEFAULT_LOCALE, localesPath);
 }
 
 function getAvailableLocales() {
@@ -86,16 +90,15 @@ class I18nHandlers {
 
     this.ipcMain.handle('i18n:get-translations', async (_event, locale) => {
       const resolvedLocale = locale || await getLocale(await this.databaseManager.getDatabase());
-      return getTranslations(resolvedLocale, this.localesPath);
+      return await getTranslations(resolvedLocale, this.localesPath);
     });
 
-    this.ipcMain.on('i18n:get-translations-sync', (event, locale) => {
+    this.ipcMain.handle('i18n:get-translations-sync', async (_event, locale) => {
       try {
-        const translations = readYamlTranslations(locale, this.localesPath);
-        event.returnValue = translations;
+        return await readYamlTranslations(locale, this.localesPath);
       } catch (error) {
         this.logger.error('Error loading translations sync:', error);
-        event.returnValue = null;
+        return null;
       }
     });
 
@@ -124,7 +127,7 @@ class I18nHandlers {
 
   unregisterHandlers() {
     this.ipcMain.removeHandler('i18n:get-translations');
-    this.ipcMain.removeAllListeners('i18n:get-translations-sync');
+    this.ipcMain.removeHandler('i18n:get-translations-sync');
     this.ipcMain.removeHandler('i18n:get-locale');
     this.ipcMain.removeAllListeners('i18n:get-locale-sync');
     this.ipcMain.removeHandler('i18n:set-locale');

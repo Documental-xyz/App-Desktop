@@ -201,14 +201,11 @@ describe('ProcessManager - killAll', () => {
       // Inject the mock so killAll doesn't hang.
       pm._killProcessTree = killProcessTreeMock;
 
-      // Force killProcessTree to throw.
-      killProcessTreeMock.mockRejectedValueOnce(new Error('boom'));
-
       // killAll must not propagate the lock — release happens in finally.
       // We track whether killProcessTree was actually reached; if killAll is
       // missing, this stays 0 and the test fails for the right reason.
       let reachedKill = false;
-      killProcessTreeMock.mockImplementationOnce(() => {
+      killProcessTreeMock.mockImplementation(() => {
         reachedKill = true;
         return Promise.reject(new Error('boom'));
       });

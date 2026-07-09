@@ -29,7 +29,7 @@ function getNativeTheme() {
  * @param {string} appRoot - Application root directory
  * @returns {Object|null} Parsed runtime env or null
  */
-function loadRuntimeEnv(fsImpl, pathImpl, appRoot) {
+async function loadRuntimeEnv(fsImpl, pathImpl, appRoot) {
   const candidatePaths = [
     pathImpl.join(appRoot, 'resources', 'config', 'runtime-env.json'),
     pathImpl.join(process.cwd(), 'resources', 'config', 'runtime-env.json')
@@ -50,12 +50,12 @@ function loadRuntimeEnv(fsImpl, pathImpl, appRoot) {
     }
   } catch (_e) {}
 
+  const fsPromises = fsImpl.promises || require('fs').promises;
   for (const candidate of candidatePaths) {
     try {
-      if (fsImpl.existsSync(candidate)) {
-        const raw = fsImpl.readFileSync(candidate, 'utf8');
-        return JSON.parse(raw);
-      }
+      await fsPromises.access(candidate);
+      const raw = await fsPromises.readFile(candidate, 'utf8');
+      return JSON.parse(raw);
     } catch (_err) {
       // Skip unreadable candidates
     }
@@ -75,6 +75,7 @@ class ThemeService {
   constructor({ logger, fs: fsImpl, path: pathImpl, getNativeTheme: nativeThemeFn }) {
     this.logger = logger;
     this._fs = fsImpl || fs;
+    this._fsPromises = (fsImpl || fs).promises;
     this._path = pathImpl || path;
     this._getNativeTheme = nativeThemeFn || getNativeTheme;
     this.themeName = null;
@@ -92,22 +93,22 @@ class ThemeService {
    * @param {string} appRoot - Application root directory
    * @returns {void}
    */
-  initialize(appRoot) {
+  async initialize(appRoot) {
     this._appRoot = appRoot;
 
-    const themeName = this._resolveThemeName(appRoot);
+    const themeName = await this._resolveThemeName(appRoot);
     this.logger.info(`ThemeService: resolved theme name "${themeName}"`);
 
     const themeDir = this._path.join(appRoot, 'themes', themeName);
 
-    const validated = this._validateThemeDir(themeDir, themeName);
+    const validated = await this._validateThemeDir(themeDir, themeName);
     this.themeName = validated.themeName;
     this.themeDir = validated.themeDir;
 
-    this.manifest = this._loadManifest(this.themeDir);
+    this.manifest = await this._loadManifest(this.themeDir);
     this.themeMode = this._resolveMode(this.manifest);
-    this.cssFiles = this._buildCssChain(this.themeDir, this.manifest, appRoot);
-    this._resolveAssetPaths(this.themeDir);
+    this.cssFiles = await this._buildCssChain(this.themeDir, this.manifest, appRoot);
+    await this._resolveAssetPaths(this.themeDir);
 
     this.logger.info(
       `ThemeService: initialized — theme="${this.themeName}", mode="${this.themeMode}", ` +
@@ -118,13 +119,14 @@ class ThemeService {
       const { app } = require('electron');
       if (app.isPackaged) {
         const userDataPath = app.getPath('userData');
-        const fs2 = this._fs;
+        const fs2Promises = this._fsPromises;
         const path2 = this._path;
         const userRuntimeEnvPath = path2.join(userDataPath, 'runtime-env.json');
         let needsWrite = false;
         let existingConfig = {};
         try {
-          existingConfig = JSON.parse(fs2.readFileSync(userRuntimeEnvPath, 'utf8'));
+          const raw = await fs2Promises.readFile(userRuntimeEnvPath, 'utf8');
+          existingConfig = JSON.parse(raw);
           if (!existingConfig.THEME) {
             needsWrite = true;
           }
@@ -137,7 +139,7 @@ class ThemeService {
             existingConfig.THEME_MODE = this._rawMode || 'auto';
           }
           try {
-            fs2.writeFileSync(userRuntimeEnvPath, JSON.stringify(existingConfig, null, 2), 'utf8');
+            await fs2Promises.writeFile(userRuntimeEnvPath, JSON.stringify(existingConfig, null, 2), 'utf8');
           } catch (_e) {}
         }
       }
@@ -152,7 +154,7 @@ class ThemeService {
     const contents = [];
     for (const cssFile of this.cssFiles) {
       try {
-        const content = this._fs.readFileSync(cssFile, 'utf8');
+        const content = await this._fsPromises.readFile(cssFile, 'utf8');
         contents.push(content);
       } catch (err) {
         this.logger.warn(`ThemeService: failed to read CSS file "${cssFile}": ${err.message}`);
@@ -172,12 +174,12 @@ class ThemeService {
    * @returns {Promise<string>} Resolved CSS string with concrete values
    */
   async getResolvedCssForMode(mode) {
-    const primitives = this._buildPrimitivesMap();
+    const primitives = await this._buildPrimitivesMap();
 
     let combined = '';
     for (const cssFile of this.cssFiles) {
       try {
-        const content = this._fs.readFileSync(cssFile, 'utf8');
+        const content = await this._fsPromises.readFile(cssFile, 'utf8');
         const modeSpecific = this._extractModeDeclarations(content, mode);
         if (modeSpecific) combined += modeSpecific + '\n';
       } catch (err) {
@@ -187,10 +189,13 @@ class ThemeService {
 
     // Prepend base semantic-token defaults from variables.css filtered to the
     // same mode so unresolved tokens still have sensible values.
-    const baseDefaults = this._extractModeDeclarations(
-      this._fs.readFileSync(this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'variables.css'), 'utf8'),
-      mode
-    ) || '';
+    let baseVarsContent = '';
+    try {
+      baseVarsContent = await this._fsPromises.readFile(
+        this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'variables.css'), 'utf8'
+      );
+    } catch (_e) {}
+    const baseDefaults = this._extractModeDeclarations(baseVarsContent, mode) || '';
     combined = baseDefaults + '\n' + combined;
 
     return this._resolveVarRefs(combined, primitives);
@@ -202,10 +207,10 @@ class ThemeService {
    * @returns {Object} Map of '--name' -> 'value'
    * @private
    */
-  _buildPrimitivesMap() {
+  async _buildPrimitivesMap() {
     const map = {};
     try {
-      const content = this._fs.readFileSync(
+      const content = await this._fsPromises.readFile(
         this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'variables.css'), 'utf8'
       );
       const rootMatch = content.match(/:root\s*\{([^}]*)\}/);
@@ -298,12 +303,12 @@ class ThemeService {
    * Returns null when no theme logo.svg exists.
    * @returns {string|null} data:image/svg+xml;base64,... URI or null
    */
-  getLogoDataUri() {
+  async getLogoDataUri() {
     if (!this.logoPath) {
       return null;
     }
     try {
-      const raw = this._fs.readFileSync(this.logoPath, 'utf8');
+      const raw = await this._fsPromises.readFile(this.logoPath, 'utf8');
       return 'data:image/svg+xml;base64,' + Buffer.from(raw).toString('base64');
     } catch (err) {
       this.logger.warn(`ThemeService: failed to read logo "${this.logoPath}": ${err.message}`);
@@ -335,13 +340,13 @@ class ThemeService {
     return this._rawMode || 'auto';
   }
 
-  _resolveThemeName(appRoot) {
+  async _resolveThemeName(appRoot) {
     const envTheme = (process.env.THEME || '').trim();
     if (envTheme) {
       return envTheme;
     }
 
-    const runtimeEnv = loadRuntimeEnv(this._fs, this._path, appRoot);
+    const runtimeEnv = await loadRuntimeEnv(this._fs, this._path, appRoot);
     const runtimeTheme = (runtimeEnv?.THEME || '').trim();
     if (runtimeTheme) {
       return runtimeTheme;
@@ -350,8 +355,10 @@ class ThemeService {
     return 'base';
   }
 
-  _validateThemeDir(themeDir, themeName) {
-    if (!this._fs.existsSync(themeDir)) {
+  async _validateThemeDir(themeDir, themeName) {
+    let themeDirExists = false;
+    try { await this._fsPromises.access(themeDir); themeDirExists = true; } catch { themeDirExists = false; }
+    if (!themeDirExists) {
       this.logger.warn(
         `ThemeService: theme directory "${themeDir}" not found, falling back to "base"`
       );
@@ -359,7 +366,9 @@ class ThemeService {
     }
 
     const manifestPath = this._path.join(themeDir, 'manifest.json');
-    if (!this._fs.existsSync(manifestPath)) {
+    let manifestExists = false;
+    try { await this._fsPromises.access(manifestPath); manifestExists = true; } catch { manifestExists = false; }
+    if (!manifestExists) {
       this.logger.warn(
         `ThemeService: manifest.json not found in "${themeDir}", falling back to "base"`
       );
@@ -369,10 +378,10 @@ class ThemeService {
     return { themeName, themeDir };
   }
 
-  _loadManifest(themeDir) {
+  async _loadManifest(themeDir) {
     const manifestPath = this._path.join(themeDir, 'manifest.json');
     try {
-      const raw = this._fs.readFileSync(manifestPath, 'utf8');
+      const raw = await this._fsPromises.readFile(manifestPath, 'utf8');
       return JSON.parse(raw);
     } catch (err) {
       this.logger.warn(
@@ -516,14 +525,16 @@ class ThemeService {
     this.logger.info('ThemeService: stopped watching OS theme changes');
   }
 
-  _buildCssChain(themeDir, manifest, appRoot) {
+  async _buildCssChain(themeDir, manifest, appRoot) {
     const chain = [];
 
     if (manifest.inherit) {
       const parentDir = this._path.join(appRoot, 'themes', manifest.inherit);
-      if (this._fs.existsSync(parentDir)) {
-        const parentManifest = this._loadManifest(parentDir);
-        const parentChain = this._buildCssChain(parentDir, parentManifest, appRoot);
+      let parentDirExists = false;
+      try { await this._fsPromises.access(parentDir); parentDirExists = true; } catch { parentDirExists = false; }
+      if (parentDirExists) {
+        const parentManifest = await this._loadManifest(parentDir);
+        const parentChain = await this._buildCssChain(parentDir, parentManifest, appRoot);
         chain.push(...parentChain);
       } else {
         this.logger.warn(
@@ -533,28 +544,36 @@ class ThemeService {
     }
 
     const colorsCss = this._path.join(themeDir, 'colors.css');
-    if (this._fs.existsSync(colorsCss)) {
+    let colorsExist = false;
+    try { await this._fsPromises.access(colorsCss); colorsExist = true; } catch { colorsExist = false; }
+    if (colorsExist) {
       chain.push(colorsCss);
     } else {
       this.logger.warn(`ThemeService: required colors.css not found in "${themeDir}"`);
     }
 
     const iconsCss = this._path.join(themeDir, 'icons.css');
-    if (this._fs.existsSync(iconsCss)) {
+    let iconsExist = false;
+    try { await this._fsPromises.access(iconsCss); iconsExist = true; } catch { iconsExist = false; }
+    if (iconsExist) {
       chain.push(iconsCss);
     }
 
     return chain;
   }
 
-  _resolveAssetPaths(themeDir) {
+  async _resolveAssetPaths(themeDir) {
     const logoPath = this._path.join(themeDir, 'logo.svg');
-    if (this._fs.existsSync(logoPath)) {
+    let logoExists = false;
+    try { await this._fsPromises.access(logoPath); logoExists = true; } catch { logoExists = false; }
+    if (logoExists) {
       this.logoPath = logoPath;
     }
 
     const iconCssPath = this._path.join(themeDir, 'icons.css');
-    if (this._fs.existsSync(iconCssPath)) {
+    let iconExists = false;
+    try { await this._fsPromises.access(iconCssPath); iconExists = true; } catch { iconExists = false; }
+    if (iconExists) {
       this.iconCssPath = iconCssPath;
     }
   }

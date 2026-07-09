@@ -7,6 +7,7 @@
 'use strict';
 
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 const https = require('https');
 const tar = require('tar');
@@ -176,8 +177,8 @@ class NodeRuntimeManager {
   /**
    * Ensure the runtime directory exists
    */
-  ensureBaseDirectories() {
-    fs.mkdirSync(this.runtimeRoot, { recursive: true });
+  async ensureBaseDirectories() {
+    await fsPromises.mkdir(this.runtimeRoot, { recursive: true });
   }
 
   /**
@@ -210,7 +211,7 @@ class NodeRuntimeManager {
    * @returns {Promise<RuntimeInfo>} Runtime information
    */
   async performInstallation({ force, onProgress }) {
-    this.ensureBaseDirectories();
+    await this.ensureBaseDirectories();
     const current = await this.getRuntimeInfo();
 
     if (!force && current.installed && current.isValid) {
@@ -221,9 +222,9 @@ class NodeRuntimeManager {
     const downloadInfo = this.getDownloadInfo();
     const downloadDir = path.join(this.runtimeRoot, 'downloads');
     const tempDir = path.join(this.runtimeRoot, 'tmp-install');
-    fs.mkdirSync(downloadDir, { recursive: true });
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    fs.mkdirSync(tempDir, { recursive: true });
+    await fsPromises.mkdir(downloadDir, { recursive: true });
+    await fsPromises.rm(tempDir, { recursive: true, force: true });
+    await fsPromises.mkdir(tempDir, { recursive: true });
 
     try {
       const archivePath = await this.downloadArchive(downloadInfo, downloadDir, onProgress);
@@ -234,8 +235,8 @@ class NodeRuntimeManager {
       currentExtractionPid = process.pid;
       await this.extractArchive(downloadInfo, archivePath, tempDir);
       await this.moveExtractedRuntime(tempDir);
-      fs.unlinkSync(archivePath);
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      await fsPromises.unlink(archivePath);
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
       if (onProgress) {
         onProgress({ stage: 'verifying', message: 'Verificando instalação...', percent: 90 });
       }
@@ -251,7 +252,7 @@ class NodeRuntimeManager {
     } finally {
       extractionInProgress = false;
       currentExtractionPid = null;
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      await fsPromises.rm(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -347,16 +348,16 @@ class NodeRuntimeManager {
         }
 
         zipfile.readEntry();
-        zipfile.on('entry', (entry) => {
+        zipfile.on('entry', async (entry) => {
           const entryPath = path.join(extractTo, entry.fileName);
           if (entry.fileName.endsWith('/')) {
-            fs.mkdirSync(entryPath, { recursive: true });
+            await fsPromises.mkdir(entryPath, { recursive: true });
             zipfile.readEntry();
             return;
           }
 
           const directory = path.dirname(entryPath);
-          fs.mkdirSync(directory, { recursive: true });
+          await fsPromises.mkdir(directory, { recursive: true });
 
           zipfile.openReadStream(entry, (error, readStream) => {
             if (error) {
@@ -387,7 +388,7 @@ class NodeRuntimeManager {
    * @param {string} tempDir - Temporary directory containing extracted files
    */
   async moveExtractedRuntime(tempDir) {
-    const extractedEntries = fs.readdirSync(tempDir, { withFileTypes: true });
+    const extractedEntries = await fsPromises.readdir(tempDir, { withFileTypes: true });
     const extractedDir = extractedEntries.find((entry) => entry.isDirectory() && entry.name.startsWith('node-v'))
       || extractedEntries.find((entry) => entry.isDirectory());
 
@@ -398,9 +399,9 @@ class NodeRuntimeManager {
     const sourcePath = path.join(tempDir, extractedDir.name);
     const targetDir = this.getInstallDir();
 
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-    fs.renameSync(sourcePath, targetDir);
+    await fsPromises.rm(targetDir, { recursive: true, force: true });
+    await fsPromises.mkdir(path.dirname(targetDir), { recursive: true });
+    await fsPromises.rename(sourcePath, targetDir);
   }
 
   /**
@@ -456,7 +457,15 @@ class NodeRuntimeManager {
    */
   async getRuntimeInfo() {
     const nodePath = this.getNodeExecutablePath();
-    if (!fs.existsSync(nodePath)) {
+    let nodeExists;
+    try {
+      await fsPromises.access(nodePath);
+      nodeExists = true;
+    } catch {
+      nodeExists = false;
+    }
+
+    if (!nodeExists) {
       return {
         installed: false,
         isValid: false,
@@ -471,6 +480,14 @@ class NodeRuntimeManager {
     }
 
     const npmPath = this.getNpmExecutablePath();
+    let npmExists;
+    try {
+      await fsPromises.access(npmPath);
+      npmExists = true;
+    } catch {
+      npmExists = false;
+    }
+
     const nodeVersionRaw = await this.runBinary(nodePath, ['--version']);
 
     if (!nodeVersionRaw) {
@@ -480,7 +497,7 @@ class NodeRuntimeManager {
         version: null,
         npmVersion: null,
         nodePath,
-        npmPath: fs.existsSync(npmPath) ? npmPath : null,
+        npmPath: npmExists ? npmPath : null,
         major: 0,
         minor: 0,
         patch: 0
@@ -488,7 +505,7 @@ class NodeRuntimeManager {
     }
 
     const parsed = this.parseVersion(nodeVersionRaw);
-    const npmVersionRaw = fs.existsSync(npmPath)
+    const npmVersionRaw = npmExists
       ? await this.runBinary(npmPath, ['--version'])
       : null;
 
@@ -498,7 +515,7 @@ class NodeRuntimeManager {
       version: parsed.clean,
       npmVersion: npmVersionRaw ? npmVersionRaw.replace(/^v/, '').trim() : null,
       nodePath,
-      npmPath: fs.existsSync(npmPath) ? npmPath : null,
+      npmPath: npmExists ? npmPath : null,
       major: parsed.major,
       minor: parsed.minor,
       patch: parsed.patch

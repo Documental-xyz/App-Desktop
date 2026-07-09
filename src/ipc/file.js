@@ -117,9 +117,9 @@ class FileHandlers {
    * @param {string} filePath - Path to check
    * @returns {boolean} Whether path exists
    */
-  pathExists(event, filePath) {
+  async pathExists(event, filePath) {
     try {
-      return this.fileService.exists(filePath);
+      return await this.fileService.exists(filePath);
     } catch (error) {
       this.logger.error('Error in path exists handler:', error);
       return false;
@@ -132,9 +132,9 @@ class FileHandlers {
    * @param {string} filePath - Path to check
    * @returns {Object|null} File stats or null
    */
-  getFileStats(event, filePath) {
+  async getFileStats(event, filePath) {
     try {
-      return this.fileService.getStats(filePath);
+      return await this.fileService.getStats(filePath);
     } catch (error) {
       this.logger.error('Error in get file stats handler:', error);
       return null;
@@ -147,9 +147,9 @@ class FileHandlers {
    * @param {string} dirPath - Path to check
    * @returns {boolean} Whether path is directory
    */
-  isDirectory(event, dirPath) {
+  async isDirectory(event, dirPath) {
     try {
-      return this.fileService.isDirectory(dirPath);
+      return await this.fileService.isDirectory(dirPath);
     } catch (error) {
       this.logger.error('Error in is directory handler:', error);
       return false;
@@ -162,9 +162,9 @@ class FileHandlers {
    * @param {string} filePath - Path to check
    * @returns {boolean} Whether path is file
    */
-  isFile(event, filePath) {
+  async isFile(event, filePath) {
     try {
-      return this.fileService.isFile(filePath);
+      return await this.fileService.isFile(filePath);
     } catch (error) {
       this.logger.error('Error in is file handler:', error);
       return false;
@@ -177,9 +177,9 @@ class FileHandlers {
    * @param {string} dirPath - Directory path
    * @returns {string[]} Directory contents
    */
-  readDirectory(event, dirPath) {
+  async readDirectory(event, dirPath) {
     try {
-      return this.fileService.readDirectory(dirPath);
+      return await this.fileService.readDirectory(dirPath);
     } catch (error) {
       this.logger.error('Error in read directory handler:', error);
       return [];
@@ -192,9 +192,9 @@ class FileHandlers {
    * @param {string} dirPath - Directory path to create
    * @returns {Object} Operation result
    */
-  createDirectory(event, dirPath) {
+  async createDirectory(event, dirPath) {
     try {
-      return this.fileService.createDirectory(dirPath);
+      return await this.fileService.createDirectory(dirPath);
     } catch (error) {
       this.logger.error('Error in create directory handler:', error);
       return { success: false, error: error.message };
@@ -207,9 +207,9 @@ class FileHandlers {
    * @param {string} targetPath - Path to remove
    * @returns {Object} Operation result
    */
-  removePath(event, targetPath) {
+  async removePath(event, targetPath) {
     try {
-      return this.fileService.remove(targetPath);
+      return await this.fileService.remove(targetPath);
     } catch (error) {
       this.logger.error('Error in remove path handler:', error);
       return { success: false, error: error.message };

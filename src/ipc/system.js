@@ -11,6 +11,7 @@ const { ipcMain, app, dialog, shell, BrowserWindow } = require('electron');
 /** @type {string} Background color for BrowserWindow (shown before CSS loads) */
 const WINDOW_BG_COLOR = '#111827';
 const fs = require('fs');
+const fsPromises = fs.promises;
 const path = require('path');
 const os = require('os');
 const { PlatformService } = require('../main/services/platform/PlatformService.js');
@@ -558,14 +559,15 @@ async detectNVM() {
         
         // Check if NVM directory exists
         for (const nvmPath of nvmPaths) {
-          if (fs.existsSync(nvmPath)) {
+          try {
+            await fsPromises.access(nvmPath);
             resolve({
               exists: true,
               path: nvmPath,
               type: 'directory'
             });
             return;
-          }
+          } catch (_) { /* path doesn't exist */ }
         }
         
         resolve({
@@ -670,7 +672,7 @@ async installNodeVersion(version) {
    * @returns {Promise<void>}
    */
 async configureNodeEnvironment() {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const { exec } = require('child_process');
       
       this.logger.info('⚙️ Configuring Node.js environment...');
@@ -699,20 +701,22 @@ export NVM_DIR="$HOME/.nvm"
       
       try {
         // Add to .bashrc if not already present
-        if (fs.existsSync(bashrcPath)) {
-          const bashrcContent = fs.readFileSync(bashrcPath, 'utf8');
+        try {
+          await fsPromises.access(bashrcPath);
+          const bashrcContent = await fsPromises.readFile(bashrcPath, 'utf8');
           if (!bashrcContent.includes('NVM configuration')) {
-            fs.appendFileSync(bashrcPath, nvmConfig);
+            await fsPromises.appendFile(bashrcPath, nvmConfig);
           }
-}
+        } catch (_) { /* file doesn't exist, skip */ }
         
         // Add to .profile if not already present
-        if (fs.existsSync(profilePath)) {
-          const profileContent = fs.readFileSync(profilePath, 'utf8');
+        try {
+          await fsPromises.access(profilePath);
+          const profileContent = await fsPromises.readFile(profilePath, 'utf8');
           if (!profileContent.includes('NVM configuration')) {
-            fs.appendFileSync(profilePath, nvmConfig);
+            await fsPromises.appendFile(profilePath, nvmConfig);
           }
-        }
+        } catch (_) { /* file doesn't exist, skip */ }
         
         this.logger.info('✅ Environment configured successfully');
         resolve();
@@ -948,11 +952,13 @@ async verifyNodeInstallation() {
       const firstTimeFile = path.join(app.getPath('userData'), '.first-time');
       
       // Write the completion marker
-      fs.writeFileSync(firstTimeFile, 'completed');
+      await fsPromises.writeFile(firstTimeFile, 'completed');
       
       // Verify the file was written correctly
-      if (fs.existsSync(firstTimeFile)) {
-        const content = fs.readFileSync(firstTimeFile, 'utf8').trim();
+      let firstTimeFileExists = true;
+      try { await fsPromises.access(firstTimeFile); } catch (_) { firstTimeFileExists = false; }
+      if (firstTimeFileExists) {
+        const content = (await fsPromises.readFile(firstTimeFile, 'utf8')).trim();
         const isCorrectlyWritten = content === 'completed';
         
         if (isCorrectlyWritten) {
@@ -1204,7 +1210,7 @@ async verifyNodeInstallation() {
 
         let config = {};
         try {
-          config = JSON.parse(fs.readFileSync(runtimeEnvPath, 'utf8'));
+          config = JSON.parse(await fsPromises.readFile(runtimeEnvPath, 'utf8'));
         } catch (e) {}
 
         config.THEME_MODE = mode;
@@ -1212,7 +1218,7 @@ async verifyNodeInstallation() {
           config.THEME = this.themeService.themeName;
         }
         config.generatedAt = new Date().toISOString();
-        fs.writeFileSync(runtimeEnvPath, JSON.stringify(config, null, 2), 'utf8');
+        await fsPromises.writeFile(runtimeEnvPath, JSON.stringify(config, null, 2), 'utf8');
 
         // Sync in-memory _rawMode so getRawMode() returns the updated value on page reload
         if (this.themeService) {

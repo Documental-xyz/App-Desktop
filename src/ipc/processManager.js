@@ -13,6 +13,8 @@ const path = require('path');
 const { rimraf } = require('rimraf');
 const { PlatformService } = require('../main/services/platform/PlatformService');
 
+const fsp = fs.promises;
+
 
 // Global state
 let globalDevServerUrl = null;
@@ -56,24 +58,26 @@ class ProcessManager {
     /** @type {Function|undefined} Optional injection for tests — defaults to killProcessTree from require */
     this._killProcessTree = killProcessTree;
     this.processesFile = this.platformService.joinPath(this.platformService.getHomeDirectory(), '.documental-processes.json');
-    this.loadDocumentalProcesses();
+    (async () => {
+      await this.loadDocumentalProcesses();
+    })();
   }
 
   /**
    * Load Documental processes from file
    * @returns {Object} Processes object
    */
-  loadDocumentalProcesses() {
+  async loadDocumentalProcesses() {
     try {
-      if (fs.existsSync(this.processesFile)) {
-        const data = fs.readFileSync(this.processesFile, 'utf8');
-        const processes = JSON.parse(data);
-        this.logger.info('Loaded Documental processes from file:', Object.keys(processes));
-        activeDocumentalProcesses = processes;
-        return processes;
-      }
+      const data = await fsp.readFile(this.processesFile, 'utf8');
+      const processes = JSON.parse(data);
+      this.logger.info('Loaded Documental processes from file:', Object.keys(processes));
+      activeDocumentalProcesses = processes;
+      return processes;
     } catch (error) {
-      this.logger.error('Error loading Documental processes:', error);
+      if (error.code !== 'ENOENT') {
+        this.logger.error('Error loading Documental processes:', error);
+      }
     }
     return {};
   }
@@ -81,9 +85,9 @@ class ProcessManager {
   /**
    * Save Documental processes to file
    */
-  saveDocumentalProcesses() {
+  async saveDocumentalProcesses() {
     try {
-      fs.writeFileSync(this.processesFile, JSON.stringify(activeDocumentalProcesses, null, 2));
+      await fsp.writeFile(this.processesFile, JSON.stringify(activeDocumentalProcesses, null, 2));
       this.logger.info('Saved Documental processes to file');
     } catch (error) {
       this.logger.error('Error saving Documental processes:', error);
@@ -95,7 +99,7 @@ class ProcessManager {
    * @param {number} pid - Process ID
    * @param {Object} processInfo - Process information
    */
-  addDocumentalProcess(pid, processInfo) {
+  async addDocumentalProcess(pid, processInfo) {
     activeDocumentalProcesses[pid] = {
       pid,
       port: processInfo.port,
@@ -104,7 +108,7 @@ class ProcessManager {
       command: processInfo.command,
       cwd: processInfo.cwd
     };
-    this.saveDocumentalProcesses();
+    await this.saveDocumentalProcesses();
     this.logger.info(`Added Documental process to tracking: PID ${pid}, Port ${processInfo.port}`);
   }
 
@@ -112,10 +116,10 @@ class ProcessManager {
    * Remove Documental process from tracking
    * @param {number} pid - Process ID
    */
-  removeDocumentalProcess(pid) {
+  async removeDocumentalProcess(pid) {
     if (activeDocumentalProcesses[pid]) {
       delete activeDocumentalProcesses[pid];
-      this.saveDocumentalProcesses();
+      await this.saveDocumentalProcesses();
       this.logger.info(`Removed Documental process from tracking: PID ${pid}`);
     }
   }
@@ -399,7 +403,7 @@ class ProcessManager {
         const processId = `dev-${projectId}`;
         activeProcesses[processId] = devProcess;
 
-        this.addDocumentalProcess(devProcess.pid, {
+        await this.addDocumentalProcess(devProcess.pid, {
           port: null, // Will be updated when URL is detected
           projectId: projectId,
           command: 'npm run dev',
@@ -413,10 +417,10 @@ class ProcessManager {
           devProcess.stdout?.on('data', processOutput);
           devProcess.stderr?.on('data', processOutput);
 
-          devProcess.on('exit', (code, signal) => {
+          devProcess.on('exit', async (code, signal) => {
             delete activeProcesses[processId];
             if (devProcess.pid) {
-              this.removeDocumentalProcess(devProcess.pid);
+              await this.removeDocumentalProcess(devProcess.pid);
             }
             if (signal) {
               sendServerOutput(`Development server killed with signal: ${signal}\n`);
@@ -428,10 +432,10 @@ class ProcessManager {
           });
 
           // Handle process errors
-          devProcess.on('error', (err) => {
+          devProcess.on('error', async (err) => {
             delete activeProcesses[processId];
             if (devProcess.pid) {
-              this.removeDocumentalProcess(devProcess.pid);
+              await this.removeDocumentalProcess(devProcess.pid);
             }
             sendServerOutput(`Failed to start development server: ${err.message}\n`);
             sendStatus('failure');
@@ -445,7 +449,7 @@ class ProcessManager {
           }
           delete activeProcesses[processId];
           if (devProcess.pid) {
-            this.removeDocumentalProcess(devProcess.pid);
+            await this.removeDocumentalProcess(devProcess.pid);
           }
           sendServerOutput(`Failed to start development server: ${attachError.message}\n`);
           sendStatus('failure');
@@ -465,7 +469,7 @@ class ProcessManager {
         if (processStarted) {
           delete activeProcesses[`dev-${projectId}`];
           if (devProcess && devProcess.pid) {
-            this.removeDocumentalProcess(devProcess.pid);
+            await this.removeDocumentalProcess(devProcess.pid);
           }
         }
         sendServerOutput(`Failed to start development server: ${error.message}\n`);
@@ -482,7 +486,7 @@ class ProcessManager {
     // that fired right after spawn (before URL detection) is intentionally gone.
 
     sendServerOutput('Development server started in background. Waiting for readiness signal...\n');
-    
+
     return {
       process: devProcess,
       url: devServerUrl
@@ -653,10 +657,10 @@ class ProcessManager {
         }
       };
 
-      const finalize = () => {
+      const finalize = async () => {
         detachListeners();
         if (processRef.pid) {
-          this.removeDocumentalProcess(processRef.pid);
+          await this.removeDocumentalProcess(processRef.pid);
         }
         delete activeProcesses[processKey];
         resolve();
@@ -701,19 +705,31 @@ class ProcessManager {
    * @param {string} repoFolderName - Repository folder name
    * @returns {string|null} Resolved repository path
    */
-  resolveRepoPath(projectPath, repoFolderName) {
+  async resolveRepoPath(projectPath, repoFolderName) {
     if (repoFolderName) {
-      if (path.basename(projectPath) === repoFolderName && fs.existsSync(projectPath)) {
-        return projectPath;
+      if (path.basename(projectPath) === repoFolderName) {
+        try {
+          await fsp.access(projectPath);
+          return projectPath;
+        } catch {
+          // doesn't exist
+        }
       }
 
       const nestedPath = path.join(projectPath, repoFolderName);
-      if (fs.existsSync(nestedPath)) {
+      try {
+        await fsp.access(nestedPath);
         return nestedPath;
+      } catch {
+        // doesn't exist
       }
 
-      if (fs.existsSync(projectPath) && fs.existsSync(path.join(projectPath, '.git'))) {
+      try {
+        await fsp.access(projectPath);
+        await fsp.access(path.join(projectPath, '.git'));
         return projectPath;
+      } catch {
+        // doesn't exist
       }
     }
 
@@ -742,8 +758,15 @@ class ProcessManager {
         return;
       }
 
-      const repoPath = this.resolveRepoPath(projectPath, repoFolderName);
-      if (repoPath && fs.existsSync(repoPath)) {
+      const repoPath = await this.resolveRepoPath(projectPath, repoFolderName);
+      let repoPathExists = false;
+      try {
+        await fsp.access(repoPath);
+        repoPathExists = true;
+      } catch {
+        repoPathExists = false;
+      }
+      if (repoPath && repoPathExists) {
         // Safety: refuse to delete the workspace root folder itself.
         if (!repoFolderName && repoPath === projectPath) {
           this.logger.warn(`Refusing to delete workspace root: ${repoPath}`);

@@ -17,6 +17,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const fsp = fs.promises;
+
 /**
  * @typedef {Object} GitHubConfig
 
@@ -52,9 +54,9 @@ function logConfigError(message) {
 
 /**
  * Locate runtime-env.json in packaged or development environments
- * @returns {Object|null}
+ * @returns {Promise<Object|null>}
  */
-function loadRuntimeEnvConfig() {
+async function loadRuntimeEnvConfig() {
   const candidatePaths = [];
 
   if (process.resourcesPath) {
@@ -76,12 +78,11 @@ function loadRuntimeEnvConfig() {
 
   for (const candidate of candidatePaths) {
     try {
-      if (fs.existsSync(candidate)) {
-        const raw = fs.readFileSync(candidate, 'utf8');
-        const parsed = JSON.parse(raw);
-        logConfigInfo(`Loaded runtime env from ${candidate}`);
-        return parsed;
-      }
+      await fsp.access(candidate);
+      const raw = await fsp.readFile(candidate, 'utf8');
+      const parsed = JSON.parse(raw);
+      logConfigInfo(`Loaded runtime env from ${candidate}`);
+      return parsed;
     } catch (error) {
       logConfigError(`Failed to read runtime env from ${candidate}: ${error.message}`);
     }
@@ -90,9 +91,11 @@ function loadRuntimeEnvConfig() {
   return null;
 }
 
-const runtimeEnvConfig = loadRuntimeEnvConfig();
-
-function resolveClientId() {
+/**
+ * @param {Object|null} runtimeEnvConfig
+ * @returns {{ clientId: string, source: string }}
+ */
+function resolveClientId(runtimeEnvConfig) {
   const envClientId = (process.env.GITHUB_CLIENT_ID || '').trim();
   if (envClientId) {
     return { clientId: envClientId, source: 'process.env' };
@@ -110,42 +113,47 @@ function resolveClientId() {
   return { clientId: '', source: 'missing' };
 }
 
-const { clientId: resolvedClientId, source: clientIdSource } = resolveClientId();
-
-if (!resolvedClientId) {
-  throw new Error('GitHub Client ID is not configured. Ensure GITHUB_CLIENT_ID is set or runtime-env.json exists.');
-}
-
-logConfigInfo(`Using GitHub Client ID from ${clientIdSource}`);
-
 /**
  * GitHub Device Flow Configuration
  * @type {GitHubConfig}
  */
 const GITHUB_CONFIG = {
-
-  // Client ID from GitHub OAuth App (only Client ID is needed for Device Flow)
-  // Using environment variable/runtime config in production, fallback to development ID
-  CLIENT_ID: resolvedClientId,
-
-  
-  // OAuth scopes (permissions requested)
+  CLIENT_ID: '',
   SCOPES: ['user:email', 'repo'],
-  
-  // Device Flow endpoints
   DEVICE_CODE_URL: 'https://github.com/login/device/code',
   TOKEN_URL: 'https://github.com/login/oauth/access_token',
   VERIFICATION_URI: 'https://github.com/login/device',
-  
-  // Service name for keytar (secure token storage)
   SERVICE_NAME: 'documental-app',
-
-  // Template repository for fork operations
   TEMPLATE_REPO: { owner: 'Documental-xyz', repo: 'Template', defaultForkName: 'Meu-Documental' },
-
-  // Fork polling configuration (fork creation is async on GitHub)
   FORK_POLLING: { intervalMs: 2000, timeoutMs: 60000 }
 };
+
+(async () => {
+  const runtimeEnvConfig = await loadRuntimeEnvConfig();
+  const { clientId: resolvedClientId, source: clientIdSource } = resolveClientId(runtimeEnvConfig);
+
+  if (!resolvedClientId) {
+    throw new Error('GitHub Client ID is not configured. Ensure GITHUB_CLIENT_ID is set or runtime-env.json exists.');
+  }
+
+  GITHUB_CONFIG.CLIENT_ID = resolvedClientId;
+
+  logConfigInfo(`Using GitHub Client ID from ${clientIdSource}`);
+
+  try {
+    getValidatedConfig();
+  } catch (error) {
+    logConfigError(`❌ GitHub configuration validation failed: ${error.message}`);
+    if (process.env.NODE_ENV === 'production') {
+      process.exit(1);
+    }
+  }
+})().catch(error => {
+  logConfigError(`❌ GitHub configuration validation failed: ${error.message}`);
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+});
 
 /**
  * Validate GitHub configuration
@@ -227,18 +235,6 @@ function getValidatedConfig() {
   
   return GITHUB_CONFIG;
 }
-
-// Validate configuration on module load
-try {
-  getValidatedConfig();
-} catch (error) {
-  logConfigError(`❌ GitHub configuration validation failed: ${error.message}`);
-  // In development, continue with warnings; in production, this should be fatal
-  if (process.env.NODE_ENV === 'production') {
-    process.exit(1);
-  }
-}
-
 
 module.exports = {
   GITHUB_CONFIG,

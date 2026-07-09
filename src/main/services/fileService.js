@@ -9,6 +9,7 @@
 const { dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsPromises = fs.promises;
 
 /**
  * @typedef {Object} DialogResult
@@ -201,10 +202,14 @@ class FileService {
    * @param {string} filePath - Path to check
    * @returns {boolean} Whether path exists
    */
-  exists(filePath) {
+  async exists(filePath) {
     try {
-      return fs.existsSync(filePath);
+      await fsPromises.access(filePath);
+      return true;
     } catch (error) {
+      if (error.code === 'ENOENT') {
+        return false;
+      }
       this.logger.error('Error checking file existence:', error);
       return false;
     }
@@ -215,9 +220,9 @@ class FileService {
    * @param {string} filePath - Path to file
    * @returns {Object|null} File stats or null if error
    */
-  getStats(filePath) {
+  async getStats(filePath) {
     try {
-      return fs.statSync(filePath);
+      return await fsPromises.stat(filePath);
     } catch (error) {
       this.logger.error('Error getting file stats:', error);
       return null;
@@ -229,9 +234,9 @@ class FileService {
    * @param {string} dirPath - Path to check
    * @returns {boolean} Whether path is a directory
    */
-  isDirectory(dirPath) {
+  async isDirectory(dirPath) {
     try {
-      const stats = fs.statSync(dirPath);
+      const stats = await fsPromises.stat(dirPath);
       return stats.isDirectory();
     } catch (error) {
       this.logger.error('Error checking if path is directory:', error);
@@ -244,9 +249,9 @@ class FileService {
    * @param {string} filePath - Path to check
    * @returns {boolean} Whether path is a file
    */
-  isFile(filePath) {
+  async isFile(filePath) {
     try {
-      const stats = fs.statSync(filePath);
+      const stats = await fsPromises.stat(filePath);
       return stats.isFile();
     } catch (error) {
       this.logger.error('Error checking if path is file:', error);
@@ -259,9 +264,9 @@ class FileService {
    * @param {string} dirPath - Directory path
    * @returns {string[]} Array of file/directory names
    */
-  readDirectory(dirPath) {
+  async readDirectory(dirPath) {
     try {
-      return fs.readdirSync(dirPath);
+      return await fsPromises.readdir(dirPath);
     } catch (error) {
       this.logger.error('Error reading directory:', error);
       return [];
@@ -273,9 +278,9 @@ class FileService {
    * @param {string} dirPath - Directory path to create
    * @returns {FileOperationResult} Operation result
    */
-  createDirectory(dirPath) {
+  async createDirectory(dirPath) {
     try {
-      fs.mkdirSync(dirPath, { recursive: true });
+      await fsPromises.mkdir(dirPath, { recursive: true });
       this.logger.info(`Directory created: ${dirPath}`);
       return { success: true };
     } catch (error) {
@@ -289,15 +294,15 @@ class FileService {
    * @param {string} targetPath - Path to remove
    * @returns {FileOperationResult} Operation result
    */
-  remove(targetPath) {
+  async remove(targetPath) {
     try {
-      const stats = fs.statSync(targetPath);
+      const stats = await fsPromises.stat(targetPath);
       
       if (stats.isDirectory()) {
-        fs.rmSync(targetPath, { recursive: true, force: true });
+        await fsPromises.rm(targetPath, { recursive: true, force: true });
         this.logger.info(`Directory removed: ${targetPath}`);
       } else {
-        fs.unlinkSync(targetPath);
+        await fsPromises.unlink(targetPath);
         this.logger.info(`File removed: ${targetPath}`);
       }
       

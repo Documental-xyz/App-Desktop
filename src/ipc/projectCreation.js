@@ -9,6 +9,7 @@
 const { ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsPromises = fs.promises;
 const { GitOperations } = require('./gitOperations.js');
 const { ProcessManager } = require('./processManager.js');
 const { t } = require('../utils/mainI18n');
@@ -40,7 +41,9 @@ class ProjectCreationHandler {
   async hasPartialGit(dir) {
     try {
       const gitDir = path.join(dir, '.git');
-      if (!fs.existsSync(gitDir)) {
+      let gitDirExists = false;
+      try { await fsPromises.access(gitDir); gitDirExists = true; } catch { gitDirExists = false; }
+      if (!gitDirExists) {
         return false;
       }
 
@@ -48,8 +51,10 @@ class ProjectCreationHandler {
       const headPath = path.join(gitDir, 'HEAD');
       const configPath = path.join(gitDir, 'config');
       
-      const hasConfig = fs.existsSync(configPath);
-      const hasHead = fs.existsSync(headPath);
+      let hasConfig = false;
+      let hasHead = false;
+      try { await fsPromises.access(configPath); hasConfig = true; } catch { hasConfig = false; }
+      try { await fsPromises.access(headPath); hasHead = true; } catch { hasHead = false; }
       
       // If config exists but no HEAD, it's likely a partial git setup
       return hasConfig && !hasHead;
@@ -67,34 +72,34 @@ class ProjectCreationHandler {
   async cleanPartialGit(dir) {
     try {
       const gitDir = path.join(dir, '.git');
-      if (fs.existsSync(gitDir)) {
+      let gitDirExists = false;
+      try { await fsPromises.access(gitDir); gitDirExists = true; } catch { gitDirExists = false; }
+      if (gitDirExists) {
         this.logger.info(`🧹 Cleaning partial .git directory: ${gitDir}`);
         
-        // Simple recursive removal
-        const { execSync } = require('child_process');
-        const isWindows = process.platform === 'win32';
-        const rmCommand = isWindows ? 'rmdir /s /q' : 'rm -rf';
-        
+        // Simple recursive removal using fs.promises.rm
         try {
-          execSync(`${rmCommand} "${gitDir}"`, { stdio: 'ignore' });
+          await fsPromises.rm(gitDir, { recursive: true, force: true });
         } catch (execError) {
-          // Fallback to manual removal if command fails
-          const removeRecursive = (dirPath) => {
-            if (fs.existsSync(dirPath)) {
-              const files = fs.readdirSync(dirPath);
+          // Fallback to manual recursive removal
+          const removeRecursive = async (dirPath) => {
+            let dirExists = false;
+            try { await fsPromises.access(dirPath); dirExists = true; } catch { dirExists = false; }
+            if (dirExists) {
+              const files = await fsPromises.readdir(dirPath);
               for (const file of files) {
                 const curPath = path.join(dirPath, file);
-                const stat = fs.lstatSync(curPath);
+                const stat = await fsPromises.lstat(curPath);
                 if (stat.isDirectory()) {
-                  removeRecursive(curPath);
+                  await removeRecursive(curPath);
                 } else {
-                  fs.unlinkSync(curPath);
+                  await fsPromises.unlink(curPath);
                 }
               }
-              fs.rmdirSync(dirPath);
+              await fsPromises.rmdir(dirPath);
             }
           };
-          removeRecursive(gitDir);
+          await removeRecursive(gitDir);
         }
         
         this.logger.info('✅ Partial .git directory cleaned');
@@ -197,8 +202,12 @@ class ProjectCreationHandler {
 
     try {
       // ── Diagnostic: pre-clone state ─────────────────────────────────────
-      const dirExistsBefore = fs.existsSync(dir);
-      const dirContentsBefore = dirExistsBefore ? fs.readdirSync(dir) : [];
+      let dirExistsBefore = false;
+      try { await fsPromises.access(dir); dirExistsBefore = true; } catch { dirExistsBefore = false; }
+      let dirContentsBefore = [];
+      if (dirExistsBefore) {
+        dirContentsBefore = await fsPromises.readdir(dir);
+      }
       this.logger.info(`Cloning repository from ${url} to ${dir}`);
       this.logger.info(`[clone-diag] dir exists=${dirExistsBefore}, contents=${JSON.stringify(dirContentsBefore)}`);
 
@@ -216,35 +225,38 @@ class ProjectCreationHandler {
         const residualFiles = dirContentsBefore.filter((entry) => entry !== '.git');
         if (residualFiles.length > 0) {
           this.logger.info(`🧹 Cleaning residual files before clone: ${JSON.stringify(residualFiles)}`);
-          const { execSync } = require('child_process');
+          const { execa } = require('execa');
           const isWindows = process.platform === 'win32';
           for (const file of residualFiles) {
             const targetPath = path.join(dir, file);
             try {
-              const rmCommand = isWindows ? 'rmdir /s /q' : 'rm -rf';
-              execSync(`${rmCommand} "${targetPath}"`, { stdio: 'ignore' });
+              const rmCommand = isWindows ? 'rmdir' : 'rm';
+              const rmArgs = isWindows ? ['/s', '/q', targetPath] : ['-rf', targetPath];
+              await execa(rmCommand, rmArgs, { stdio: 'ignore' });
             } catch (execError) {
               try {
-                const stat = fs.lstatSync(targetPath);
+                const stat = await fsPromises.lstat(targetPath);
                 if (stat.isDirectory()) {
-                  const removeRecursive = (dirPath) => {
-                    if (fs.existsSync(dirPath)) {
-                      const entries = fs.readdirSync(dirPath);
+                  const removeRecursive = async (dirPath) => {
+                    let dirExists = false;
+                    try { await fsPromises.access(dirPath); dirExists = true; } catch { dirExists = false; }
+                    if (dirExists) {
+                      const entries = await fsPromises.readdir(dirPath);
                       for (const entry of entries) {
                         const curPath = path.join(dirPath, entry);
-                        const curStat = fs.lstatSync(curPath);
+                        const curStat = await fsPromises.lstat(curPath);
                         if (curStat.isDirectory()) {
-                          removeRecursive(curPath);
+                          await removeRecursive(curPath);
                         } else {
-                          fs.unlinkSync(curPath);
+                          await fsPromises.unlink(curPath);
                         }
                       }
-                      fs.rmdirSync(dirPath);
+                      await fsPromises.rmdir(dirPath);
                     }
                   };
-                  removeRecursive(targetPath);
+                  await removeRecursive(targetPath);
                 } else {
-                  fs.unlinkSync(targetPath);
+                  await fsPromises.unlink(targetPath);
                 }
               } catch (fallbackError) {
                 this.logger.warn(`Could not remove residual file ${targetPath}:`, fallbackError?.message);
@@ -260,7 +272,7 @@ class ProjectCreationHandler {
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
       if (!isGithubUrl) {
         this.logger.warn('Clone URL is not a GitHub URL — proceeding without token auth');
-        sendOutput(t('create.non_github_warning') + '\n');
+        sendOutput(await t('create.non_github_warning') + '\n');
       }
 
       this.logger.info(`[clone-diag] url=${url} token=${this._maskToken(token)} auth=${auth ? 'present' : 'none'}`);
@@ -320,18 +332,21 @@ class ProjectCreationHandler {
 
         if (cloneAttempt > 1) {
           sendOutput(`🔄 Tentativa ${cloneAttempt} de clone (branch incorreto)...\n`);
-          const { execSync } = require('child_process');
+          const { execa } = require('execa');
           const isWindows = process.platform === 'win32';
-          if (fs.existsSync(dir)) {
+          let dirExists = false;
+          try { await fsPromises.access(dir); dirExists = true; } catch { dirExists = false; }
+          if (dirExists) {
             try {
-              const rmCommand = isWindows ? 'rmdir /s /q' : 'rm -rf';
-              execSync(`${rmCommand} "${dir}"`, { stdio: 'ignore' });
+              const rmCommand = isWindows ? 'rmdir' : 'rm';
+              const rmArgs = isWindows ? ['/s', '/q', dir] : ['-rf', dir];
+              await execa(rmCommand, rmArgs, { stdio: 'ignore' });
             } catch (rmErr) {
               this.logger.warn('[clone-diag] rm failed on retry, falling back to manual:', rmErr?.message);
             }
           }
           try {
-            fs.mkdirSync(dir, { recursive: true });
+            await fsPromises.mkdir(dir, { recursive: true });
           } catch (mkdirErr) {
             this.logger.warn('[clone-diag] mkdir failed on retry:', mkdirErr?.message);
           }
@@ -341,10 +356,12 @@ class ProjectCreationHandler {
         await git.clone(cloneArgs);
 
         // ── Diagnostic: post-clone state ────────────────────────────────────
-        const gitDirExists = fs.existsSync(path.join(dir, '.git'));
+        let gitDirExists = false;
+        try { await fsPromises.access(path.join(dir, '.git')); gitDirExists = true; } catch { gitDirExists = false; }
         let postDirContents = [];
         try {
-          postDirContents = fs.readdirSync(dir).filter((entry) => entry !== '.git');
+          const entries = await fsPromises.readdir(dir);
+          postDirContents = entries.filter((entry) => entry !== '.git');
         } catch (readErr) {
           this.logger.warn('[clone-diag] could not readdir post-clone:', readErr?.message);
         }
@@ -356,7 +373,8 @@ class ProjectCreationHandler {
         } catch (branchErr) {
           this.logger.warn('[clone-diag] listBranches failed:', branchErr?.message);
         }
-        const hasPackageJson = fs.existsSync(path.join(dir, 'package.json'));
+        let hasPackageJson = false;
+        try { await fsPromises.access(path.join(dir, 'package.json')); hasPackageJson = true; } catch { hasPackageJson = false; }
 
         this.logger.info(
           `[clone-diag] post-clone: attempt=${cloneAttempt} .git=${gitDirExists} files=${postDirContents.length} ` +
@@ -456,15 +474,19 @@ class ProjectCreationHandler {
    * @param {string} [projectName] - User-provided project name (slugified for folder)
    * @returns {{ repoDirPath: string, repoFolderName: string, shouldClone: boolean }}
    */
-  determineRepositoryTarget(projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, projectName = '') {
-    const ensureDirectory = (targetPath) => {
-      if (!fs.existsSync(targetPath)) {
-        fs.mkdirSync(targetPath, { recursive: true });
+  async determineRepositoryTarget(projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, projectName = '') {
+    const ensureDirectory = async (targetPath) => {
+      let exists = false;
+      try { await fsPromises.access(targetPath); exists = true; } catch { exists = false; }
+      if (!exists) {
+        await fsPromises.mkdir(targetPath, { recursive: true });
       }
     };
 
-    if (!fs.existsSync(projectPath)) {
-      ensureDirectory(projectPath);
+    let projectPathExists = false;
+    try { await fsPromises.access(projectPath); projectPathExists = true; } catch { projectPathExists = false; }
+    if (!projectPathExists) {
+      await ensureDirectory(projectPath);
     }
 
     if (isExistingGitRepo) {
@@ -496,13 +518,16 @@ class ProjectCreationHandler {
     const baseName = slug || repoName || fallbackName;
     let finalRepoFolderName = baseName;
     let counter = 0;
-    while (fs.existsSync(path.join(projectPath, finalRepoFolderName))) {
+    let repoPathExists = true;
+    try { await fsPromises.access(path.join(projectPath, finalRepoFolderName)); repoPathExists = true; } catch { repoPathExists = false; }
+    while (repoPathExists) {
       counter += 1;
       finalRepoFolderName = `${baseName}-${counter}`;
+      try { await fsPromises.access(path.join(projectPath, finalRepoFolderName)); repoPathExists = true; } catch { repoPathExists = false; }
     }
 
     const repoDirPath = path.join(projectPath, finalRepoFolderName);
-    ensureDirectory(repoDirPath);
+    await ensureDirectory(repoDirPath);
 
     return {
       repoDirPath,
@@ -593,7 +618,7 @@ class ProjectCreationHandler {
         const step0Output = getStepOutput(0);
         const step0Status = getStepStatusSender(0);
 
-        step0Output(t('create.template_starting') + '\n');
+        step0Output(await t('create.template_starting') + '\n');
         step0Status('active');
 
         // Read template owner/repo from config (no longer parsed from URL)
@@ -675,11 +700,11 @@ class ProjectCreationHandler {
             }
             // END NEW
 
-            step0Output(t('create.template_ready') + '\n');
+            step0Output(await t('create.template_ready') + '\n');
             step0Status('success');
           }
         } catch (error) {
-          step0Output(t('create.template_error', { error: error.message }) + '\n');
+          step0Output(await t('create.template_error', { error: error.message }) + '\n');
           step0Status('failure');
           throw error;
         }
@@ -692,16 +717,16 @@ class ProjectCreationHandler {
 
         const pagesMatch = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/)?$/i);
         if (pagesMatch) {
-          step6Output(t('create.pages_starting') + '\n');
+          step6Output(await t('create.pages_starting') + '\n');
           step6Status('active');
 
           const [, pagesOwner, pagesRepo] = pagesMatch;
           const { githubForkService } = require('../services/githubForkService.js');
           const pagesResult = await githubForkService.enableGitHubPages(pagesOwner, pagesRepo);
           if (pagesResult.success) {
-            step6Output(t('create.pages_success') + '\n');
+            step6Output(await t('create.pages_success') + '\n');
           } else {
-            step6Output(t('create.pages_error', { error: pagesResult.error || 'Unknown' }) + '\n');
+            step6Output(await t('create.pages_error', { error: pagesResult.error || 'Unknown' }) + '\n');
           }
           step6Status('success');
         } else {
@@ -709,7 +734,7 @@ class ProjectCreationHandler {
         }
       }
 
-      const { repoDirPath, repoFolderName, shouldClone } = this.determineRepositoryTarget(
+      const { repoDirPath, repoFolderName, shouldClone } = await this.determineRepositoryTarget(
         projectPath,
         repoUrl,
         isExistingGitRepo,
@@ -935,11 +960,17 @@ class ProjectCreationHandler {
 
       // For empty folders that were cloned directly, repoFolderName might be folder name itself
       let repoDirPath;
-      if (repoFolderName && fs.existsSync(path.join(projectPath, repoFolderName))) {
+      let repoPathExists = false;
+      if (repoFolderName) {
+        try { await fsPromises.access(path.join(projectPath, repoFolderName)); repoPathExists = true; } catch { repoPathExists = false; }
+      }
+      if (repoFolderName && repoPathExists) {
         repoDirPath = path.join(projectPath, repoFolderName);
       } else {
         // Check if projectPath itself is repo (for empty folder case)
-        if (fs.existsSync(path.join(projectPath, '.git'))) {
+        let gitDirExists = false;
+        try { await fsPromises.access(path.join(projectPath, '.git')); gitDirExists = true; } catch { gitDirExists = false; }
+        if (gitDirExists) {
           repoDirPath = projectPath;
         } else {
           throw new Error('Repository folder not found');
@@ -1050,11 +1081,17 @@ class ProjectCreationHandler {
 
       // For empty folders that were cloned directly, repoFolderName might be folder name itself
       let repoDirPath;
-      if (repoFolderName && fs.existsSync(path.join(projectPath, repoFolderName))) {
+      let repoPathExists = false;
+      if (repoFolderName) {
+        try { await fsPromises.access(path.join(projectPath, repoFolderName)); repoPathExists = true; } catch { repoPathExists = false; }
+      }
+      if (repoFolderName && repoPathExists) {
         repoDirPath = path.join(projectPath, repoFolderName);
       } else {
         // Check if projectPath itself is repo (for empty folder case)
-        if (fs.existsSync(path.join(projectPath, '.git'))) {
+        let gitDirExists = false;
+        try { await fsPromises.access(path.join(projectPath, '.git')); gitDirExists = true; } catch { gitDirExists = false; }
+        if (gitDirExists) {
           repoDirPath = projectPath;
         } else {
           throw new Error('Repository folder not found');

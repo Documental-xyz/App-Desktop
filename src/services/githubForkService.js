@@ -205,7 +205,7 @@ class GithubForkService {
     }
 
     // d. Progress
-    if (onProgress) onProgress(t('create.fork_creating'));
+    if (onProgress) onProgress(await t('create.fork_creating'));
 
     const actualRepoName = forkName || repo;
     let forkFullName = null;
@@ -260,7 +260,7 @@ class GithubForkService {
         throw new Error('Fork polling timed out after ' + timeoutMs + 'ms');
       }
 
-      if (onProgress) onProgress(t('create.fork_waiting'));
+      if (onProgress) onProgress(await t('create.fork_waiting'));
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
@@ -316,7 +316,7 @@ class GithubForkService {
     }
 
     // d. Progress
-    if (onProgress) onProgress(t('create.template_creating'));
+    if (onProgress) onProgress(await t('create.template_creating'));
 
     // e. Build params (template_owner/template_repo are path params managed by Octokit)
     const params = {
@@ -340,18 +340,23 @@ class GithubForkService {
       const status = error && error.status;
       const message = (error && error.message) || '';
       if (status === 404) {
-        throw new Error(t('create.template_not_found'));
+        const msg = await t('create.template_not_found');
+        throw new Error(msg);
       }
       if (status === 422) {
-        throw new Error(t('create.template_name_taken'));
+        const msg = await t('create.template_name_taken');
+        throw new Error(msg);
       }
       if (status === 403) {
         if (/scope|private/i.test(message)) {
-          throw new Error(t('create.template_invalid_scope'));
+          const msg = await t('create.template_invalid_scope');
+          throw new Error(msg);
         }
-        throw new Error(t('create.template_no_permission'));
+        const msg = await t('create.template_no_permission');
+        throw new Error(msg);
       }
-      throw new Error(t('create.template_error', { error: message }));
+      const msg = await t('create.template_error', { error: message });
+      throw new Error(msg);
     }
 
     // g. Extract cloneUrl (prefer response, fallback to constructed URL)

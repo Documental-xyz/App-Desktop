@@ -34,7 +34,7 @@ const {
   },
 }));
 
-// ── Module._load monkey-patch for electron and isomorphic-git ──────────────
+// ── Module._load monkey-patch for electron, isomorphic-git and execa ─────
 // vi.mock() does NOT intercept native require() in CJS source files.
 // We patch Module._load to ensure mocks are returned for these dependencies.
 
@@ -53,6 +53,9 @@ Module._load = function(request, ...args) {
   }
   if (request === 'isomorphic-git/http/node') {
     return {};
+  }
+  if (request === 'execa') {
+    return { execa: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }) };
   }
   return originalLoad.call(this, request, ...args);
 };
@@ -217,7 +220,6 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
 
   it('retries getRemoteInfo until refs appear, then clones with explicit ref', async () => {
     const url = 'https://github.com/foo/bar.git';
-    const realSetTimeout = setTimeout;
 
     // First two probes return zero refs (simulating GitHub propagation lag),
     // third probe returns a populated remote.
@@ -230,21 +232,16 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
         refs: { heads: { main: 'abc123' } },
       });
 
-    // Speed up the probe backoff so the test doesn't wait 4 real seconds.
-    vi.useFakeTimers();
+    // Speed up the probe backoff by setting probe interval to 10ms.
+    // Cannot use vi.useFakeTimers() because gitClone now uses fsPromises
+    // (real I/O) in the pre-clone section, which does not resolve under
+    // fake timers. Instead we monkey-patch setTimeout to a short delay.
+    const origSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, _ms, ...args) => origSetTimeout(fn, 10, ...args);
     try {
-      const promise = handler.gitClone(url, tmpDir, sendOutput);
-      // Attach handlers synchronously to avoid unhandled rejection warnings.
-      const assertion = promise.then(
-        (v) => v,
-        (e) => { throw e; },
-      );
-      // Advance past the two 2000ms probe intervals.
-      await vi.advanceTimersByTimeAsync(2000);
-      await vi.advanceTimersByTimeAsync(2000);
-      await assertion;
+      await handler.gitClone(url, tmpDir, sendOutput);
     } finally {
-      vi.useRealTimers();
+      global.setTimeout = origSetTimeout;
     }
 
     expect(mockGitGetRemoteInfo).toHaveBeenCalledTimes(3);
@@ -265,19 +262,23 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     realFs.rmSync(realPath.join(tmpDir, 'package.json'), { force: true });
     mockGitListBranches.mockResolvedValue([]);
 
-    // Shrink the probe timeout via fake timers so we don't wait 30s.
-    vi.useFakeTimers();
+    // Cannot use vi.useFakeTimers() because gitClone now uses fsPromises
+    // (real I/O) in the pre-clone section, which does not resolve under
+    // fake timers. Instead monkey-patch setTimeout + Date.now so the probe
+    // loop fires quickly and the elapsed check quickly exceeds 30s.
+    const origSetTimeout = global.setTimeout;
+    global.setTimeout = (fn, _ms, ...args) => origSetTimeout(fn, 5, ...args);
+    const realStart = Date.now();
+    const origDateNow = Date.now;
+    let dateOffset = 0;
+    Date.now = () => realStart + (dateOffset += 2000);
     try {
-      const promise = handler.gitClone(url, tmpDir, sendOutput);
-      // Attach rejection handler synchronously to avoid unhandled rejection.
-      const assertion = promise.catch((err) => err);
-      // Advance well beyond the 30s probe timeout.
-      await vi.advanceTimersByTimeAsync(31000);
-      const err = await assertion;
+      const err = await handler.gitClone(url, tmpDir, sendOutput).catch((e) => e);
       expect(err).toBeInstanceOf(Error);
       expect(String(err.message)).toMatch(/empty clone|diretório está vazio/i);
     } finally {
-      vi.useRealTimers();
+      global.setTimeout = origSetTimeout;
+      Date.now = origDateNow;
     }
 
     // Multiple probes happened before giving up...

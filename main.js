@@ -72,7 +72,7 @@ async function initializeServices() {
       path: require('path'),
       getNativeTheme: () => require('electron').nativeTheme
     });
-    themeService.initialize(app.getAppPath());
+    await themeService.initialize(app.getAppPath());
     try {
       require('electron').nativeTheme.themeSource = 'system';
     } catch (_e) { }
