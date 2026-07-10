@@ -547,7 +547,7 @@ async detectNVM() {
       const whichCommand = await this.platformService.adapter.getShellCommand('which');
       
       // Check if NVM command exists
-      trackExec(exec(`${whichCommand} nvm`, (error, stdout, stderr) => {
+      trackExec(exec(`${whichCommand} nvm`, async (error, stdout, stderr) => {
         if (!error && stdout.trim()) {
           resolve({
             exists: true,
