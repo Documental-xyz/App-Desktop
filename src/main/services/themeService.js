@@ -72,13 +72,15 @@ class ThemeService {
    * @param {Object} [deps.fs] - fs module (injected for testing)
    * @param {Object} [deps.path] - path module (injected for testing)
    * @param {Function} [deps.getNativeTheme] - nativeTheme resolver (injected for testing)
+   * @param {Object} [deps.databaseManager] - Database manager for persisting theme mode
    */
-  constructor({ logger, fs: fsImpl, path: pathImpl, getNativeTheme: nativeThemeFn }) {
+  constructor({ logger, fs: fsImpl, path: pathImpl, getNativeTheme: nativeThemeFn, databaseManager }) {
     this.logger = logger;
     this._fs = fsImpl || fs;
     this._fsPromises = (fsImpl || fs).promises;
     this._path = pathImpl || path;
     this._getNativeTheme = nativeThemeFn || getNativeTheme;
+    this._db = databaseManager || null;
     this.themeName = null;
     this.themeMode = null;
     this.themeDir = null;
@@ -107,7 +109,13 @@ class ThemeService {
     this.themeDir = validated.themeDir;
 
     this.manifest = await this._loadManifest(this.themeDir);
-    this.themeMode = await this._resolveMode(this.manifest);
+
+    // Resolve mode priority: env → runtime-env.json → database (highest)
+    this._resolveThemeModeEnv();  // sync, sets _rawMode from env/file
+    await this._loadDbThemeMode(); // async, overrides from database if present
+
+    // Resolve to actual themeMode using the final _rawMode
+    this.themeMode = await this._resolveMode(this.manifest, this._rawMode);
     this.cssFiles = await this._buildCssChain(this.themeDir, this.manifest, appRoot);
     await this._resolveAssetPaths(this.themeDir);
 
@@ -341,6 +349,46 @@ class ThemeService {
     return this._rawMode || 'auto';
   }
 
+  /**
+   * Load persisted theme_mode from the database, overriding _rawMode if found.
+   * Database has highest priority (env → runtime-env.json → DB).
+   * @returns {Promise<void>}
+   */
+  async _loadDbThemeMode() {
+    if (!this._db) return;
+    try {
+      const dbMode = await this._db.getSetting('theme_mode');
+      if (dbMode) {
+        const trimmed = dbMode.trim().toLowerCase();
+        if (['auto', 'dark', 'light'].includes(trimmed)) {
+          this._rawMode = trimmed;
+          this.logger.info(`ThemeService: loaded theme_mode="${trimmed}" from database`);
+        }
+      }
+    } catch (_err) {
+      this.logger.warn(`ThemeService: failed to load theme_mode from database: ${_err.message}`);
+    }
+  }
+
+  /**
+   * Persist theme_mode to the database and update in-memory state.
+   * Valid modes: 'auto', 'dark', 'light'.
+   * @param {string} mode - Theme mode to persist
+   * @returns {Promise<void>}
+   */
+  async saveThemeMode(mode) {
+    const validModes = ['auto', 'dark', 'light'];
+    if (!validModes.includes(mode)) return;
+    this._rawMode = mode;
+    if (!this._db) return;
+    try {
+      await this._db.setSetting('theme_mode', mode);
+      this.logger.info(`ThemeService: persisted theme_mode="${mode}" to database`);
+    } catch (_err) {
+      this.logger.warn(`ThemeService: failed to persist theme_mode="${mode}": ${_err.message}`);
+    }
+  }
+
   async _resolveThemeName(appRoot) {
     const envTheme = (process.env.THEME || '').trim();
     if (envTheme) {
@@ -392,11 +440,11 @@ class ThemeService {
     }
   }
 
-  async _resolveMode(manifest) {
+  async _resolveMode(manifest, explicitMode) {
     const availableModes = manifest.mode || ['dark', 'light'];
-    const requestedMode = this._resolveThemeModeEnv();
+    const mode = explicitMode || this._resolveThemeModeEnv();
 
-    if (requestedMode === 'auto') {
+    if (mode === 'auto') {
       const osPrefersDark = await this._detectOsDarkPreference();
       const resolved = osPrefersDark ? 'dark' : 'light';
       if (availableModes.includes(resolved)) {
@@ -408,12 +456,12 @@ class ThemeService {
       return availableModes[0];
     }
 
-    if (availableModes.includes(requestedMode)) {
-      return requestedMode;
+    if (availableModes.includes(mode)) {
+      return mode;
     }
 
     this.logger.warn(
-      `ThemeService: requested mode "${requestedMode}" not available in [${availableModes}], using "${availableModes[0]}"`
+      `ThemeService: requested mode "${mode}" not available in [${availableModes}], using "${availableModes[0]}"`
     );
     return availableModes[0];
   }

@@ -1174,14 +1174,15 @@ async verifyNodeInstallation() {
 
     const { nativeTheme } = require('electron');
     this._lastBroadcastedMode = null;
-    this._themeChangeHandler = async () => {
+        this._themeChangeHandler = async () => {
       const osDark = await this.themeService?._detectOsDarkPreference?.() ?? (nativeTheme.shouldUseDarkColors ?? false);
       const resolvedMode = osDark ? 'dark' : 'light';
       if (resolvedMode !== this._lastBroadcastedMode) {
         this._lastBroadcastedMode = resolvedMode;
+        const rawMode = this.themeService?.getRawMode?.() || 'auto';
         BrowserWindow.getAllWindows().forEach(win => {
           if (!win.isDestroyed()) {
-            win.webContents.send('theme-changed', { resolvedMode });
+            win.webContents.send('theme-changed', { resolvedMode, rawMode });
           }
         });
         this.logger.info(`🎨 OS theme changed → broadcasted resolvedMode=${resolvedMode}`);
@@ -1201,28 +1202,9 @@ async verifyNodeInstallation() {
           return { success: false, error: `Invalid mode: ${mode}` };
         }
 
-        let runtimeEnvPath;
-        if (app.isPackaged) {
-          runtimeEnvPath = path.join(app.getPath('userData'), 'runtime-env.json');
-        } else {
-          runtimeEnvPath = path.join(process.cwd(), 'resources', 'config', 'runtime-env.json');
-        }
-
-        let config = {};
-        try {
-          config = JSON.parse(await fsPromises.readFile(runtimeEnvPath, 'utf8'));
-        } catch (e) {}
-
-        config.THEME_MODE = mode;
-        if (!config.THEME && this.themeService && this.themeService.themeName) {
-          config.THEME = this.themeService.themeName;
-        }
-        config.generatedAt = new Date().toISOString();
-        await fsPromises.writeFile(runtimeEnvPath, JSON.stringify(config, null, 2), 'utf8');
-
-        // Sync in-memory _rawMode so getRawMode() returns the updated value on page reload
+        // Persist to database (replaces old runtime-env.json approach)
         if (this.themeService) {
-          this.themeService._rawMode = mode;
+          await this.themeService.saveThemeMode(mode);
         }
 
         let resolvedMode = mode;

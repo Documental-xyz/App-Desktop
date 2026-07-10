@@ -225,6 +225,30 @@ class DatabaseManager {
       });
     });
   }
+
+  /**
+   * Get a setting value from the settings table by key.
+   * @param {string} key - Setting key
+   * @returns {Promise<string|null>} Setting value or null if not found
+   */
+  async getSetting(key) {
+    const row = await this.get('SELECT value FROM settings WHERE key = ?', [key]);
+    return row ? row.value : null;
+  }
+
+  /**
+   * Set a setting value in the settings table (insert or update).
+   * @param {string} key - Setting key
+   * @param {string} value - Setting value
+   * @returns {Promise<void>}
+   */
+  async setSetting(key, value) {
+    await this.run(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,
+      [key, value, value]
+    );
+  }
 }
 
 module.exports = {

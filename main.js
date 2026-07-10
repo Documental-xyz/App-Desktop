@@ -71,7 +71,8 @@ async function initializeServices() {
       logger: getLogger('ThemeService'),
       fs: require('fs'),
       path: require('path'),
-      getNativeTheme: () => require('electron').nativeTheme
+      getNativeTheme: () => require('electron').nativeTheme,
+      databaseManager
     });
     await themeService.initialize(app.getAppPath());
     try {
