@@ -36,4 +36,6 @@ documental-processes.json
 
 # Theme build artifact
 renderer/assets/css/theme-override.css
-EOF
+
+# Test artifacts
+test-results/
