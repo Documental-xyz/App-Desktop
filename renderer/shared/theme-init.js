@@ -61,8 +61,10 @@
 
       applyThemeClass(data.resolvedMode);
 
+      var modeToSend = data.rawMode || 'auto';
+
       if (window.electronAPI.setThemeMode) {
-        window.electronAPI.setThemeMode('auto').then(function (result) {
+        window.electronAPI.setThemeMode(modeToSend).then(function (result) {
           if (result && result.css) {
             injectCss(result.css);
           }

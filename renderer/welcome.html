@@ -524,8 +524,8 @@
                     this.initTheme();
 
                     if (window.electronAPI && window.electronAPI.onThemeChange) {
-                        window.electronAPI.onThemeChange(({ resolvedMode }) => {
-                            if (this.selectedTheme === 'auto' && resolvedMode) {
+                        window.electronAPI.onThemeChange(({ resolvedMode, rawMode }) => {
+                            if (rawMode === 'auto' && resolvedMode) {
                                 this.applyThemeClass(resolvedMode);
                                 if (window.electronAPI && window.electronAPI.setThemeMode) {
                                     window.electronAPI.setThemeMode('auto').then(result => {
