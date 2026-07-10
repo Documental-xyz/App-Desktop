@@ -60,6 +60,31 @@
 .theme-btn .material-symbols-outlined {
     font-size: 1rem;
 }
+/* Branding (top-left) */
+.branding-fixed {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-surface-dark);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.branding-fixed img {
+    height: 1.75rem;
+    width: 1.75rem;
+    border-radius: 6px;
+}
+.branding-fixed span {
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--color-text-dark);
+}
 </style>
 
 <!-- Shared components -->
@@ -256,6 +281,11 @@ document.addEventListener('DOMContentLoaded', function() {
 <script src="./assets/js/alpine.min.js" defer></script>
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
+<!-- Branding -->
+<div class="branding-fixed">
+    <img src="./assets/img/logo-documental.png" alt="Documental" />
+    <span>Documental</span>
+</div>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker">
     <div class="theme-picker-group">

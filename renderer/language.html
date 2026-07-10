@@ -173,7 +173,7 @@
             background-size: 20px 20px;
         }
 
-        /* Logo icon */
+        /* Logo icon (legacy SVG) */
         .logo-icon {
             display: inline-flex;
             align-items: center;
@@ -189,6 +189,21 @@
             width: 28px;
             height: 28px;
             color: white;
+        }
+
+        /* Hero logo (PNG) */
+        .app-logo-hero {
+            width: 80px;
+            height: 80px;
+            border-radius: 16px;
+            border: 2px solid var(--color-border-subtle);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            background: var(--color-surface-card);
+        }
+
+        .dark .app-logo-hero {
+            border-color: var(--color-border-subtle);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
         }
 
         /* Theme picker (top-right) */
@@ -266,12 +281,8 @@
         <!-- Content -->
         <div class="relative z-10 flex flex-col items-center px-6">
             <!-- Logo -->
-            <div class="anim-logo mb-6">
-                <div class="logo-icon">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
-                    </svg>
-                </div>
+            <div class="anim-logo mb-8">
+                <img class="app-logo-hero" src="./assets/img/logo-documental.png" alt="Documental" />
             </div>
 
             <!-- App title -->
