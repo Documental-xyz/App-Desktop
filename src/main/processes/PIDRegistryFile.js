@@ -236,6 +236,11 @@ class PIDRegistryFile {
         continue;
       }
       if (action === 'reap') {
+        // Fast sync probe: PID may have died between verdict loop and here.
+        try { process.kill(entry.pid, 0); } catch {
+          // ESRCH — already dead, drop silently.
+          continue;
+        }
         try {
           await killPidTree(entry.pid);
           reaped.push(entry.pid);

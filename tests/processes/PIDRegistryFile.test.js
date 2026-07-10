@@ -49,10 +49,14 @@ describe('PIDRegistryFile', () => {
     killPidTreeSpy = vi
       .spyOn(killPidTreeModule, 'killPidTree')
       .mockResolvedValue(undefined);
+    // Mock process.kill so the sync probe in reapOrphans succeeds for
+    // test PIDs (they don't exist on this machine — no ESRCH from probe).
+    vi.spyOn(process, 'kill').mockReturnValue(true);
   });
 
   afterEach(async () => {
     killPidTreeSpy.mockRestore();
+    vi.mocked(process.kill).mockRestore();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 

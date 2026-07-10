@@ -62,22 +62,8 @@ class DocumentalTracker {
    * @returns {Object} Loaded processes
    */
   loadProcesses() {
-    if (!this.config.enablePersistence) {
-      return {};
-    }
-
-    try {
-      if (fs.existsSync(this.config.processesFile)) {
-        const data = fs.readFileSync(this.config.processesFile, 'utf8');
-        const processes = JSON.parse(data);
-        this.activeProcesses = processes;
-        console.log('📂 Loaded Documental processes from file:', Object.keys(processes));
-        return processes;
-      }
-    } catch (error) {
-      console.error('Error loading Documental processes:', error);
-    }
-    
+    // DEPRECATED: replaced by PIDRegistryFile in perf-zombie-refactor.
+    // No-op — stale PIDs from old sessions are handled by reapOrphans().
     this.activeProcesses = {};
     return {};
   }
