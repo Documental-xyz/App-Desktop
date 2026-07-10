@@ -62,23 +62,26 @@
             position: fixed;
             top: 1rem;
             left: 1rem;
-            z-index: 50;
+            z-index: 100;
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.375rem 0.75rem;
+            padding: 0.5rem 0.75rem;
             border-radius: 0.5rem;
-            background: var(--color-surface-dark, #1e293b);
-            border: 1px solid var(--color-border-subtle, #334155);
+            background: var(--color-surface-card);
+            border: 1px solid var(--color-border-subtle);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
         }
         .branding-fixed img {
             height: 1.75rem;
             width: 1.75rem;
+            border-radius: 6px;
+            display: block;
         }
         .branding-fixed span {
             font-size: 0.875rem;
             font-weight: 700;
-            color: var(--color-text-dark, #f1f5f9);
+            color: var(--color-text-dark);
         }
 </style>
 <script src="./i18n.js"></script>

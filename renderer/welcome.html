@@ -72,17 +72,24 @@
 
         /* Hero logo (PNG) - matches language.html pattern */
         .app-logo-hero {
-            width: 80px;
-            height: 80px;
-            border-radius: 16px;
-            border: 2px solid var(--color-border-subtle);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            width: 120px;
+            height: 120px;
+            border-radius: 20px;
+            border: 2px solid var(--color-border-default);
+            object-fit: cover;
+            box-shadow: 0 4px 24px rgba(from var(--color-primary) r g b / 0.2);
             background: var(--color-surface-card);
+            display: block;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .app-logo-hero:hover {
+            transform: scale(1.03);
+            box-shadow: 0 6px 32px rgba(from var(--color-primary) r g b / 0.3);
         }
 
         .dark .app-logo-hero {
-            border-color: var(--color-border-subtle);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+            border-color: var(--color-border-default);
+            box-shadow: 0 4px 24px rgba(from var(--color-primary) r g b / 0.15);
         }
     </style>
 </head>
@@ -125,7 +132,7 @@
                 <!-- Step 1: Welcome -->
                 <div x-show="currentStep === 1" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in relative">
                     <div class="mb-12">
-                        <div class="anim-logo mb-6">
+                        <div class="anim-logo mb-6 flex justify-center">
                             <img class="app-logo-hero" src="./assets/img/logo-documental.png" alt="Documental" />
                         </div>
                         <h1 class="text-5xl font-black text-text-dark mb-4" x-text="$store.i18n.t('welcome.title')"></h1>

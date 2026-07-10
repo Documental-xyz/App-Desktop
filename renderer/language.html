@@ -193,17 +193,24 @@
 
         /* Hero logo (PNG) */
         .app-logo-hero {
-            width: 80px;
-            height: 80px;
-            border-radius: 16px;
-            border: 2px solid var(--color-border-subtle);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            width: 120px;
+            height: 120px;
+            border-radius: 20px;
+            border: 2px solid var(--color-border-default);
+            object-fit: cover;
+            box-shadow: 0 4px 24px rgba(from var(--color-primary) r g b / 0.2);
             background: var(--color-surface-card);
+            display: block;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .app-logo-hero:hover {
+            transform: scale(1.03);
+            box-shadow: 0 6px 32px rgba(from var(--color-primary) r g b / 0.3);
         }
 
         .dark .app-logo-hero {
-            border-color: var(--color-border-subtle);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+            border-color: var(--color-border-default);
+            box-shadow: 0 4px 24px rgba(from var(--color-primary) r g b / 0.15);
         }
 
         /* Theme picker (top-right) */
@@ -281,7 +288,7 @@
         <!-- Content -->
         <div class="relative z-10 flex flex-col items-center px-6">
             <!-- Logo -->
-            <div class="anim-logo mb-8">
+            <div class="anim-logo mb-8 flex justify-center">
                 <img class="app-logo-hero" src="./assets/img/logo-documental.png" alt="Documental" />
             </div>
 
