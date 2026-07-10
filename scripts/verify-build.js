@@ -67,7 +67,7 @@ class BuildVerifier {
   }
 
   checkExecutable(buildPath) {
-    const executableName = process.platform === 'win32' ? 'app-git-electron.exe' : 'app-git-electron';
+    const executableName = process.platform === 'win32' ? 'Documental.exe' : 'documental';
     const executablePath = path.join(buildPath, executableName);
     
     return {
