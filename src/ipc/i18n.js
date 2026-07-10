@@ -93,12 +93,19 @@ class I18nHandlers {
       return await getTranslations(resolvedLocale, this.localesPath);
     });
 
-    this.ipcMain.handle('i18n:get-translations-sync', async (_event, locale) => {
+    // Sync variant: sendSync requires event.returnValue (must be synchronous).
+    this.ipcMain.on('i18n:get-translations-sync', (event, locale) => {
       try {
-        return await readYamlTranslations(locale, this.localesPath);
+        const filePath = path.join(this.localesPath, `${locale}.yaml`);
+        if (fs.existsSync(filePath)) {
+          const content = fs.readFileSync(filePath, 'utf8');
+          event.returnValue = yaml.load(content);
+        } else {
+          event.returnValue = null;
+        }
       } catch (error) {
         this.logger.error('Error loading translations sync:', error);
-        return null;
+        event.returnValue = null;
       }
     });
 
