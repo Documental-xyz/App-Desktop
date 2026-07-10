@@ -134,10 +134,12 @@
             </div>
         </div>
 
-        <!-- Branding (top-left, hidden on Step 1) -->
-        <div x-show="currentStep !== 1" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100" style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-            <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
-            <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
+        <!-- Branding (hidden on Step 1) -->
+        <div x-show="currentStep !== 1" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100">
+            <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
+                <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
+                <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
+            </div>
         </div>
 
         <!-- Main Content -->
