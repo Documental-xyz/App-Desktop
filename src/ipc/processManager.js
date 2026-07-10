@@ -68,17 +68,10 @@ class ProcessManager {
    * @returns {Object} Processes object
    */
   async loadDocumentalProcesses() {
-    try {
-      const data = await fsp.readFile(this.processesFile, 'utf8');
-      const processes = JSON.parse(data);
-      this.logger.info('Loaded Documental processes from file:', Object.keys(processes));
-      activeDocumentalProcesses = processes;
-      return processes;
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        this.logger.error('Error loading Documental processes:', error);
-      }
-    }
+    // DEPRECATED: PID persistence replaced by PIDRegistryFile in
+    // perf-zombie-refactor. No-op — stale PIDs accumulate in the old
+    // file and are never acted upon (killProcessTree returns early for
+    // plain objects that lack execa's .kill()).
     return {};
   }
 
