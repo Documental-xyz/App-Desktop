@@ -12,6 +12,15 @@
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="script.js" defer></script>
 <style>
+        /* Subtle animated gradient background */
+        .bg-scene {
+            background:
+                radial-gradient(ellipse 80% 60% at 50% 45%, rgba(from var(--color-primary) r g b / 0.06) 0%, transparent 70%),
+                radial-gradient(ellipse 50% 40% at 20% 80%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+                radial-gradient(ellipse 50% 40% at 80% 20%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+                var(--color-background-dark);
+        }
+
         body {
             -webkit-user-select: none;
             -ms-user-select: none;
@@ -121,7 +130,7 @@
     </style>
 
 </head>
-<body class="bg-background-dark text-text-dark antialiased" x-data="{
+<body class="bg-scene bg-background-dark text-text-dark antialiased" x-data="{
         settings: {
             theme: 'dark',
             autoUpdate: true,

@@ -9,6 +9,15 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
     <style>
+        /* Subtle animated gradient background */
+        .bg-scene {
+            background:
+                radial-gradient(ellipse 80% 60% at 50% 45%, rgba(from var(--color-primary) r g b / 0.06) 0%, transparent 70%),
+                radial-gradient(ellipse 50% 40% at 20% 80%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+                radial-gradient(ellipse 50% 40% at 80% 20%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+                var(--color-background-dark);
+        }
+
         html, body {
             height: 100%;
             margin: 0;

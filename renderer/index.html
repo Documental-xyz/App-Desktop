@@ -8,6 +8,15 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <style>
+  /* Subtle animated gradient background */
+  .bg-scene {
+      background:
+          radial-gradient(ellipse 80% 60% at 50% 45%, rgba(from var(--color-primary) r g b / 0.06) 0%, transparent 70%),
+          radial-gradient(ellipse 50% 40% at 20% 80%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+          radial-gradient(ellipse 50% 40% at 80% 20%, rgba(from var(--color-primary) r g b / 0.03) 0%, transparent 60%),
+          var(--color-background-dark);
+  }
+
   /* Theme picker (top-right) */
   .theme-picker {
       position: fixed;
@@ -53,32 +62,7 @@
   }
   [x-cloak] { display: none !important; }
 
-  /* Fixed top-left branding */
-  .branding-fixed {
-      position: fixed;
-      top: 1rem;
-      left: 1rem;
-      z-index: 100;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 0.75rem;
-      border-radius: 0.5rem;
-      background: var(--color-surface-card);
-      border: 1px solid var(--color-border-subtle);
-      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-  }
-  .branding-fixed img {
-      height: 1.75rem;
-      width: 1.75rem;
-      border-radius: 6px;
-      display: block;
-  }
-  .branding-fixed span {
-      font-size: 0.875rem;
-      font-weight: 700;
-      color: var(--color-text-dark);
-  }
+
 </style>
 
 <script src="./i18n.js"></script>
@@ -87,11 +71,11 @@
 <script src="./shared/theme-init.js" defer></script>
 <script src="script.js" defer></script>
 </head>
-<body class="bg-background-dark text-text-dark antialiased">
+<body class="bg-scene bg-background-dark text-text-dark antialiased">
 <!-- Fixed top-left branding -->
-<div class="branding-fixed">
-    <img src="./assets/img/logo-documental.png" alt="Documental" />
-    <span>Documental</span>
+<div style="position:fixed;top:16px;left:16px;z-index:9999;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:#1f2937;border:1px solid #374151;box-shadow:0 2px 8px rgba(0,0,0,0.3)">
+    <img src="./assets/img/logo-documental.png" alt="Documental" style="height:28px;width:28px;border-radius:6px;display:block" />
+    <span style="font-size:14px;font-weight:700;color:#f9fafb">Documental</span>
 </div>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker">
