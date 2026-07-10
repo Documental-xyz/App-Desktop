@@ -464,7 +464,7 @@ main:
   help_understood: "Understood"
   # About modal
   about_title: "Documental Desktop"
-  about_version: "Version 1.0.0 (Electron)"
+  about_version: "Documental 1.0.0"
   about_copyright: "© 2023 Documental. All rights reserved."
   about_close: "Close"
   # Exit modal
