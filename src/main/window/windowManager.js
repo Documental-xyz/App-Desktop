@@ -75,6 +75,7 @@ class WindowManager {
       height: windowConfig.height || this.config.windowConfig.height,
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
+      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
       resizable: windowConfig.resizable !== false,
       maximizable: windowConfig.maximizable !== false,
       minimizable: windowConfig.minimizable !== false,
@@ -118,6 +119,7 @@ class WindowManager {
       height: this.config.windowConfig.height,
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
+      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
       webPreferences: this.config.windowConfig.webPreferences
     });
 
@@ -222,6 +224,7 @@ class WindowManager {
    */
   createCustomWindow(windowConfig = {}) {
     const config = {
+      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
       ...this.config.windowConfig,
       ...windowConfig,
       webPreferences: {

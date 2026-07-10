@@ -175,6 +175,7 @@ class SystemHandlers {
         height: bounds.height,
         show: false,
         backgroundColor: WINDOW_BG_COLOR,
+        icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
         webPreferences: {
           preload: path.resolve(__dirname, '..', '..', 'preload.js'),
           contextIsolation: true,
@@ -909,6 +910,7 @@ async verifyNodeInstallation() {
           y,
           show: false,
           backgroundColor: WINDOW_BG_COLOR,
+          icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,

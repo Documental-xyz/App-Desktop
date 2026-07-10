@@ -12,6 +12,10 @@ require('dotenv').config();
 // Core Electron imports
 const { app, BrowserWindow } = require('electron');
 
+// Set app name BEFORE any app.getPath('userData') call so the config
+// directory resolves to ~/.config/Documental instead of ~/.config/Electron
+app.setName('Documental');
+
 // Import modular components
 const { getLogger } = require('./src/main/logging/logger.js');
 const { appTracker } = require('./src/main/processes/documentalTracker.js');

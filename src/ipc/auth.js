@@ -6,6 +6,7 @@
 
 'use strict';
 
+const path = require('path');
 const { ipcMain, clipboard } = require('electron');
 const { secureTokenService } = require('../services/secureTokenService.js');
 const { GITHUB_CONFIG } = require('../config/github-config.js');
@@ -90,6 +91,7 @@ class AuthHandlers {
         width: 650,
         height: 550,
         show: false,
+        icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
         parent: BrowserWindow.getFocusedWindow(),
         modal: true,
         resizable: false,
