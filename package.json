@@ -1,9 +1,9 @@
 {
-  "name": "app-git-electron",
+  "name": "documental",
   "version": "1.0.0",
   "description": "Ambiente de documentação centralizado com integração Git",
   "main": "main.js",
-  "homepage": "https://github.com/documental/app-git-electron",
+  "homepage": "https://github.com/Documental-xyz/Desktop",
   "scripts": {
     "start": "node scripts/generate-theme-override.js && electron --no-sandbox main.js",
     "test": "vitest",
