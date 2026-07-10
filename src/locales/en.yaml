@@ -213,8 +213,9 @@ config:
 
 index:
   page_title: "Documental - Select Workspace"
+  heading: "Work Environments"
   subtitle: "Your centralized documentation environment."
-  create_new: "Create New Workspace"
+  create_new: "Create New"
   create_new_desc: "Start from scratch with a new Documental workspace."
   open_folder: "Open Folder"
   open_folder_desc: "Open an existing workspace from a folder on your computer."

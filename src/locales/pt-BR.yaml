@@ -221,8 +221,9 @@ config:
 
 index:
   page_title: "Documental - Selecionar Ambiente"
+  heading: "Ambientes de Trabalho"
   subtitle: ""
-  create_new: "Criar Novo Ambiente"
+  create_new: "Criar Novo"
   create_new_desc: "Comece do zero com um novo ambiente de trabalho Documental."
   open_folder: "Abrir Pasta"
   open_folder_desc: "Abra um ambiente existente a partir de uma pasta no seu computador."
