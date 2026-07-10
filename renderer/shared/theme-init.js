@@ -30,26 +30,9 @@
       if (!r || !r.success) return;
 
       var effectiveMode = r.resolvedMode || r.mode;
-
-      if (r.mode === 'auto' && window.electronAPI.getOsDarkPreference) {
-        try {
-          var pref = await window.electronAPI.getOsDarkPreference();
-          if (pref && pref.success) {
-            effectiveMode = pref.prefersDark ? 'dark' : 'light';
-          }
-        } catch (_e) {}
-      }
-
       applyThemeClass(effectiveMode);
-
-      if (window.electronAPI.setThemeMode) {
-        try {
-          var result = await window.electronAPI.setThemeMode(r.mode);
-          if (result && result.css) {
-            injectCss(result.css);
-          }
-        } catch (_e) {}
-      }
+      // CSS injection is handled by main process via regenerateOverrideCss at startup.
+      // No IPC round-trip needed here anymore.
     } catch (_e) {}
   }
 

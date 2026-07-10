@@ -97,6 +97,7 @@
         .theme-btn .material-symbols-outlined {
             font-size: 1rem;
         }
+        [x-cloak] { display: none !important; }
     </style>
 <script src="./i18n.js"></script>
 <script src="./shared/i18n-apply.js"></script>
@@ -497,7 +498,7 @@
             sessionStorage.removeItem(`projectCreationState-${this.projectId}`);
             await this.startCreationProcess();
     }
-}">
+}" x-cloak>
 <!-- Header -->
 <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
   <div class="max-w-4xl mx-auto mt-auto w-full">

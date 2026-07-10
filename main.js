@@ -80,7 +80,9 @@ async function initializeServices() {
     });
     await themeService.initialize(app.getAppPath());
     try {
-      require('electron').nativeTheme.themeSource = 'system';
+      const rawMode = themeService.getRawMode();
+      const { nativeTheme } = require('electron');
+      nativeTheme.themeSource = rawMode === 'dark' ? 'dark' : rawMode === 'light' ? 'light' : 'system';
     } catch (_e) { }
     logger.info('✅ Theme service initialized');
 

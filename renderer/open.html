@@ -93,6 +93,7 @@
         .theme-btn .material-symbols-outlined {
             font-size: 1rem;
         }
+        [x-cloak] { display: none !important; }
     </style>
 <script src="./i18n.js"></script>
 <script src="./shared/layout.js"></script>
@@ -401,8 +402,8 @@
             
             sessionStorage.removeItem(`projectOpenState-${this.projectId}`);
             await this.startOpenProcess();
-        }
-    }">
+    }
+}" x-cloak>
 <main class="flex-1 overflow-hidden flex flex-col">
 <div class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
 <div class="w-full max-w-2xl">

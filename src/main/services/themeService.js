@@ -119,6 +119,11 @@ class ThemeService {
     this.cssFiles = await this._buildCssChain(this.themeDir, this.manifest, appRoot);
     await this._resolveAssetPaths(this.themeDir);
 
+    // Overwrite static theme-override.css with user's persisted theme
+    // so <link> loads correct colors on first paint (zero flash).
+    // Must run AFTER cssFiles is built so getResolvedCssForMode() can read theme CSS.
+    await this.regenerateOverrideCss(this.themeMode);
+
     this.logger.info(
       `ThemeService: initialized — theme="${this.themeName}", mode="${this.themeMode}", ` +
       `cssFiles=${this.cssFiles.length}, logo=${!!this.logoPath}, icons=${!!this.iconCssPath}`
@@ -208,6 +213,27 @@ class ThemeService {
     combined = baseDefaults + '\n' + combined;
 
     return this._resolveVarRefs(combined, primitives);
+  }
+
+  /**
+   * Regenerate the static theme-override.css file on disk with the user's
+   * persisted theme mode. This ensures the <link> stylesheet loads correct
+   * colors on first paint — zero flash, no JavaScript injection needed.
+   * @param {string} mode - Resolved mode ('dark' or 'light')
+   * @returns {Promise<void>}
+   */
+  async regenerateOverrideCss(mode) {
+    try {
+      const css = await this.getResolvedCssForMode(mode);
+      const header = `/* Auto-generated at runtime for: ${this.themeName}/${mode} */\n`;
+      const output = header + css + '\n';
+
+      const overridePath = this._path.join(this._appRoot, 'renderer', 'assets', 'css', 'theme-override.css');
+      await this._fsPromises.writeFile(overridePath, output, 'utf8');
+      this.logger.info(`ThemeService: regenerated theme-override.css for mode "${mode}"`);
+    } catch (err) {
+      this.logger.warn(`ThemeService: failed to regenerate theme-override.css: ${err.message}`);
+    }
   }
 
   /**
@@ -384,6 +410,14 @@ class ThemeService {
     try {
       await this._db.setSetting('theme_mode', mode);
       this.logger.info(`ThemeService: persisted theme_mode="${mode}" to database`);
+      const availableModes = this.manifest?.mode || ['dark', 'light'];
+      let resolvedMode = mode;
+      if (mode === 'auto') {
+        const osPrefersDark = await this._detectOsDarkPreference();
+        resolvedMode = osPrefersDark ? 'dark' : 'light';
+      }
+      if (!availableModes.includes(resolvedMode)) resolvedMode = availableModes[0];
+      await this.regenerateOverrideCss(resolvedMode);
     } catch (_err) {
       this.logger.warn(`ThemeService: failed to persist theme_mode="${mode}": ${_err.message}`);
     }
