@@ -560,7 +560,7 @@
 </div>
 </template>
 </div>
-<p class="text-xs text-muted-dark text-center mt-3" x-text="steps.filter(s => s.status === 'success').length + ' / ' + steps.filter(s => (s.id !== 0 || useTemplate) && (s.id !== 6 || enablePages)).length"></p>
+<p class="text-xs text-muted-dark text-center mt-3" x-text="steps.filter(s => ((s.id !== 0 || useTemplate) && (s.id !== 6 || enablePages)) && s.status === 'success').length + ' / ' + steps.filter(s => (s.id !== 0 || useTemplate) && (s.id !== 6 || enablePages)).length"></p>
 </div>
 </div>
 </main>
