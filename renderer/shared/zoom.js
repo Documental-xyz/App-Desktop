@@ -3,10 +3,9 @@
 /**
  * @fileoverview Alpine.js zoom controls component with HTML generator.
  * Provides zoom in/out/reset functionality (50-200%, 25% steps)
- * persisted to sessionStorage. Uses CSS transform: scale() on a
- * content wrapper to prevent scrollbar/displacement from body.zoom.
- * Falls back to document.body.style.zoom when no content wrapper found.
- * Also exposes createZoomControlsHTML() for injecting zoom UI into any page.
+ * persisted to sessionStorage. Uses document.body.style.zoom (native
+ * Chromium zoom) with overflow:hidden to prevent scrollbars. This
+ * preserves layout including fixed footers.
  * @author Documental Team
  * @since 1.0.0
  */
@@ -53,24 +52,14 @@
           this.applyZoom();
         },
 
-        getZoomTarget: function () {
-          return document.getElementById('zoom-content')
-            || document.querySelector('.flex.flex-col.h-screen')
-            || document.querySelector('main')
-            || document.body;
-        },
-
         applyZoom: function () {
           var scale = this.zoomLevel / 100;
-          var target = this.getZoomTarget();
-          if (target && target !== document.body) {
-            target.style.transform = 'scale(' + scale + ')';
-            target.style.transformOrigin = 'top center';
-            target.style.width = (100 / scale * 100) + '%';
-            target.style.maxWidth = 'none';
-          } else {
-            document.body.style.zoom = scale.toString();
-          }
+          // Use native body zoom — Chromium scales layout correctly
+          document.body.style.zoom = scale.toString();
+          // Force overflow:hidden + fixed height on html and body to prevent scrollbars
+          // The !important is needed because body.zoom scales layout dimensions
+          document.documentElement.style.cssText += ';overflow:hidden !important;height:100vh !important';
+          document.body.style.cssText += ';overflow:hidden !important;height:100vh !important';
           sessionStorage.setItem('zoom-level', this.zoomLevel.toString());
         },
 
