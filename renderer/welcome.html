@@ -114,14 +114,14 @@
             <span class="text-xs text-muted-dark font-medium hidden md:inline" x-text="__t('language.theme')"></span>
             <!-- Zoom controls -->
             <div id="zoom-controls" class="inline-flex items-center gap-1" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
-                <button @click="zoomOut()" :disabled="zoomLevel <= 50" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom out">
+                <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom out">
                     <span class="material-symbols-outlined text-sm">zoom_out</span>
                 </button>
-                <button @click="resetZoom()" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200" aria-label="Reset zoom">
+                <button id="zoom-reset" @click="resetZoom()" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200" aria-label="Reset zoom">
                     <span class="material-symbols-outlined text-sm">zoom_out_map</span>
                 </button>
-                <span x-text="zoomLevel + '%'" class="inline-flex items-center justify-center text-xs font-medium text-muted-dark" style="min-width:2.5rem;text-align:center">100%</span>
-                <button @click="zoomIn()" :disabled="zoomLevel >= 200" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom in">
+                <span id="zoom-level" x-text="zoomLevel + '%'" class="inline-flex items-center justify-center text-xs font-medium text-muted-dark" style="min-width:2.5rem;text-align:center">100%</span>
+                <button id="zoom-in" @click="zoomIn()" :disabled="zoomLevel >= 200" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom in">
                     <span class="material-symbols-outlined text-sm">zoom_in</span>
                 </button>
             </div>

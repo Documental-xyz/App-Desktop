@@ -124,7 +124,7 @@
     <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
 </div>
 <!-- Theme picker (top-right) -->
-<div class="theme-picker">
+<div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
       <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out" :style="zoomLevel <= 50 ? 'opacity:0.5;cursor:not-allowed' : ''">
         <span class="material-symbols-outlined">zoom_out</span>
