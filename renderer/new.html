@@ -73,6 +73,8 @@
 <script src="./shared/layout.js"></script>
 <script src="./shared/footer.js"></script>
 <script src="./shared/logo.js"></script>
+<script src="./shared/zoom.js" defer></script>
+<script defer src="./assets/js/alpine.min.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('[data-i18n]').forEach(el => {
@@ -336,11 +338,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
 <!-- Fixed top-left branding -->
 <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
+    <div x-html="renderLogoSVG({size:'lg'})" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);display:flex;align-items:center;justify-content:center"></div>
     <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
 </div>
 <!-- Theme picker (top-right) -->
-<div class="theme-picker">
+<div class="theme-picker" x-data="zoomControls">
+    <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
+        <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out" :style="zoomLevel <= 50 ? 'opacity:0.5;cursor:not-allowed' : ''">
+            <span class="material-symbols-outlined">zoom_out</span>
+        </button>
+        <button id="zoom-reset" @click="resetZoom()" class="theme-btn" aria-label="Reset zoom">
+            <span class="material-symbols-outlined">zoom_out_map</span>
+        </button>
+        <span id="zoom-level" x-text="zoomLevel + '%'" class="theme-btn" style="font-size:0.7rem;min-width:2.5rem;text-align:center">100%</span>
+        <button id="zoom-in" @click="zoomIn()" :disabled="zoomLevel >= 200" class="theme-btn" aria-label="Zoom in" :style="zoomLevel >= 200 ? 'opacity:0.5;cursor:not-allowed' : ''">
+            <span class="material-symbols-outlined">zoom_in</span>
+        </button>
+    </div>
     <div class="theme-picker-group">
         <button class="theme-btn" data-theme="auto" aria-label="Auto theme">
             <span class="material-symbols-outlined">contrast</span>
@@ -363,8 +377,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         <script>
           (function() {
             var logoHost = document.getElementById('page-logo');
-            if (logoHost && window.Documental && window.Documental.renderLogo) {
-              logoHost.innerHTML = window.Documental.renderLogo({ size: 'md' });
+            if (logoHost && window.Documental && window.Documental.renderLogoSVG) {
+              logoHost.innerHTML = window.Documental.renderLogoSVG({ size: 'md' });
             }
           })();
         </script>

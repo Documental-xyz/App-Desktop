@@ -116,11 +116,32 @@
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
 <!-- Fixed top-left branding -->
 <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
+    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback></div>
     <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
 </div>
+<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
-<div class="theme-picker">
+<div class="theme-picker" x-data="{
+        zoomLevel: 100,
+        zoomIn() { if (this.zoomLevel < 200) { this.zoomLevel += 25; this.applyZoom(); } },
+        zoomOut() { if (this.zoomLevel > 50) { this.zoomLevel -= 25; this.applyZoom(); } },
+        resetZoom() { this.zoomLevel = 100; this.applyZoom(); },
+        initZoom() { const s = sessionStorage.getItem('zoom-level'); this.zoomLevel = s ? parseInt(s, 10) : 100; this.applyZoom(); },
+        applyZoom() { document.body.style.zoom = (this.zoomLevel / 100).toString(); sessionStorage.setItem('zoom-level', this.zoomLevel.toString()); },
+        init() { this.initZoom(); }
+    }">
+    <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
+        <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out" style="opacity:0.5" :style="zoomLevel <= 50 ? 'opacity:0.5;cursor:not-allowed' : ''">
+            <span class="material-symbols-outlined">zoom_out</span>
+        </button>
+        <button id="zoom-reset" @click="resetZoom()" class="theme-btn" aria-label="Reset zoom">
+            <span class="material-symbols-outlined">zoom_out_map</span>
+        </button>
+        <span id="zoom-level" x-text="zoomLevel + '%'" class="theme-btn" style="font-size:0.7rem;min-width:2.5rem;text-align:center">100%</span>
+        <button id="zoom-in" @click="zoomIn()" :disabled="zoomLevel >= 200" class="theme-btn" aria-label="Zoom in" :style="zoomLevel >= 200 ? 'opacity:0.5;cursor:not-allowed' : ''">
+            <span class="material-symbols-outlined">zoom_in</span>
+        </button>
+    </div>
     <div class="theme-picker-group">
         <button class="theme-btn" data-theme="auto" aria-label="Auto theme">
             <span class="material-symbols-outlined">contrast</span>
@@ -156,6 +177,37 @@
         get anyStepFailed() {
             return this.steps.some(s => s.status === 'failure');
         },
+
+        zoomLevel: 100,
+
+        initZoom() {
+            const stored = sessionStorage.getItem('zoom-level');
+            this.zoomLevel = stored ? parseInt(stored, 10) : 100;
+            if (this.zoomLevel < 50) this.zoomLevel = 50;
+            if (this.zoomLevel > 200) this.zoomLevel = 200;
+            this.applyZoom();
+        },
+        zoomIn() {
+            if (this.zoomLevel < 200) {
+                this.zoomLevel += 25;
+                this.applyZoom();
+            }
+        },
+        zoomOut() {
+            if (this.zoomLevel > 50) {
+                this.zoomLevel -= 25;
+                this.applyZoom();
+            }
+        },
+        resetZoom() {
+            this.zoomLevel = 100;
+            this.applyZoom();
+        },
+        applyZoom() {
+            document.body.style.zoom = (this.zoomLevel / 100).toString();
+            sessionStorage.setItem('zoom-level', this.zoomLevel.toString());
+        },
+
         init() {
             // Watch for process pause
             this.$watch('processPaused', (value) => {
@@ -164,6 +216,8 @@
                 }
             });
             
+            this.initZoom();
+
             this.projectId = sessionStorage.getItem('currentProjectId');
             
             if (!this.projectId) {
@@ -432,7 +486,7 @@
 <div class="text-center mb-8">
 <div class="flex items-center justify-center gap-4 mb-3">
 <span id="page-logo"></span>
-<script>document.getElementById('page-logo').innerHTML = window.Documental && window.Documental.renderLogo ? window.Documental.renderLogo({ size: 'md' }) : '';</script>
+<script>document.getElementById('page-logo').innerHTML = window.Documental && window.Documental.renderLogoSVG ? window.Documental.renderLogoSVG({ size: 'md' }) : '';</script>
 <template x-if="!allStepsSuccess">
 <div class="creative-loader"></div>
 </template>
@@ -538,6 +592,7 @@
     </div>
 </div>
 
+<script src="./shared/zoom.js"></script>
 <script src="./shared/theme-init.js" defer></script>
 <script>
 // --- Theme picker ---

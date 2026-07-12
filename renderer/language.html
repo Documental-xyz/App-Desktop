@@ -267,7 +267,13 @@
 </head>
 <body class="bg-background-dark text-text-dark antialiased">
     <!-- Theme picker (top-right) -->
-    <div class="theme-picker">
+    <div class="theme-picker" x-data="zoomControls">
+        <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
+            <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out"><span class="material-symbols-outlined">zoom_out</span></button>
+            <button id="zoom-reset" @click="resetZoom()" class="theme-btn" aria-label="Reset zoom"><span class="material-symbols-outlined">zoom_out_map</span></button>
+            <span id="zoom-level" x-text="zoomLevel + '%'" class="theme-btn" style="font-size:0.7rem;min-width:2.5rem;text-align:center">100%</span>
+            <button id="zoom-in" @click="zoomIn()" :disabled="zoomLevel >= 200" class="theme-btn" aria-label="Zoom in"><span class="material-symbols-outlined">zoom_in</span></button>
+        </div>
         <div class="theme-picker-group">
             <button class="theme-btn" data-theme="auto" aria-label="Auto theme">
                 <span class="material-symbols-outlined">contrast</span>
@@ -289,7 +295,7 @@
         <div class="relative z-10 flex flex-col items-center px-6">
             <!-- Logo -->
             <div class="anim-logo mb-8 flex justify-center">
-                <img class="app-logo-hero" src="./assets/img/logo-documental.png" alt="Documental" />
+                <img class="app-logo-hero" src="./assets/img/logo-documental.svg" alt="Documental" />
             </div>
 
             <!-- App title -->
@@ -458,5 +464,8 @@
         }
     </script>
 <script src="./shared/theme-init.js" defer></script>
+<script src="./shared/logo.js"></script>
+<script src="./assets/js/alpine.min.js" defer></script>
+<script src="./shared/zoom.js"></script>
 </body>
 </html>

@@ -55,7 +55,7 @@ win:
     - target: portable
       arch:
         - x64
-  icon: assets/icon.png
+  icon: assets/icon.ico
   sign: false
   signDlls: false
 mac:

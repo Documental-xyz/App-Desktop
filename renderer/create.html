@@ -120,11 +120,23 @@
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
 <!-- Branding -->
 <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
+    <div x-html="renderLogoSVG({size:'lg'})"></div>
     <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
 </div>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker">
+    <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
+      <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out" :style="zoomLevel <= 50 ? 'opacity:0.5;cursor:not-allowed' : ''">
+        <span class="material-symbols-outlined">zoom_out</span>
+      </button>
+      <button id="zoom-reset" @click="resetZoom()" class="theme-btn" aria-label="Reset zoom">
+        <span class="material-symbols-outlined">zoom_out_map</span>
+      </button>
+      <span id="zoom-level" x-text="zoomLevel + '%'" class="theme-btn" style="font-size:0.7rem;min-width:2.5rem;text-align:center">100%</span>
+      <button id="zoom-in" @click="zoomIn()" :disabled="zoomLevel >= 200" class="theme-btn" aria-label="Zoom in" :style="zoomLevel >= 200 ? 'opacity:0.5;cursor:not-allowed' : ''">
+        <span class="material-symbols-outlined">zoom_in</span>
+      </button>
+    </div>
     <div class="theme-picker-group">
         <button class="theme-btn" data-theme="auto" aria-label="Auto theme">
             <span class="material-symbols-outlined">contrast</span>
@@ -148,6 +160,12 @@
         processFailed: false,
         processPaused: false,
         enablePages: false,
+        zoomLevel: 100,
+        zoomIn() { if (this.zoomLevel < 200) { this.zoomLevel += 25; this.applyZoom(); } },
+        zoomOut() { if (this.zoomLevel > 50) { this.zoomLevel -= 25; this.applyZoom(); } },
+        resetZoom() { this.zoomLevel = 100; this.applyZoom(); },
+        initZoom() { var stored = sessionStorage.getItem('zoom-level'); this.zoomLevel = stored ? parseInt(stored, 10) : 100; if (this.zoomLevel < 50) this.zoomLevel = 50; if (this.zoomLevel > 200) this.zoomLevel = 200; this.applyZoom(); },
+        applyZoom() { document.body.style.zoom = (this.zoomLevel / 100).toString(); sessionStorage.setItem('zoom-level', this.zoomLevel.toString()); },
         steps: [
             { id: 0, title: __t('create.step_fork'), status: 'pending', log: '', expanded: false },
             { id: 6, title: __t('create.step_pages'), status: 'pending', log: '', expanded: false },
@@ -334,6 +352,9 @@
             
             // Setup modal event listeners
             this.setupModalListeners();
+
+            // Initialize zoom from session storage
+            this.initZoom();
         },
         
         setupModalListeners() {
@@ -523,8 +544,8 @@
       <script>
         (function() {
           var logoHost = document.getElementById('page-logo');
-          if (logoHost && window.Documental && window.Documental.renderLogo) {
-            logoHost.innerHTML = window.Documental.renderLogo({ size: 'md' });
+          if (logoHost && window.renderLogoSVG) {
+            logoHost.innerHTML = window.renderLogoSVG({ size: 'md' });
           }
         })();
       </script>
@@ -648,8 +669,8 @@ document.addEventListener('DOMContentLoaded', async function() {
 // Inject logo using shared component (Opção C shell wizard)
 (function() {
     var logoSlot = document.getElementById('logo-slot');
-    if (logoSlot && window.Documental && window.Documental.renderLogo) {
-        logoSlot.innerHTML = window.Documental.renderLogo({ size: 'md' });
+    if (logoSlot && window.renderLogoSVG) {
+        logoSlot.innerHTML = window.renderLogoSVG({ size: 'md' });
     }
 })();
 </script>
@@ -710,4 +731,5 @@ if (document.readyState === 'loading') {
     initThemePicker();
 }
 </script>
+<script src="./shared/zoom.js"></script>
 </body></html>

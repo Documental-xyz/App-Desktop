@@ -112,6 +112,19 @@
         <!-- Theme picker - visible on all steps (top-right) -->
         <div class="absolute top-4 right-4 z-50 flex items-center gap-2">
             <span class="text-xs text-muted-dark font-medium hidden md:inline" x-text="__t('language.theme')"></span>
+            <!-- Zoom controls -->
+            <div id="zoom-controls" class="inline-flex items-center gap-1" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
+                <button @click="zoomOut()" :disabled="zoomLevel <= 50" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom out">
+                    <span class="material-symbols-outlined text-sm">zoom_out</span>
+                </button>
+                <button @click="resetZoom()" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200" aria-label="Reset zoom">
+                    <span class="material-symbols-outlined text-sm">zoom_out_map</span>
+                </button>
+                <span x-text="zoomLevel + '%'" class="inline-flex items-center justify-center text-xs font-medium text-muted-dark" style="min-width:2.5rem;text-align:center">100%</span>
+                <button @click="zoomIn()" :disabled="zoomLevel >= 200" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-muted-dark hover:text-text-dark transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Zoom in">
+                    <span class="material-symbols-outlined text-sm">zoom_in</span>
+                </button>
+            </div>
             <div class="inline-flex items-center gap-0 p-1 rounded-lg bg-surface-dark border border-border-subtle">
                 <button @click="selectTheme('auto')"
                         :class="selectedTheme === 'auto' ? 'bg-surface-card text-primary' : 'text-muted-dark hover:text-text-dark'"
@@ -137,7 +150,7 @@
         <!-- Branding (hidden on Step 1) -->
         <div x-show="currentStep !== 1" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100">
             <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-                <img src="./assets/img/logo-documental.png" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
+                <img src="./assets/img/logo-documental.svg" alt="Documental" style="width:clamp(32px,4vw,64px);height:clamp(32px,4vw,64px);border-radius:6px;display:block" />
                 <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
             </div>
         </div>
@@ -150,7 +163,7 @@
                 <div x-show="currentStep === 1" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in relative">
                     <div class="mb-12">
                         <div class="anim-logo mb-6 flex justify-center">
-                            <img class="app-logo-hero" src="./assets/img/logo-documental.png" alt="Documental" />
+                            <img class="app-logo-hero" src="./assets/img/logo-documental.svg" alt="Documental" />
                         </div>
                         <h1 class="text-5xl font-black text-text-dark mb-4" x-text="$store.i18n.t('welcome.title')"></h1>
                         <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed whitespace-pre-line" x-text="$store.i18n.t('welcome.subtitle')">
@@ -566,11 +579,15 @@
                 // Setup completion tracking
                 setupCompleted: false,
 
+                // Zoom controls
+                zoomLevel: 100,
+
                 init() {
                     document.title = __t('welcome.page_title');
 
                     this.checkAuthenticationStatus();
                     this.initTheme();
+                    this.initZoom();
 
                     if (window.electronAPI && window.electronAPI.onThemeChange) {
                         window.electronAPI.onThemeChange(({ resolvedMode, rawMode }) => {
@@ -907,8 +924,42 @@
                         this.installingNode = false;
                     }
                 },
+
+                // Zoom methods
+                initZoom() {
+                    var stored = sessionStorage.getItem('zoom-level');
+                    this.zoomLevel = stored ? parseInt(stored, 10) : 100;
+                    if (this.zoomLevel < 50) this.zoomLevel = 50;
+                    if (this.zoomLevel > 200) this.zoomLevel = 200;
+                    this.applyZoom();
+                },
+
+                zoomIn() {
+                    if (this.zoomLevel < 200) {
+                        this.zoomLevel += 25;
+                        this.applyZoom();
+                    }
+                },
+
+                zoomOut() {
+                    if (this.zoomLevel > 50) {
+                        this.zoomLevel -= 25;
+                        this.applyZoom();
+                    }
+                },
+
+                resetZoom() {
+                    this.zoomLevel = 100;
+                    this.applyZoom();
+                },
+
+                applyZoom() {
+                    document.body.style.zoom = (this.zoomLevel / 100).toString();
+                    sessionStorage.setItem('zoom-level', this.zoomLevel.toString());
+                },
             }));
         });
     </script>
+    <script src="./shared/zoom.js"></script>
 </body>
 </html>
