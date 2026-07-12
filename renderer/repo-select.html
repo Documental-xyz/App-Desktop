@@ -398,10 +398,15 @@ document.addEventListener('DOMContentLoaded', function() {
           <!-- Empty state: no repos match current filters -->
           <div x-show="repos.length === 0 || filteredRepos.length === 0" x-cloak class="text-center py-10 text-muted-dark min-h-[16rem] flex flex-col items-center justify-center">
             <span class="material-symbols-outlined text-5xl text-muted-dark mb-3 block">inbox</span>
-            <p class="whitespace-pre-line mb-6 max-w-md" x-text="__t('repo_select.no_repos')"></p>
+            <p class="text-sm mb-4 max-w-md" x-text="__t('repo_select.no_repos_line1')"></p>
+            <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm mb-4">
+              <span class="material-symbols-outlined">refresh</span>
+              <span x-text="__t('repo_select.retry')">Try Again</span>
+            </button>
+            <p class="text-sm mb-6 max-w-md" x-text="__t('repo_select.no_repos_line2')"></p>
             <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
               <span class="material-symbols-outlined">alt_route</span>
-              <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+              <span data-i18n="repo_select.button_create_repo">Create New Repository</span>
             </button>
           </div>
 
