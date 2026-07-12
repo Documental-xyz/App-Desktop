@@ -4,8 +4,8 @@
  * @fileoverview Alpine.js zoom controls component with HTML generator.
  * Provides zoom in/out/reset functionality (50-200%, 25% steps)
  * persisted to sessionStorage. Uses document.body.style.zoom (native
- * Chromium zoom) with overflow:hidden to prevent scrollbars. This
- * preserves layout including fixed footers.
+ * Chromium zoom). Layout scrolls naturally via
+ * .flex-1.overflow-y-auto content divs.
  * @author Documental Team
  * @since 1.0.0
  */
@@ -54,12 +54,7 @@
 
         applyZoom: function () {
           var scale = this.zoomLevel / 100;
-          // Use native body zoom — Chromium scales layout correctly
           document.body.style.zoom = scale.toString();
-          // Force overflow:hidden + fixed height on html and body to prevent scrollbars
-          // The !important is needed because body.zoom scales layout dimensions
-          document.documentElement.style.cssText += ';overflow:hidden !important;height:100vh !important';
-          document.body.style.cssText += ';overflow:hidden !important;height:100vh !important';
           sessionStorage.setItem('zoom-level', this.zoomLevel.toString());
         },
 
