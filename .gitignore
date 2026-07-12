@@ -39,3 +39,6 @@ renderer/assets/css/theme-override.css
 
 # Test artifacts
 test-results/
+
+playwright*
+.playwright*
