@@ -62,6 +62,15 @@
   }
   [x-cloak] { display: none !important; }
 
+.repo-header { padding-top: 12vh !important; }
+@media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
+@media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
+@media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+.repo-content { padding-top: 1rem; }
+@media (min-height: 800px) { .repo-content { padding-top: 1.25rem; } }
+@media (min-height: 1000px) { .repo-content { padding-top: 1.5rem; } }
+@media (min-height: 1200px) { .repo-content { padding-top: 2rem; } }
+
 
 </style>
 
@@ -101,42 +110,50 @@
     </div>
 </div>
 <div class="flex flex-col h-screen">
-<div class="flex-1 overflow-y-auto">
-<div class="flex items-center justify-center min-h-full p-8">
-<div class="w-full max-w-4xl">
-<div class="text-center mb-12">
-<div class="flex items-center justify-center gap-4 mb-4">
-    <span class="material-symbols-outlined text-6xl text-primary">dashboard</span>
-    <h1 class="text-4xl font-black text-text-dark" data-i18n="index.heading">Work Environments</h1>
-</div>
-<p class="text-muted-dark text-lg whitespace-pre-line" data-i18n="index.subtitle">Your centralized documentation environment.</p>
-</div>
-<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-<div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" data-navigate="repo-select.html">
-<span class="material-symbols-outlined text-5xl text-primary mb-4">create_new_folder</span>
-<h2 class="text-xl font-bold mb-2" data-i18n="index.create_new">Create New Project</h2>
-<p class="text-muted-dark text-sm" data-i18n="index.create_new_desc">Start from scratch with a new documentation project.</p>
-</div>
- <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" id="open-folder-button">
-<span class="material-symbols-outlined text-5xl text-primary mb-4">folder_open</span>
-<h2 class="text-xl font-bold mb-2" data-i18n="index.open_folder">Open Folder</h2>
-<p class="text-muted-dark text-sm" data-i18n="index.open_folder_desc">Open an existing project from a folder on your computer.</p>
-</div>
- <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" data-navigate="all-projects.html">
-<span class="material-symbols-outlined text-5xl text-primary mb-4">folder_special</span>
-<h2 class="text-xl font-bold mb-2" data-i18n="index.open_recent">Open Recent</h2>
-<p class="text-muted-dark text-sm" data-i18n="index.open_recent_desc">Quickly access your recently opened projects.</p>
-</div>
-</div>
-<div class="mt-12">
-<h3 class="text-lg font-semibold text-muted-dark mb-4 px-2" data-i18n="index.recent_projects">Recent Projects</h3>
-<div class="space-y-3" id="recent-projects-container">
-<!-- Recent projects will be loaded dynamically here -->
-</div>
-</div>
-</div>
-</div>
-</div>
+
+  <!-- Header (shrink-0) -->
+  <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
+    <div class="max-w-4xl mx-auto mt-auto">
+      <div class="text-center mb-12">
+        <div class="flex items-center justify-center gap-4 mb-4">
+          <span class="material-symbols-outlined text-6xl text-primary">dashboard</span>
+          <h1 class="text-4xl font-black text-text-dark" data-i18n="index.heading">Work Environments</h1>
+        </div>
+        <p class="text-muted-dark text-lg whitespace-pre-line" data-i18n="index.subtitle">Your centralized documentation environment.</p>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main content -->
+  <main class="flex-1 overflow-hidden flex flex-col">
+    <div class="flex-1 overflow-y-auto px-8 pb-4">
+      <div class="max-w-4xl mx-auto w-full repo-content">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" data-navigate="repo-select.html">
+            <span class="material-symbols-outlined text-5xl text-primary mb-4">create_new_folder</span>
+            <h2 class="text-xl font-bold mb-2" data-i18n="index.create_new">Create New Project</h2>
+            <p class="text-muted-dark text-sm" data-i18n="index.create_new_desc">Start from scratch with a new documentation project.</p>
+          </div>
+          <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" id="open-folder-button">
+            <span class="material-symbols-outlined text-5xl text-primary mb-4">folder_open</span>
+            <h2 class="text-xl font-bold mb-2" data-i18n="index.open_folder">Open Folder</h2>
+            <p class="text-muted-dark text-sm" data-i18n="index.open_folder_desc">Open an existing project from a folder on your computer.</p>
+          </div>
+          <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" data-navigate="all-projects.html">
+            <span class="material-symbols-outlined text-5xl text-primary mb-4">folder_special</span>
+            <h2 class="text-xl font-bold mb-2" data-i18n="index.open_recent">Open Recent</h2>
+            <p class="text-muted-dark text-sm" data-i18n="index.open_recent_desc">Quickly access your recently opened projects.</p>
+          </div>
+        </div>
+        <div class="mt-12">
+          <h3 class="text-lg font-semibold text-muted-dark mb-4 px-2" data-i18n="index.recent_projects">Recent Projects</h3>
+          <div class="space-y-3" id="recent-projects-container">
+            <!-- Recent projects will be loaded dynamically here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
 </div>
 
 <!-- Modal for folder selection confirmation -->
