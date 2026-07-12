@@ -76,8 +76,8 @@
   document.addEventListener('DOMContentLoaded', function () {
     // Inject logo
     var logoHost = document.getElementById('logo-host');
-    if (logoHost && typeof renderLogoSVG === 'function') {
-      logoHost.innerHTML = renderLogoSVG({ size: 'md' });
+    if (logoHost) {
+      logoHost.innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">folder_special</span>';
     }
     // Apply declarative i18n
     if (window.Documental && window.Documental.applyTranslations) {

@@ -265,8 +265,8 @@ document.addEventListener('DOMContentLoaded', async function() {
 // Inject logo SVG during parse (before paint) to avoid flicker.
 document.addEventListener('DOMContentLoaded', function() {
   var slot = document.getElementById('page-logo');
-  if (slot && window.renderLogoSVG) {
-    slot.innerHTML = renderLogoSVG({ size: 'md' });
+  if (slot) {
+    slot.innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">cloud_upload</span>';
   }
 });
 </script>

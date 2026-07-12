@@ -376,10 +376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         <span id="page-logo"></span>
         <script>
           (function() {
-            var logoHost = document.getElementById('page-logo');
-            if (logoHost && window.Documental && window.Documental.renderLogoSVG) {
-              logoHost.innerHTML = window.Documental.renderLogoSVG({ size: 'md' });
-            }
+            document.getElementById('page-logo').innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">create_new_folder</span>';
           })();
         </script>
         <h1 class="text-5xl font-black text-text-dark" data-i18n="new.title"></h1>

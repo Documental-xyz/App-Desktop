@@ -74,6 +74,12 @@
 <script src="script.js" defer></script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
+<!-- Fixed top-left branding -->
+<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
+    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback></div>
+    <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
+</div>
+<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
@@ -98,20 +104,10 @@
 <div class="flex-1 flex items-center justify-center p-8">
 <div class="w-full max-w-4xl">
 <div class="text-center mb-12">
-<div class="flex items-center justify-center gap-4 mb-4" id="brand-logo"></div>
-<script>
-(function() {
-  var target = document.getElementById('brand-logo');
-  if (target) {
-    var svgHtml = '';
-    if (typeof renderLogoSVG === 'function') {
-      svgHtml = renderLogoSVG({ size: 'xl', className: 'mb-4' });
-    }
-    target.innerHTML = svgHtml +
-      '<h1 class="text-4xl font-black text-text-dark" data-i18n="index.heading">Work Environments</h1>';
-  }
-})();
-</script>
+<div class="flex items-center justify-center gap-4 mb-4">
+    <span class="material-symbols-outlined text-6xl text-primary">dashboard</span>
+    <h1 class="text-4xl font-black text-text-dark" data-i18n="index.heading">Work Environments</h1>
+</div>
 <p class="text-muted-dark text-lg whitespace-pre-line" data-i18n="index.subtitle">Your centralized documentation environment.</p>
 </div>
 <div class="grid grid-cols-1 md:grid-cols-3 gap-8">

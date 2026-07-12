@@ -543,10 +543,7 @@
       <span id="page-logo"></span>
       <script>
         (function() {
-          var logoHost = document.getElementById('page-logo');
-          if (logoHost && window.renderLogoSVG) {
-            logoHost.innerHTML = window.renderLogoSVG({ size: 'md' });
-          }
+          document.getElementById('page-logo').innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">add_circle</span>';
         })();
       </script>
       <h1 class="text-5xl font-black text-text-dark" x-text="isReopenMode ? __t('create.reopening_workspace') : __t('create.creating_workspace')"></h1>
@@ -669,8 +666,8 @@ document.addEventListener('DOMContentLoaded', async function() {
 // Inject logo using shared component (Opção C shell wizard)
 (function() {
     var logoSlot = document.getElementById('logo-slot');
-    if (logoSlot && window.renderLogoSVG) {
-        logoSlot.innerHTML = window.renderLogoSVG({ size: 'md' });
+    if (logoSlot) {
+        logoSlot.innerHTML = '<span class="material-symbols-outlined text-xl text-primary">add_circle</span>';
     }
 })();
 </script>
