@@ -266,7 +266,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 document.addEventListener('DOMContentLoaded', function() {
   var slot = document.getElementById('page-logo');
   if (slot) {
-    slot.innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">cloud_upload</span>';
+    slot.innerHTML = '<span class="material-symbols-outlined text-4xl text-primary">cloud_upload</span>';
   }
 });
 </script>
@@ -324,7 +324,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <main x-data="repoSelect" x-init="init()" class="flex-1 overflow-hidden flex flex-col">
 
     <!-- Scrollable repo list area (fixed-height box with internal scroll) -->
-    <div class="flex-1 overflow-y-auto px-8 pb-6">
+    <div class="flex-1 overflow-y-auto px-8 pb-20">
       <div class="page-center max-w-4xl mx-auto w-full repo-content">
 
         <!-- Scanning state (documental detection) -->
@@ -481,7 +481,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 
     <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
-    <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="shrink-0 p-4 border-t border-border-subtle bg-surface-dark mt-auto">
+    <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="p-4 border-t border-border-subtle bg-surface-dark" style="position:fixed;bottom:0;left:0;right:0;z-index:50">
       <div class="flex items-center max-w-4xl mx-auto gap-3">
         <!-- Left: Back button -->
         <div class="flex-1 flex justify-start">

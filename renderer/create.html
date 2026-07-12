@@ -543,7 +543,7 @@
       <span id="page-logo"></span>
       <script>
         (function() {
-          document.getElementById('page-logo').innerHTML = '<span class="material-symbols-outlined text-2xl text-primary">add_circle</span>';
+          document.getElementById('page-logo').innerHTML = '<span class="material-symbols-outlined text-4xl text-primary">add_circle</span>';
         })();
       </script>
       <h1 class="text-5xl font-black text-text-dark" x-text="isReopenMode ? __t('create.reopening_workspace') : __t('create.creating_workspace')"></h1>
@@ -553,7 +553,7 @@
 </header>
 
 <main class="flex-1 overflow-hidden flex flex-col">
-  <div class="flex-1 flex items-start justify-center px-8 pb-8 overflow-y-auto">
+  <div class="flex-1 flex items-start justify-center px-8 pb-20 overflow-y-auto">
     <div class="w-full max-w-2xl" style="margin-top: 5vh;">
 
 <div class="text-center mb-8">
@@ -600,7 +600,7 @@
 </div>
 </div>
 </main>
-<footer class="shrink-0">
+<footer style="position:fixed;bottom:0;left:0;right:0;z-index:50">
 <div class="p-4 border-t border-border-subtle bg-surface-dark">
     <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
         <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
@@ -667,7 +667,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 (function() {
     var logoSlot = document.getElementById('logo-slot');
     if (logoSlot) {
-        logoSlot.innerHTML = '<span class="material-symbols-outlined text-xl text-primary">add_circle</span>';
+        logoSlot.innerHTML = '<span class="material-symbols-outlined text-3xl text-primary">add_circle</span>';
     }
 })();
 </script>
