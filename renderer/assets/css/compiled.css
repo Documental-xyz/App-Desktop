@@ -2693,3 +2693,6 @@ input:where([type='file']):focus {
     padding-right: 2rem;
   }
 }
+
+/* Branding logo — inner SVG fills its (3×) wrapper. Applied to fixed top-left branding. */
+.brand-logo-3x > svg { width: 100% !important; height: 100% !important; display: block; }

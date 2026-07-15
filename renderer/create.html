@@ -120,8 +120,7 @@
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
 <!-- Branding -->
 <div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback></div>
-    <span style="font-size:clamp(16px,2vw,32px);font-weight:700;color:#f9fafb;text-shadow:0 2px 4px rgba(0,0,0,0.5)">Documental</span>
+    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback class="brand-logo-3x" style="width:144px;height:144px;display:flex;align-items:center;justify-content:center"></div>
 </div>
 <script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
