@@ -20,7 +20,19 @@ const {
   };
   const mockOctokitInstance = {
     repos: {
-      listForAuthenticatedUser: vi.fn()
+      listForAuthenticatedUser: vi.fn(),
+      getContent: vi.fn()
+    },
+    rest: {
+      users: {
+        getAuthenticated: vi.fn()
+      },
+      search: {
+        code: vi.fn()
+      },
+      orgs: {
+        listForAuthenticatedUser: vi.fn()
+      }
     }
   };
   const mockElectron = {
@@ -155,8 +167,8 @@ describe('GithubReposHandlers', () => {
     it('returns {success:true, repos:[...]} with pagination (2 pages)', async () => {
       tokenMock.mockResolvedValue('fake-token');
       mockOctokitInstance.repos.listForAuthenticatedUser
-        .mockResolvedValueOnce({ data: makeRepos(1, 100) })  // page 1: full page
-        .mockResolvedValueOnce({ data: makeRepos(101, 50) }); // page 2: partial → break
+        .mockResolvedValueOnce({ data: makeRepos(1, 100), headers: { 'x-oauth-scopes': 'user:email, repo, read:org' } })  // page 1: full page
+        .mockResolvedValueOnce({ data: makeRepos(101, 50), headers: { 'x-oauth-scopes': 'user:email, repo, read:org' } }); // page 2: partial → break
 
       const result = await handlers.listUserRepos();
 
@@ -169,7 +181,8 @@ describe('GithubReposHandlers', () => {
       tokenMock.mockResolvedValue('fake-token');
       // Always return a full page of 100 repos regardless of page number
       mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValue({
-        data: makeRepos(1, 100)
+        data: makeRepos(1, 100),
+        headers: { 'x-oauth-scopes': 'user:email, repo, read:org' }
       });
 
       const result = await handlers.listUserRepos();
@@ -211,7 +224,8 @@ describe('GithubReposHandlers', () => {
     it('filters repo fields to {id, name, full_name, clone_url, private, updated_at, description}', async () => {
       tokenMock.mockResolvedValue('fake-token');
       mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
-        data: [makeRepo(1, 'test-repo')]
+        data: [makeRepo(1, 'test-repo')],
+        headers: { 'x-oauth-scopes': 'user:email, repo, read:org' }
       });
 
       const result = await handlers.listUserRepos();
@@ -230,6 +244,158 @@ describe('GithubReposHandlers', () => {
       expect(repo.private).toBe(false);
       expect(repo.updated_at).toBe('2025-01-01T00:00:00Z');
       expect(repo.description).toBe('Repo test-repo');
+    });
+  });
+
+  // ── findDocumentalRepos ─────────────────────────────────────────────────
+  // Covers the fallback path at src/ipc/githubRepos.js ~line 205:
+  // code search fails (401) → enumerate repos via listForAuthenticatedUser
+  // → probe documental.json via getContent in chunks of 10.
+
+  describe('findDocumentalRepos', () => {
+    /**
+     * Build a repo object sufficient for the fallback getContent loop,
+     * which reads repo.owner.login, repo.name, and repo.full_name.
+     */
+    function makeFallbackRepo(id, name, owner = 'user') {
+      return {
+        id,
+        name,
+        full_name: `${owner}/${name}`,
+        owner: { login: owner }
+      };
+    }
+
+    /** Create a 404-shaped rejection error (file not present). */
+    function make404() {
+      const err = new Error('Not Found');
+      err.status = 404;
+      return err;
+    }
+
+    /** Create a 403-shaped rejection error (rate limit). */
+    function make403() {
+      const err = new Error('Rate limit exceeded');
+      err.status = 403;
+      return err;
+    }
+
+    /**
+     * Wire up the non-fallback prefix of findDocumentalRepos:
+     * getAuthenticated user + code search. The search is configured to
+     * reject with a status that falls through to the fallback branch.
+     * NOTE: status 401 returns immediately (token expired) and does NOT
+     * reach the fallback; 403 and other errors do (see src line 186-193).
+     */
+    function setupSearchFailure(searchErr) {
+      mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+        data: { login: 'testuser' }
+      });
+      mockOctokitInstance.rest.search.code.mockRejectedValue(searchErr);
+    }
+
+    it('happy path fallback: search fails → enumerates 3 repos → 2 have documental.json', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      // Code search 403 falls through to the fallback (401 returns immediately).
+      setupSearchFailure(make403());
+
+      const repos = [
+        makeFallbackRepo(1, 'has-doc-1'),
+        makeFallbackRepo(2, 'has-doc-2'),
+        makeFallbackRepo(3, 'no-doc')
+      ];
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+        data: repos
+      });
+
+      // getContent: first two resolve, third rejects 404.
+      mockOctokitInstance.repos.getContent
+        .mockResolvedValueOnce({ data: { path: 'documental.json' } })
+        .mockResolvedValueOnce({ data: { path: 'documental.json' } })
+        .mockRejectedValueOnce(make404());
+
+      const result = await handlers.findDocumentalRepos();
+
+      expect(result.success).toBe(true);
+      expect(result.fallback).toBe(true);
+      expect(result.documentalRepos).toHaveLength(2);
+      expect(result.documentalRepos).toEqual(
+        expect.arrayContaining(['user/has-doc-1', 'user/has-doc-2'])
+      );
+      expect(result.documentalRepos).not.toContain('user/no-doc');
+    });
+
+    it('rate limit: fallback path hits 403 → returns rate limit error', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      // Search fails with a non-401 status to enter the fallback path.
+      setupSearchFailure(make403());
+
+      // listForAuthenticatedUser itself rejects 403 inside the fallback.
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockRejectedValue(make403());
+
+      const result = await handlers.findDocumentalRepos();
+
+      expect(result).toEqual({
+        success: false,
+        error: 'GitHub API rate limit exceeded. Try again later.'
+      });
+      // getContent should never have been reached.
+      expect(mockOctokitInstance.repos.getContent).not.toHaveBeenCalled();
+    });
+
+    it('code search succeeds (no fallback): returns results without fallback flag', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+
+      mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+        data: { login: 'testuser' }
+      });
+      // Code search resolves with two matching repositories.
+      mockOctokitInstance.rest.search.code.mockResolvedValue({
+        data: {
+          items: [
+            { repository: { full_name: 'user/repo-a' } },
+            { repository: { full_name: 'user/repo-b' } }
+          ]
+        }
+      });
+      // User has no orgs, so the org loop is a no-op.
+      mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({
+        data: []
+      });
+
+      const result = await handlers.findDocumentalRepos();
+
+      expect(result.success).toBe(true);
+      expect(result.fallback).toBeUndefined();
+      expect(result.documentalRepos).toEqual(
+        expect.arrayContaining(['user/repo-a', 'user/repo-b'])
+      );
+      // The fallback path must NOT have executed.
+      expect(mockOctokitInstance.repos.listForAuthenticatedUser).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.repos.getContent).not.toHaveBeenCalled();
+    });
+
+    it('empty fallback: search fails → all repos lack documental.json → returns empty list', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      // Search fails with a non-401 status to enter the fallback path.
+      setupSearchFailure(make403());
+
+      const repos = [
+        makeFallbackRepo(1, 'no-doc-1'),
+        makeFallbackRepo(2, 'no-doc-2')
+      ];
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+        data: repos
+      });
+
+      // Every getContent probe rejects with 404 → none qualify.
+      mockOctokitInstance.repos.getContent.mockRejectedValue(make404());
+
+      const result = await handlers.findDocumentalRepos();
+
+      expect(result.success).toBe(true);
+      expect(result.fallback).toBe(true);
+      expect(result.documentalRepos).toEqual([]);
     });
   });
 });

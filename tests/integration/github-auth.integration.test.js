@@ -119,7 +119,7 @@ describe('GitHub Authentication Integration Tests', () => {
       expect(validation.errors.length).toBe(0);
       
       expect(GITHUB_CONFIG.CLIENT_ID).toBe('Ov23litU3WhYXS9XXpGd');
-      expect(GITHUB_CONFIG.SCOPES).toEqual(['user:email', 'repo']);
+      expect(GITHUB_CONFIG.SCOPES).toEqual(['user:email', 'repo', 'read:org']);
       expect(GITHUB_CONFIG.DEVICE_CODE_URL).toBe('https://github.com/login/device/code');
       expect(GITHUB_CONFIG.TOKEN_URL).toBe('https://github.com/login/oauth/access_token');
       expect(GITHUB_CONFIG.VERIFICATION_URI).toBe('https://github.com/login/device');
