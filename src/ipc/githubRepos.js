@@ -8,6 +8,7 @@
 
 const { ipcMain } = require('electron');
 const { secureTokenService } = require('../services/secureTokenService.js');
+const { GITHUB_CONFIG } = require('../config/github-config.js');
 
 const MAX_REPOS = 500;
 
@@ -48,8 +49,24 @@ class GithubReposHandlers {
           per_page: perPage,
           page,
           sort: 'updated',
-          affiliation: 'owner,collaborator'
+          affiliation: 'owner,collaborator,organization_member'
         });
+
+        // Detect stale token missing required scopes; trigger re-auth
+        const grantedScopesHeader = response.headers?.['x-oauth-scopes'] || '';
+        const grantedScopes = grantedScopesHeader.split(',').map(s => s.trim()).filter(Boolean);
+        if (grantedScopes.length > 0) {
+          const missingScopes = GITHUB_CONFIG.SCOPES.filter(s => !grantedScopes.includes(s));
+          if (missingScopes.length > 0) {
+            this.logger.warn(`Token missing required scopes: ${missingScopes.join(', ')}. Invalidating for re-auth.`);
+            try {
+              await secureTokenService.deleteToken();
+            } catch (deleteError) {
+              this.logger.warn('Failed to delete stale token:', deleteError);
+            }
+            return { success: false, error: 'Token missing required scopes. Please re-authenticate.', reauthRequired: true };
+          }
+        }
 
         if (!response.data || response.data.length === 0) {
           break;
@@ -202,7 +219,7 @@ class GithubReposHandlers {
             per_page: perPage,
             page,
             sort: 'updated',
-            affiliation: 'owner,collaborator'
+            affiliation: 'owner,collaborator,organization_member'
           });
           if (!response.data || response.data.length === 0) {
             break;

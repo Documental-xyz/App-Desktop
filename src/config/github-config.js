@@ -119,7 +119,7 @@ function resolveClientId(runtimeEnvConfig) {
  */
 const GITHUB_CONFIG = {
   CLIENT_ID: '',
-  SCOPES: ['user:email', 'repo'],
+  SCOPES: ['user:email', 'repo', 'read:org'],
   DEVICE_CODE_URL: 'https://github.com/login/device/code',
   TOKEN_URL: 'https://github.com/login/oauth/access_token',
   VERIFICATION_URI: 'https://github.com/login/device',
