@@ -72,6 +72,15 @@ class PermissionHandlers {
     this._permissionCache = new Map();
 
     /**
+     * In-memory branch protection cache.
+     * Key format: `${owner}/${repo}:${branch}`
+     * Value: { isProtected, allowsForcePushes, enforceAdmins, canUserPush, note, timestamp }
+     * @type {Map<string, {isProtected: boolean, allowsForcePushes: boolean|null, enforceAdmins: boolean|null, canUserPush: boolean|null, note?: string, timestamp: number}>}
+     * @private
+     */
+    this._branchProtectionCache = new Map();
+
+    /**
      * Reverse index from projectId to cache keys, so invalidation by project
      * does not require scanning every entry.
      * @type {Map<string, Set<string>>}
@@ -168,6 +177,103 @@ class PermissionHandlers {
   }
 
   /**
+   * Check whether a branch is protected and what rules apply.
+   *
+   * Informational only — publish gating happens in the preflight task.
+   *
+   * Flow:
+   *  1. Resolve owner/repo from the project via the database.
+   *  2. Resolve the current username.
+   *  3. Return a cached entry if still fresh (< PERMISSION_CACHE_TTL_MS).
+   *  4. Otherwise call GitHub's branch protection endpoint, cache, return.
+   *
+   * @param {number|string} projectId - Project ID to check.
+   * @param {string} branchName - Branch name to check (e.g. 'main').
+   * @returns {Promise<Object>} Branch protection result.
+   */
+  async checkBranchProtection(projectId, branchName) {
+    try {
+      // Step 1: resolve owner/repo from the project row.
+      const { owner, repo, remoteUrl } = await this._resolveRepo(projectId);
+      if (!owner || !repo) {
+        return {
+          success: false,
+          isProtected: null,
+          allowsForcePushes: null,
+          enforceAdmins: null,
+          canUserPush: null,
+          cached: false,
+          error: `Could not determine owner/repo for project ${projectId} (remoteUrl: ${remoteUrl || 'unknown'})`,
+        };
+      }
+
+      // Step 2: resolve the current username (used for canUserPush).
+      const username = await this._resolveUsername();
+      if (!username) {
+        return {
+          success: false,
+          isProtected: null,
+          allowsForcePushes: null,
+          enforceAdmins: null,
+          canUserPush: null,
+          cached: false,
+          error: 'Not authenticated. Sign in to GitHub first.',
+        };
+      }
+
+      // Step 3: check cache.
+      const cacheKey = `${owner}/${repo}:${branchName}`;
+      const now = Date.now();
+      const cached = this._branchProtectionCache.get(cacheKey);
+      if (cached && (now - cached.timestamp) < PERMISSION_CACHE_TTL_MS) {
+        this.logger.info(`🔐 Branch protection cache HIT for ${cacheKey}`);
+        return {
+          success: true,
+          isProtected: cached.isProtected,
+          allowsForcePushes: cached.allowsForcePushes,
+          enforceAdmins: cached.enforceAdmins,
+          canUserPush: cached.canUserPush,
+          note: cached.note,
+          cached: true,
+        };
+      }
+
+      // Step 4: call GitHub.
+      const result = await this._fetchBranchProtectionWithRetry(owner, repo, branchName, username);
+
+      // Cache & index for invalidation.
+      this._branchProtectionCache.set(cacheKey, { ...result, timestamp: Date.now() });
+      this._indexCacheKey(String(projectId), cacheKey);
+
+      return { ...result, cached: false };
+    } catch (error) {
+      this.logger.error(`❌ checkBranchProtection failed for project ${projectId} branch ${branchName}:`, error);
+
+      // 401 → re-authentication required; propagate a clear message.
+      if (error.status === 401) {
+        return {
+          success: false,
+          isProtected: null,
+          allowsForcePushes: null,
+          enforceAdmins: null,
+          canUserPush: null,
+          cached: false,
+          error: 'Authentication expired. Sign in again.',
+        };
+      }
+      return {
+        success: false,
+        isProtected: null,
+        allowsForcePushes: null,
+        enforceAdmins: null,
+        canUserPush: null,
+        cached: false,
+        error: error.message,
+      };
+    }
+  }
+
+  /**
    * Invalidate all cached permission entries for a given project.
    * Useful after a user re-authenticates, is added/removed as a collaborator,
    * or switches branches.
@@ -199,6 +305,10 @@ class PermissionHandlers {
       async (_event, projectId) => this.checkMainPermission(projectId),
     );
     ipcMainInstance.handle(
+      'git:check-branch-protection',
+      async (_event, projectId, branchName) => this.checkBranchProtection(projectId, branchName),
+    );
+    ipcMainInstance.handle(
       'git:invalidate-permission-cache',
       async (_event, projectId) => {
         this.invalidatePermissionCache(projectId);
@@ -216,6 +326,7 @@ class PermissionHandlers {
    */
   unregister(ipcMainInstance = ipcMain) {
     ipcMainInstance.removeHandler('git:check-main-permission');
+    ipcMainInstance.removeHandler('git:check-branch-protection');
     ipcMainInstance.removeHandler('git:invalidate-permission-cache');
     this.logger.info('🔐 Permission IPC handlers unregistered');
   }
@@ -390,6 +501,112 @@ class PermissionHandlers {
       // 401/403 and network errors propagate to the retry/caller layers.
       throw error;
     }
+  }
+
+  /**
+   * Fetch branch protection rules for (owner, repo, branch), retrying once on
+   * transient network errors.
+   *
+   * Error mapping:
+   *  - 200 → parsed protection rules
+   *  - 404 → branch is not protected
+   *  - 403 → branch is protected but rules are not visible (non-admin)
+   *  - network (ENOTFOUND, ETIMEDOUT, ...) → retry once after backoff, then propagate
+   *
+   * @param {string} owner
+   * @param {string} repo
+   * @param {string} branch
+   * @param {string} username
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _fetchBranchProtectionWithRetry(owner, repo, branch, username) {
+    try {
+      return await this._fetchBranchProtection(owner, repo, branch, username);
+    } catch (error) {
+      if (this._isRetryableNetworkError(error)) {
+        this.logger.warn(`🌐 Transient network error checking branch protection for ${owner}/${repo}:${branch}; retrying in ${NETWORK_RETRY_BACKOFF_MS}ms...`, error.message);
+        await this._sleep(NETWORK_RETRY_BACKOFF_MS);
+        return this._fetchBranchProtection(owner, repo, branch, username); // propagate if it fails again
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Single attempt to fetch branch protection rules.
+   * @param {string} owner
+   * @param {string} repo
+   * @param {string} branch
+   * @param {string} username
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _fetchBranchProtection(owner, repo, branch, username) {
+    const octokit = await this._getOctokit();
+    if (!octokit) {
+      // No token means we cannot authenticate — surface as auth error.
+      const err = new Error('Authentication expired. Sign in again.');
+      err.status = 401;
+      throw err;
+    }
+
+    try {
+      const { data } = await octokit.repos.getBranchProtection({ owner, repo, branch });
+      const allowsForcePushes = Boolean(data && data.allow_force_pushes && data.allow_force_pushes.enabled);
+      const enforceAdmins = Boolean(data && data.enforce_admins && data.enforce_admins.enabled);
+      const requiredStatusChecks = (data && data.required_status_checks && data.required_status_checks.contexts) || [];
+      return {
+        success: true,
+        isProtected: true,
+        allowsForcePushes,
+        enforceAdmins,
+        requiredStatusChecks,
+        canUserPush: this._canUserPushFromCache(owner, repo, username),
+      };
+    } catch (error) {
+      // 404: branch is not protected.
+      if (error.status === 404) {
+        this.logger.info(`ℹ️ Branch ${branch} on ${owner}/${repo} is not protected (404)`);
+        return {
+          success: true,
+          isProtected: false,
+          allowsForcePushes: null,
+          enforceAdmins: null,
+          canUserPush: true,
+        };
+      }
+      // 403: branch is protected but rules are not visible to this user.
+      if (error.status === 403) {
+        this.logger.info(`ℹ️ Cannot view protection rules for ${owner}/${repo}:${branch} (403)`);
+        return {
+          success: true,
+          isProtected: true,
+          allowsForcePushes: null,
+          enforceAdmins: null,
+          canUserPush: null,
+          note: 'Cannot view protection rules — insufficient permissions',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Determine whether the user can push to a protected branch by consulting
+   * the existing permission cache (admin → can push past branch protection).
+   * @param {string} owner
+   * @param {string} repo
+   * @param {string} username
+   * @returns {boolean|null} true if admin, false if known non-admin, null if unknown.
+   * @private
+   */
+  _canUserPushFromCache(owner, repo, username) {
+    const cached = this._permissionCache.get(`${owner}/${repo}:${username}`);
+    if (!cached) {
+      return null;
+    }
+    return cached.permission === 'admin';
   }
 
   /**

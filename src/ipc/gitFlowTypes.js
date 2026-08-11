@@ -30,6 +30,35 @@ const MAX_PUBLISH_RETRIES = 2;
 /** @type {number} Number of files to stage in a single batch during staging */
 const BATCH_SIZE_STAGING = 25;
 
+// ─── Per-Step Timeout Constants ───────────────────────────────────────────────
+// AbortSignal is ignored by isomorphic-git local ops, so these are for
+// Promise.race-based timeout warnings, not actual cancellation.
+/** @type {number} Fetch is network-bound, allow 30s */
+const STEP_TIMEOUT_FETCH_MS = 30000;
+
+/** @type {number} Merge is CPU-bound on large repos, allow 45s */
+const STEP_TIMEOUT_MERGE_MS = 45000;
+
+/** @type {number} Push is network-bound + server-side processing, allow 60s */
+const STEP_TIMEOUT_PUSH_MS = 60000;
+
+/** @type {number} Checkout is I/O-bound, worse on Windows with Defender, allow 20s */
+const STEP_TIMEOUT_CHECKOUT_MS = 20000;
+
+// ─── Backup Namespace Constants ───────────────────────────────────────────────
+/** @type {string} Prefix for auto-created backup branches */
+const BACKUP_BRANCH_PREFIX = 'backup/';
+
+/** @type {boolean} If true, backup branches are deleted on operation success; persist only on failure/crash */
+const BACKUP_AUTO_CLEAN = true;
+
+// ─── Lock Heartbeat Constants ─────────────────────────────────────────────────
+/** @type {number} How often to update heartbeat timestamp (5s) */
+const LOCK_HEARTBEAT_INTERVAL_MS = 5000;
+
+/** @type {number} Heartbeat older than 3 minutes = stale (process presumed dead) */
+const LOCK_HEARTBEAT_STALE_MS = 180000;
+
 // ─── JSDoc Type Definitions ───────────────────────────────────────────────────
 
 /**
@@ -64,4 +93,12 @@ module.exports = {
   PERMISSION_CACHE_TTL_MS,
   MAX_PUBLISH_RETRIES,
   BATCH_SIZE_STAGING,
+  STEP_TIMEOUT_FETCH_MS,
+  STEP_TIMEOUT_MERGE_MS,
+  STEP_TIMEOUT_PUSH_MS,
+  STEP_TIMEOUT_CHECKOUT_MS,
+  BACKUP_BRANCH_PREFIX,
+  BACKUP_AUTO_CLEAN,
+  LOCK_HEARTBEAT_INTERVAL_MS,
+  LOCK_HEARTBEAT_STALE_MS,
 };
