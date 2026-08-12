@@ -807,7 +807,8 @@ clearingCache: false,
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         await this.loadBranches();
-        this.publishTargetBranch = this.currentBranch || 'preview';
+        await this.loadCanPublishToMain();
+        this.publishTargetBranch = 'preview';
         try {
             const userInfo = await window.electronAPI.getUserInfo();
             const iso = new Date().toISOString();
@@ -885,25 +886,35 @@ clearingCache: false,
         if (this.precedenceChecking) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         if (this.publishTargetBranch === 'main') {
-            if (!this.canPublishToMain) return;
+            if (!this.canPublishToMain) {
+                this.precedenceError = __t('main.git_exec_error_main_permission');
+                return;
+            }
             this.precedenceChecking = true;
             this.precedenceError = '';
             try {
-                const result = await window.electronAPI.checkPrecedence
-                    ? await window.electronAPI.checkPrecedence(projectId)
-                    : null;
-                if (result && result.code === 'PREVIEW_NOT_AHEAD') {
-                    this.precedenceError = __t('main.git_exec_error_preview_not_ahead');
-                    this.precedenceChecking = false;
-                    return;
+                // Call the new IPC channel that runs preflight for main
+                const result = await window.electronAPI.checkPublishMain(projectId);
+                if (result && !result.canProceed) {
+                    const err = (result.errors || [])[0];
+                    if (err) {
+                        this.precedenceError = err.code === 'PREVIEW_NOT_AHEAD'
+                            ? __t('main.git_exec_error_preview_not_ahead')
+                            : err.code === 'MAIN_MISSING'
+                            ? __t('main.git_exec_error_main_missing')
+                            : err.message || __t('main.git_exec_error_generic');
+                        this.precedenceChecking = false;
+                        return;
+                    }
                 }
-                if (result && result.code === 'MAIN_MISSING') {
-                    this.precedenceError = __t('main.git_exec_error_main_missing');
-                    this.precedenceChecking = false;
-                    return;
+                // Show warnings (branch protection, workflows) as informational
+                if (result && result.warnings) {
+                    for (const w of result.warnings) {
+                        console.info('Preflight warning:', w.message);
+                    }
                 }
             } catch (e) {
-                console.warn('checkPrecedence unavailable, deferring to publish-main:', e.message);
+                console.warn('checkPublishMain unavailable, deferring to backend:', e.message);
             }
             this.precedenceChecking = false;
             this.publishSetupModalOpen = false;

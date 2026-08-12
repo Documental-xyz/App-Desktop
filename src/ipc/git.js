@@ -2260,6 +2260,29 @@ class GitHandlers {
     });
 
     /**
+     * Preflight check for publishing to main — runs runPreflightForMain
+     * without performing the actual publish. Used by the renderer setup
+     * modal so the user sees precedence errors before opening the exec modal.
+     */
+    ipcMain.handle('git:check-publish-main', async (event, projectId) => {
+      try {
+        const projectPath = await this.getProjectPath(projectId);
+        if (this.gitPreflight && this.permissionHandlers) {
+          return await this.gitPreflight.runPreflightForMain(projectId, projectPath, this.permissionHandlers);
+        }
+        return { canProceed: true, checks: [], warnings: [], errors: [] };
+      } catch (error) {
+        this.logger.error('Error in git:check-publish-main:', error);
+        return {
+          canProceed: false,
+          checks: [],
+          warnings: [],
+          errors: [{ code: 'PREFLIGHT_ERROR', message: error.message }],
+        };
+      }
+    });
+
+    /**
      * List remote branches
      */
     ipcMain.handle('git:list-remote-branches', async (event, projectId) => {
@@ -2350,6 +2373,7 @@ class GitHandlers {
     ipcMain.removeHandler('git:refresh');
     ipcMain.removeHandler('git:publish-preview');
     ipcMain.removeHandler('git:publish-main');
+    ipcMain.removeHandler('git:check-publish-main');
     ipcMain.removeHandler('git:list-remote-branches');
     ipcMain.removeHandler('git:cancel-operation');
     ipcMain.removeHandler('git:backup-list');
