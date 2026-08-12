@@ -432,14 +432,17 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.isDescendent.mockResolvedValue(true);
       // Preflight's precedence check requires origin/preview to be AHEAD of
       // origin/main (different SHAs) — otherwise it hard-blocks with
-      // PREVIEW_NOT_AHEAD before the body runs. Discriminate by ref so the
-      // success-path tests exercise the actual merge+push flow.
+      // PREVIEW_NOT_AHEAD before the body runs. It also requires the LOCAL
+      // preview ref to equal origin/preview (no unpushed work) and the
+      // working tree to be clean. Discriminate by ref so the success-path
+      // tests exercise the actual merge+push flow.
       git.resolveRef.mockImplementation((args) => {
         const ref = args && args.ref;
         if (ref === 'origin/preview') return Promise.resolve('preview-ahead-sha');
         if (ref === 'origin/main') return Promise.resolve('main-sha');
         if (ref === 'refs/remotes/origin/preview') return Promise.resolve('preview-ahead-sha');
         if (ref === 'refs/remotes/origin/main') return Promise.resolve('main-sha');
+        if (ref === 'preview' || ref === 'refs/heads/preview') return Promise.resolve('preview-ahead-sha');
         return Promise.resolve('head-sha');
       });
     });

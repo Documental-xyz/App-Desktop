@@ -807,14 +807,17 @@ clearingCache: false,
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         await this.loadBranches();
-        // Ensure preview is first option, then main, then rest alphabetically
-        this.branches.sort((a, b) => {
+        // Ensure preview is first option, then main, then rest alphabetically.
+        // Create a NEW sorted array and assign it — Alpine.js may not detect
+        // in-place `.sort()` mutations reliably.
+        const sortedBranches = [...this.branches].sort((a, b) => {
             if (a.name === 'preview') return -1;
             if (b.name === 'preview') return 1;
             if (a.name === 'main') return -1;
             if (b.name === 'main') return 1;
             return a.name.localeCompare(b.name);
         });
+        this.branches = sortedBranches;
         await this.loadCanPublishToMain();
         this.publishTargetBranch = 'preview';
         try {
@@ -894,9 +897,13 @@ clearingCache: false,
         if (this.precedenceChecking) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         if (this.publishTargetBranch === 'main') {
+            // Informational only — do NOT hard-block. The renderer permission
+            // check can falsely return false when the project isn't fully
+            // registered in the DB or the auth state is mismatched. The
+            // backend's gitPublishMain does its own authoritative permission
+            // check via GitHub's collaborator API, so we defer to it.
             if (!this.canPublishToMain) {
-                this.precedenceError = __t('main.git_exec_error_main_permission');
-                return;
+                console.warn('Publish to main: permission check returned false — deferring to backend gate');
             }
             this.precedenceChecking = true;
             this.precedenceError = '';

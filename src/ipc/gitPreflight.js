@@ -580,14 +580,26 @@ class GitPreflight {
   }
 
   /**
-   * THE KEY CHECK: preview must be strictly ahead of main.
+   * THE KEY CHECK: preview must be strictly ahead of main, AND the local
+   * working tree must be clean AND local preview must equal origin/preview.
+   *
+   * User requirement (PT-BR): "Ao tentar publicar na main, antes verifique
+   * se a branch preview local não tenha coisa para commitar E que esteja
+   * atualizada com a branch remota preview. Só assim posso publicar na main."
    *
    * Steps:
    *   a. Fetch both branches shallow in parallel (read-only sync).
    *   b. Resolve `origin/preview` and `origin/main` SHAs.
-   *   c. If SHAs are equal → return HARD BLOCK error entry.
-   *   d. If local preview ≠ origin/preview → return LOCAL_UNPUSHED warning.
-   *   e. Otherwise return null (no signal).
+   *   c. Hard block: working tree must be clean (no uncommitted changes).
+   *   d. Hard block: preview must be ahead of main (main must be ancestor
+   *      of preview). Identical SHAs or divergent history both block.
+   *   e. Hard block: local preview must equal origin/preview (no unpushed
+   *      work). If local preview ref is missing, also block.
+   *   f. Otherwise return null (no signal).
+   *
+   * All blocks return code `PREVIEW_NOT_AHEAD` (treated as error by
+   * runPreflightForMain) with a human-readable PT-BR message instructing
+   * the user to publish to preview first.
    *
    * @param {string} projectPath
    * @param {Object} auth
@@ -652,8 +664,35 @@ class GitPreflight {
       return null;
     }
 
-    // c. Hard block: preview must be ahead of main (main must be ancestor of preview).
-    //    Fast path: identical SHAs → preview has zero new commits beyond main.
+    // c. Hard block: working tree must be clean (no uncommitted changes).
+    //    If there are dirty files, user must commit and publish to preview
+    //    first. This runs BEFORE the ancestry check so we surface dirty-tree
+    //    state even when SHAs are identical.
+    try {
+      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+      // Each row: [filepath, HEAD (1=present), WORKDIR (1=unchanged), STAGE (1=unchanged)]
+      // A clean file has all three === 1. Anything else is dirty.
+      const dirty = matrix.filter(
+        (row) => !(row[1] === 1 && row[2] === 1 && row[3] === 1)
+      );
+      if (dirty.length > 0) {
+        return {
+          code: 'PREVIEW_NOT_AHEAD',
+          message:
+            'Você tem arquivos não commitados. Publique em preview primeiro.',
+        };
+      }
+    } catch (_e) {
+      // statusMatrix failed — skip this check, ancestry check is the main gate.
+      this.logger?.warn?.(
+        '_checkPrecedence: statusMatrix failed, skipping dirty-tree check:',
+        _e.message
+      );
+    }
+
+    // d. Hard block: preview must be ahead of main (main must be ancestor
+    //    of preview). Fast path: identical SHAs → preview has zero new
+    //    commits beyond main.
     if (previewSha === mainSha) {
       return {
         code: 'PREVIEW_NOT_AHEAD',
@@ -687,7 +726,11 @@ class GitPreflight {
       };
     }
 
-    // d. Warning: local preview diverged from origin/preview (unpushed work).
+    // e. Hard block: local preview must be in sync with origin/preview.
+    //    If local preview !== origin/preview, the user has unpushed commits
+    //    on the local preview branch — they must publish to preview first
+    //    before promoting to main. If the local preview ref doesn't exist
+    //    at all, also block (user needs to publish first to create it).
     try {
       const localPreviewSha = await gitMod.resolveRef({
         fs,
@@ -696,12 +739,18 @@ class GitPreflight {
       });
       if (localPreviewSha !== previewSha) {
         return {
-          code: 'LOCAL_UNPUSHED',
-          message: 'Você tem trabalho local não publicado em preview',
+          code: 'PREVIEW_NOT_AHEAD',
+          message:
+            'Você tem alterações locais não publicadas na preview. Publique em preview primeiro.',
         };
       }
     } catch (_e) {
-      // Local preview ref doesn't exist — not necessarily a problem, skip.
+      // Local preview ref doesn't exist — block, user needs to publish first.
+      return {
+        code: 'PREVIEW_NOT_AHEAD',
+        message:
+          'Branch preview local não encontrada. Publique em preview primeiro.',
+      };
     }
 
     return null;
