@@ -807,6 +807,14 @@ clearingCache: false,
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         await this.loadBranches();
+        // Ensure preview is first option, then main, then rest alphabetically
+        this.branches.sort((a, b) => {
+            if (a.name === 'preview') return -1;
+            if (b.name === 'preview') return 1;
+            if (a.name === 'main') return -1;
+            if (b.name === 'main') return 1;
+            return a.name.localeCompare(b.name);
+        });
         await this.loadCanPublishToMain();
         this.publishTargetBranch = 'preview';
         try {

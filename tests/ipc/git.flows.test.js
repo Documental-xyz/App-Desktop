@@ -33,6 +33,7 @@ vi.mock('isomorphic-git', () => ({
   deleteBranch: vi.fn(),
   merge: vi.fn(),
   readBlob: vi.fn(),
+  isDescendent: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('isomorphic-git/http/node', () => ({ default: {} }));
@@ -427,6 +428,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
     beforeEach(() => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
+      // Precedence ancestry check: preview IS a descendant of main → OK to publish.
+      git.isDescendent.mockResolvedValue(true);
       // Preflight's precedence check requires origin/preview to be AHEAD of
       // origin/main (different SHAs) — otherwise it hard-blocks with
       // PREVIEW_NOT_AHEAD before the body runs. Discriminate by ref so the

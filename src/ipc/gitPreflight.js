@@ -652,11 +652,38 @@ class GitPreflight {
       return null;
     }
 
-    // c. Hard block: preview hasn't moved past main.
+    // c. Hard block: preview must be ahead of main (main must be ancestor of preview).
+    //    Fast path: identical SHAs → preview has zero new commits beyond main.
     if (previewSha === mainSha) {
       return {
         code: 'PREVIEW_NOT_AHEAD',
         message: 'Publique em preview primeiro — preview não tem mudanças além de main',
+      };
+    }
+
+    // Check ancestry: is main an ancestor of preview?
+    // If yes → preview is ahead (has main's history + new commits) → OK to promote.
+    // If no  → main has commits preview doesn't have → user must publish to preview first.
+    let isMainAncestorOfPreview = false;
+    try {
+      isMainAncestorOfPreview = await gitMod.isDescendent({
+        fs,
+        dir: projectPath,
+        ancestor: mainSha,
+        oid: previewSha,
+        depth: -1,
+      });
+    } catch (e) {
+      // isDescendent may fail if commits aren't available locally (shallow clone).
+      // Fall back to equality check — already handled above.
+      this.logger?.warn?.('_checkPrecedence: isDescendent failed, falling back to equality:', e.message);
+    }
+
+    if (!isMainAncestorOfPreview && previewSha !== mainSha) {
+      // main has commits that preview doesn't have → preview is behind.
+      return {
+        code: 'PREVIEW_NOT_AHEAD',
+        message: 'Publique em preview primeiro — a branch main tem mudanças que a preview ainda não incorporou',
       };
     }
 
