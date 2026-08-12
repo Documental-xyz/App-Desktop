@@ -377,6 +377,78 @@
 <span class="slider"></span>
 </label>
 </div>
+
+<div class="card" x-data="backupManager()">
+<div class="flex items-start justify-between gap-3 mb-4">
+<div>
+<h3 class="text-sm font-medium text-text-dark" x-text="$store.i18n.t('config.backup_section_title')">Backups de Segurança</h3>
+<p class="text-xs text-muted-dark mt-1" x-text="$store.i18n.t('config.backup_section_desc')"></p>
+</div>
+<button @click="loadBackups()"
+:disabled="loading"
+:class="loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-surface-secondary'"
+class="flex items-center gap-1.5 px-3 py-1.5 bg-surface-secondary text-text-dark rounded-md text-xs font-medium transition-colors">
+<span class="material-symbols-outlined text-sm" :class="{ 'animate-spin': loading }">refresh</span>
+<span x-text="$store.i18n.t('config.backup_refresh')"></span>
+</button>
+</div>
+
+<div x-show="message.text" class="mb-3 p-2.5 rounded-md text-sm flex items-center gap-2"
+     :style="message.type === 'error'
+        ? 'background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent); color: var(--color-danger);'
+        : 'background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent); color: var(--color-primary);'">
+<span class="material-symbols-outlined text-base" x-text="message.type === 'error' ? 'error' : 'check_circle'"></span>
+<span x-text="message.text"></span>
+</div>
+
+<div x-show="loading" class="py-6 text-center">
+<span class="material-symbols-outlined text-muted-dark text-2xl animate-spin inline-block">progress_activity</span>
+<p class="text-xs text-muted-dark mt-2" x-text="$store.i18n.t('config.backup_loading')"></p>
+</div>
+
+<div x-show="!loading && backups.length === 0" class="py-8 text-center">
+<span class="material-symbols-outlined text-muted-dark text-3xl">folder_off</span>
+<p class="text-sm text-muted-dark mt-2" x-text="$store.i18n.t('config.backup_empty')"></p>
+</div>
+
+<div x-show="!loading && backups.length > 0" class="overflow-x-auto">
+<table class="w-full text-sm">
+<thead>
+<tr class="text-left text-xs text-muted-dark uppercase tracking-wide border-b border-border-default">
+<th class="py-2 pr-3 font-medium" x-text="$store.i18n.t('config.backup_column_branch')"></th>
+<th class="py-2 px-3 font-medium" x-text="$store.i18n.t('config.backup_column_date')"></th>
+<th class="py-2 px-3 font-medium" x-text="$store.i18n.t('config.backup_column_sha')"></th>
+<th class="py-2 pl-3 font-medium text-right" x-text="$store.i18n.t('config.backup_column_actions')"></th>
+</tr>
+</thead>
+<tbody>
+<template x-for="backup in backups" :key="backup.name">
+<tr class="border-b border-border-subtle hover:bg-surface-secondary transition-colors">
+<td class="py-2.5 pr-3 text-text-dark font-mono text-xs" x-text="backup.name"></td>
+<td class="py-2.5 px-3 text-muted-dark text-xs" x-text="formatDate(backup.timestamp)"></td>
+<td class="py-2.5 px-3 text-muted-dark font-mono text-xs" x-text="shortSha(backup.sha)"></td>
+<td class="py-2.5 pl-3 text-right whitespace-nowrap">
+<button @click="restore(backup.name)"
+:disabled="busyFor(backup.name)"
+:class="busyFor(backup.name) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-primary-hover'"
+class="inline-flex items-center gap-1 px-2.5 py-1 bg-primary text-white rounded text-xs font-medium transition-colors mr-1.5">
+<span class="material-symbols-outlined text-sm" :class="{ 'animate-spin': busyFor(backup.name) === 'restore' }">restore</span>
+<span x-text="$store.i18n.t('config.backup_restore')"></span>
+</button>
+<button @click="deleteBackup(backup.name)"
+:disabled="busyFor(backup.name)"
+:class="busyFor(backup.name) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-500'"
+class="inline-flex items-center gap-1 px-2.5 py-1 bg-red-600 text-white rounded text-xs font-medium transition-colors">
+<span class="material-symbols-outlined text-sm" :class="{ 'animate-spin': busyFor(backup.name) === 'delete' }">delete</span>
+<span x-text="$store.i18n.t('config.backup_delete')"></span>
+</button>
+</td>
+</tr>
+</template>
+</tbody>
+</table>
+</div>
+</div>
 </div>
 </div>
 
@@ -524,6 +596,91 @@
 </main>
 </div>
 </div>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('backupManager', () => ({
+    backups: [],
+    loading: false,
+    busy: null,
+    message: { type: '', text: '' },
+    async init() { await this.loadBackups(); },
+    async loadBackups() {
+      this.loading = true;
+      this.message = { type: '', text: '' };
+      try {
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (!projectId) { this.backups = []; return; }
+        if (!window.electronAPI || !window.electronAPI.listBackups) {
+          this.backups = [];
+          return;
+        }
+        const result = await window.electronAPI.listBackups(projectId);
+        this.backups = result && result.success ? result.backups : [];
+      } catch (e) {
+        console.error('Failed to load backups:', e);
+        this.backups = [];
+      } finally {
+        this.loading = false;
+      }
+    },
+    busyFor(name) {
+      return this.busy && this.busy.name === name ? this.busy.action : null;
+    },
+    formatDate(ts) {
+      if (!ts) return '—';
+      try {
+        return new Date(ts).toLocaleString();
+      } catch { return '—'; }
+    },
+    shortSha(sha) {
+      if (!sha) return '—';
+      return sha.length > 7 ? sha.slice(0, 7) : sha;
+    },
+    flash(type, text) {
+      this.message = { type, text };
+      setTimeout(() => { this.message = { type: '', text: '' }; }, 4000);
+    },
+    async restore(name) {
+      if (this.busy) return;
+      if (!confirm(window.__t('config.backup_restore_confirm', { name }))) return;
+      const projectId = sessionStorage.getItem('currentProjectId');
+      this.busy = { name, action: 'restore' };
+      try {
+        const result = await window.electronAPI.restoreBackup(projectId, name);
+        if (result && result.success) {
+          this.flash('success', window.__t('config.backup_restore_success'));
+          await this.loadBackups();
+        } else {
+          this.flash('error', window.__t('config.backup_restore_error', { error: (result && result.error) || 'unknown' }));
+        }
+      } catch (e) {
+        this.flash('error', window.__t('config.backup_restore_error', { error: e.message }));
+      } finally {
+        this.busy = null;
+      }
+    },
+    async deleteBackup(name) {
+      if (this.busy) return;
+      if (!confirm(window.__t('config.backup_delete_confirm', { name }))) return;
+      const projectId = sessionStorage.getItem('currentProjectId');
+      this.busy = { name, action: 'delete' };
+      try {
+        const result = await window.electronAPI.deleteBackup(projectId, name);
+        if (result && result.success) {
+          this.flash('success', window.__t('config.backup_delete_success'));
+          await this.loadBackups();
+        } else {
+          this.flash('error', window.__t('config.backup_delete_error', { error: (result && result.error) || 'unknown' }));
+        }
+      } catch (e) {
+        this.flash('error', window.__t('config.backup_delete_error', { error: e.message }));
+      } finally {
+        this.busy = null;
+      }
+    },
+  }));
+});
+</script>
 <script src="./shared/theme-init.js" defer></script>
 <script>
 // --- Theme picker ---

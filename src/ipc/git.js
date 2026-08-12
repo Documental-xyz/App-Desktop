@@ -181,6 +181,15 @@ class GitHandlers {
    * @returns {boolean} True if lock was acquired, false if already in progress
    */
   acquireGitLock() {
+    // Stale-lock auto-recovery: if a previous process crashed mid-operation,
+    // the in-process heartbeat is stale. Only recovers on NEXT acquire attempt
+    // — never interrupts an active operation.
+    if (this.gitOperationInProgress && this.gitSafety && this.gitSafety.checkStaleHeartbeat()) {
+      this.logger.warn('🔒 Lock auto-recuperado de processo anterior (heartbeat stale)');
+      this.gitOperationInProgress = false;
+      if (this._lockTimeout) { clearTimeout(this._lockTimeout); this._lockTimeout = null; }
+      this._abortController = null;
+    }
     if (this.gitOperationInProgress) {
       this.logger.warn('Git operation already in progress');
       return false;
@@ -192,6 +201,9 @@ class GitHandlers {
       this.logger.warn('Git operation auto-aborted after timeout');
       this._abortController.abort(new Error('Operation timeout'));
     }, this.LOCK_TIMEOUT_MS);
+    if (this.gitSafety) {
+      this.gitSafety.startHeartbeat();
+    }
     this.logger.info('Git operation lock acquired');
     return true;
   }
@@ -200,6 +212,9 @@ class GitHandlers {
    * Release the git operation lock
    */
   releaseGitLock() {
+    if (this.gitSafety) {
+      this.gitSafety.stopHeartbeat();
+    }
     this._flushSendOutput();
     this.gitOperationInProgress = false;
     if (this._lockTimeout) {
@@ -2257,6 +2272,54 @@ class GitHandlers {
       }
     });
 
+    // Security: raw git module never leaked to renderer — only these 3 channels.
+    ipcMain.handle('git:backup-list', async (event, projectId) => {
+      try {
+        const projectPath = await this.getProjectPath(projectId);
+        const gitMod = await this._getGit();
+        const fs = require('fs');
+        const backups = this.gitSafety
+          ? await this.gitSafety.listBackups(gitMod, fs, projectPath)
+          : [];
+        return { success: true, backups };
+      } catch (error) {
+        this.logger.error('Error in git:backup-list:', error);
+        return { success: false, error: error.message, backups: [] };
+      }
+    });
+
+    ipcMain.handle('git:backup-restore', async (event, projectId, backupBranch) => {
+      try {
+        const projectPath = await this.getProjectPath(projectId);
+        const gitMod = await this._getGit();
+        const fs = require('fs');
+        if (!this.gitSafety) {
+          throw new Error('GitSafety unavailable');
+        }
+        await this.gitSafety.restoreBackup(gitMod, fs, projectPath, backupBranch);
+        return { success: true };
+      } catch (error) {
+        this.logger.error('Error in git:backup-restore:', error);
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle('git:backup-delete', async (event, projectId, backupBranch) => {
+      try {
+        const projectPath = await this.getProjectPath(projectId);
+        const gitMod = await this._getGit();
+        const fs = require('fs');
+        if (!this.gitSafety) {
+          throw new Error('GitSafety unavailable');
+        }
+        await this.gitSafety.deleteBackup(gitMod, fs, projectPath, backupBranch);
+        return { success: true };
+      } catch (error) {
+        this.logger.error('Error in git:backup-delete:', error);
+        return { success: false, error: error.message };
+      }
+    });
+
     /**
      * Cancel current Git operation
      */
@@ -2289,6 +2352,9 @@ class GitHandlers {
     ipcMain.removeHandler('git:publish-main');
     ipcMain.removeHandler('git:list-remote-branches');
     ipcMain.removeHandler('git:cancel-operation');
+    ipcMain.removeHandler('git:backup-list');
+    ipcMain.removeHandler('git:backup-restore');
+    ipcMain.removeHandler('git:backup-delete');
     
     this.logger.info('✅ Git operations IPC handlers unregistered');
   }

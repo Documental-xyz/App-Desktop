@@ -194,9 +194,15 @@ clearingCache: false,
           error: null,
           binariesResolved: 0,
           cancelable: true,
+          preflightRunning: false,
+          warnings: [],
+          fastPath: false,
       },
       // Permission gating for publish-to-main
       canPublishToMain: false,
+      // Inline precedence error surfaced inside the publish setup modal
+      precedenceError: '',
+      precedenceChecking: false,
       // Unified publish setup modal (branch selector + commit message)
       publishSetupModalOpen: false,
       publishTargetBranch: 'preview',
@@ -743,6 +749,9 @@ clearingCache: false,
         this.gitExecution.success = false;
         this.gitExecution.error = null;
         this.gitExecution.binariesResolved = 0;
+        this.gitExecution.preflightRunning = false;
+        this.gitExecution.warnings = [];
+        this.gitExecution.fastPath = false;
     },
     finishGitExecModal(result) {
         this.gitExecution.inProgress = false;
@@ -764,6 +773,9 @@ clearingCache: false,
         this.gitExecution.operationType = null;
         this.gitExecution.error = null;
         this.gitExecution.finished = false;
+        this.gitExecution.preflightRunning = false;
+        this.gitExecution.warnings = [];
+        this.gitExecution.fastPath = false;
     },
     cancelGitExec() {
         window.electronAPI.cancelGitOperation();
@@ -772,6 +784,8 @@ clearingCache: false,
         if (result.code === 'DIRTY_LOCAL') return __t('main.discard_local_desc');
         if (result.code === 'PERMISSION_DENIED') return __t('main.git_exec_error_main_permission');
         if (result.code === 'MAIN_MERGE_CONFLICT') return __t('main.git_exec_error_generic');
+        if (result.code === 'PREVIEW_NOT_AHEAD') return __t('main.git_exec_error_preview_not_ahead');
+        if (result.code === 'MAIN_MISSING') return __t('main.git_exec_error_main_missing');
         if (result.cancelled) return __t('common.canceling');
         const err = result.error || '';
         if (err.includes('401') || err.includes('403')) return __t('main.git_exec_error_auth');
@@ -802,6 +816,8 @@ clearingCache: false,
             this.commitPrefix = `Content update at ${new Date().toISOString()}`;
         }
         this.userCommitSuffix = '';
+        this.precedenceError = '';
+        this.precedenceChecking = false;
         this.publishSetupModalOpen = true;
     },
     get fullCommitMessage() {
@@ -866,31 +882,68 @@ clearingCache: false,
         } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
     async onPublishSetupConfirm() {
-        this.publishSetupModalOpen = false;
+        if (this.precedenceChecking) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         if (this.publishTargetBranch === 'main') {
             if (!this.canPublishToMain) return;
+            this.precedenceChecking = true;
+            this.precedenceError = '';
+            try {
+                const result = await window.electronAPI.checkPrecedence
+                    ? await window.electronAPI.checkPrecedence(projectId)
+                    : null;
+                if (result && result.code === 'PREVIEW_NOT_AHEAD') {
+                    this.precedenceError = __t('main.git_exec_error_preview_not_ahead');
+                    this.precedenceChecking = false;
+                    return;
+                }
+                if (result && result.code === 'MAIN_MISSING') {
+                    this.precedenceError = __t('main.git_exec_error_main_missing');
+                    this.precedenceChecking = false;
+                    return;
+                }
+            } catch (e) {
+                console.warn('checkPrecedence unavailable, deferring to publish-main:', e.message);
+            }
+            this.precedenceChecking = false;
+            this.publishSetupModalOpen = false;
             this.openGitExecModal('publish-main', 4);
+            this.gitExecution.preflightRunning = true;
             try {
                 const result = await window.electronAPI.publishToMain(projectId);
+                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal(result);
-            } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+            } catch (e) {
+                this.gitExecution.preflightRunning = false;
+                this.finishGitExecModal({ success: false, error: e.message });
+            }
         } else {
+            this.publishSetupModalOpen = false;
             this.openGitExecModal('publish-preview', 5);
+            this.gitExecution.preflightRunning = true;
             try {
                 const result = await window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage);
+                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal(result);
-            } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+            } catch (e) {
+                this.gitExecution.preflightRunning = false;
+                this.finishGitExecModal({ success: false, error: e.message });
+            }
         }
     },
     async onPublishMainClick() {
         if (!this.canPublishToMain) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         this.openGitExecModal('publish-main', 4);
+        this.gitExecution.preflightRunning = true;
         try {
             const result = await window.electronAPI.publishToMain(projectId);
+            this.gitExecution.preflightRunning = false;
             this.finishGitExecModal(result);
-        } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
+        } catch (e) {
+            this.gitExecution.preflightRunning = false;
+            this.finishGitExecModal({ success: false, error: e.message });
+        }
     },
     async init() { // Make init an async function
         console.log('🚀 INIT STARTED - Renderer initialization beginning');
@@ -995,6 +1048,21 @@ clearingCache: false,
                 : payload || '';
             this.commandOutput += message;
             sessionStorage.setItem('commandOutput', this.commandOutput);
+            if (this.gitExecution.modalOpen) {
+                if (message.includes('⚡ Modo rápido') || message.includes('fast-forward') || message.includes('Fast-forward')) {
+                    this.gitExecution.fastPath = true;
+                }
+                if (message.includes('workflows') || message.includes('Actions')) {
+                    if (!this.gitExecution.warnings.some((w) => w.includes('Actions'))) {
+                        this.gitExecution.warnings.push(__t('main.git_exec_actions_notice'));
+                    }
+                }
+                if (message.includes('.github/workflows')) {
+                    if (!this.gitExecution.warnings.some((w) => w.includes('Actions'))) {
+                        this.gitExecution.warnings.push(__t('main.git_exec_actions_notice'));
+                    }
+                }
+            }
             this.$nextTick(() => {
                 const activeTab = this.consoleTabs.find(tab => tab.id === this.activeConsoleTab);
                 if (activeTab && activeTab.type === 'commands') {
@@ -1914,31 +1982,61 @@ clearingCache: false,
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <div class="flex items-center gap-3 mb-6">
       <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
-        <span class="material-symbols-outlined text-primary" x-text="gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'autorenew'"></span>
+        <span class="material-symbols-outlined text-primary"
+              :class="{ 'animate-spin': gitExecution.preflightRunning }"
+              x-text="gitExecution.preflightRunning ? 'progress_activity' : (gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'autorenew')"></span>
       </div>
-      <h3 class="text-lg font-medium text-text-dark" x-text="operationTitle()"></h3>
+      <h3 class="text-lg font-medium text-text-dark"
+          x-text="gitExecution.preflightRunning ? $store.i18n.t('main.git_exec_preflight_checking') : operationTitle()"></h3>
+    </div>
+
+    <!-- Actions Notice Banner (preflight warnings) -->
+    <div x-show="gitExecution.warnings.length > 0" class="mb-4 p-3 rounded-md flex items-start gap-2" style="background-color: color-mix(in srgb, var(--color-accent-orange) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-accent-orange) 50%, transparent);">
+      <span class="material-symbols-outlined text-accent-orange text-lg flex-shrink-0">bolt</span>
+      <div class="text-sm">
+        <template x-for="(warning, idx) in gitExecution.warnings" :key="idx">
+          <p style="color: var(--color-accent-orange);" x-text="warning"></p>
+        </template>
+      </div>
+    </div>
+
+    <!-- Fast-Path Badge -->
+    <div x-show="gitExecution.fastPath" class="mb-4 flex items-center gap-2 px-3 py-2 rounded-md" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);">
+      <span class="material-symbols-outlined text-primary text-lg">bolt</span>
+      <span class="text-sm font-medium" style="color: var(--color-primary);" x-text="$store.i18n.t('main.git_exec_fast_path_badge')"></span>
     </div>
 
     <!-- Stepper Card -->
     <div class="bg-background-dark rounded-lg p-4 mb-4 border border-border-default">
-      <template x-for="i in gitExecution.totalSteps" :key="i">
-        <div class="flex items-center gap-3 py-1.5">
-          <div class="flex items-center justify-center w-7 h-7">
-            <template x-if="stepClass(i) === 'active'">
-              <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
-            </template>
-            <template x-if="stepClass(i) === 'completed'">
-              <span class="inline-flex items-center justify-center w-7 h-7 rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);">
-                <span class="material-symbols-outlined text-xl">check_circle</span>
-              </span>
-            </template>
-            <template x-if="stepClass(i) === 'pending'">
-              <div class="w-4 h-4 border-2 border-border-subtle rounded-full"></div>
-            </template>
-          </div>
-          <span class="text-sm font-medium"
-                :class="{ 'text-text-dark': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
-                x-text="stepLabelFor(i)"></span>
+      <template x-if="gitExecution.preflightRunning">
+        <div class="flex items-center gap-3 py-2">
+          <span class="material-symbols-outlined text-primary text-xl animate-spin">progress_activity</span>
+          <span class="text-sm font-medium text-text-dark" x-text="$store.i18n.t('main.git_exec_preflight_checking')"></span>
+        </div>
+      </template>
+      <template x-if="!gitExecution.preflightRunning">
+        <div>
+          <template x-for="i in gitExecution.totalSteps" :key="i">
+            <div class="flex items-center gap-3 py-1.5"
+                 x-show="!(gitExecution.fastPath && stepLabelFor(i) === $store.i18n.t('main.git_exec_step_merging'))">
+              <div class="flex items-center justify-center w-7 h-7">
+                <template x-if="stepClass(i) === 'active'">
+                  <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
+                </template>
+                <template x-if="stepClass(i) === 'completed'">
+                  <span class="inline-flex items-center justify-center w-7 h-7 rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);">
+                    <span class="material-symbols-outlined text-xl">check_circle</span>
+                  </span>
+                </template>
+                <template x-if="stepClass(i) === 'pending'">
+                  <div class="w-4 h-4 border-2 border-border-subtle rounded-full"></div>
+                </template>
+              </div>
+              <span class="text-sm font-medium"
+                    :class="{ 'text-text-dark': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
+                    x-text="stepLabelFor(i)"></span>
+            </div>
+          </template>
         </div>
       </template>
     </div>
@@ -2020,14 +2118,23 @@ clearingCache: false,
                 :placeholder="$store.i18n.t('main.commit_modal_optional_placeholder')"></textarea>
     </div>
 
+    <!-- Precedence inline error (publish-to-main) -->
+    <div x-show="precedenceError" class="mb-4 p-3 rounded-md flex items-start gap-2" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-danger) 50%, transparent);">
+      <span class="material-symbols-outlined text-lg flex-shrink-0" style="color: var(--color-danger);">error</span>
+      <p class="text-sm" style="color: var(--color-danger);" x-text="precedenceError"></p>
+    </div>
+
     <div class="flex justify-end gap-2">
       <button @click="publishSetupModalOpen = false"
               class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
               x-text="$store.i18n.t('common.cancel')"></button>
       <button @click="onPublishSetupConfirm()"
-              class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium flex items-center gap-2">
-        <span class="material-icons text-sm">publish</span>
-        <span x-text="$store.i18n.t('main.nav_publish')"></span>
+              :disabled="precedenceChecking || !!precedenceError"
+              :class="precedenceChecking || precedenceError ? 'opacity-50 cursor-not-allowed bg-muted-dark' : 'bg-primary hover:bg-primary-hover'"
+              class="px-4 py-2 text-white rounded-md text-sm font-medium flex items-center gap-2">
+        <span x-show="!precedenceChecking" class="material-icons text-sm">publish</span>
+        <span x-show="precedenceChecking" class="material-icons text-sm animate-spin">progress_activity</span>
+        <span x-text="precedenceChecking ? $store.i18n.t('main.git_exec_preflight_checking') : $store.i18n.t('main.nav_publish')"></span>
       </button>
     </div>
   </div>
