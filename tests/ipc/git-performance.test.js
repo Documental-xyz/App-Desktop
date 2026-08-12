@@ -281,4 +281,159 @@ describe('Git performance optimizations', () => {
       expect(methodSource).toContain('await branchListPromise');
     });
   });
+
+  // ─── Category 10: Per-step timeout (_raceTimeout) ────────────────────
+  describe('Per-step timeout (_raceTimeout)', () => {
+    it('emits a warning when the awaited operation exceeds the threshold', async () => {
+      vi.useFakeTimers();
+
+      let resolveOp;
+      const pending = new Promise((resolve) => { resolveOp = resolve; });
+      const promise = handlers._raceTimeout(pending, 5000, 'fetch origin/preview');
+
+      vi.advanceTimersByTime(4000);
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(2000);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('fetch origin/preview')
+      );
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('5000ms')
+      );
+
+      resolveOp('value');
+      const value = await promise;
+      expect(value).toBe('value');
+
+      vi.useRealTimers();
+    });
+
+    it('clears the warning timer when the operation completes under threshold', async () => {
+      vi.useFakeTimers();
+
+      const promise = handlers._raceTimeout(
+        Promise.resolve('fast-value'),
+        5000,
+        'checkout preview'
+      );
+
+      const value = await promise;
+      expect(value).toBe('fast-value');
+
+      vi.advanceTimersByTime(20000);
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+
+    it('still resolves (and clears timer) when the operation rejects', async () => {
+      vi.useFakeTimers();
+
+      const promise = handlers._raceTimeout(
+        Promise.reject(new Error('network down')),
+        5000,
+        'fetch origin/preview'
+      );
+
+      await expect(promise).rejects.toThrow('network down');
+
+      vi.advanceTimersByTime(20000);
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+  });
+
+  // ─── Category 11: Lock heartbeat integration ─────────────────────────
+  describe('Lock heartbeat integration', () => {
+    it('starts heartbeat on acquireGitLock and stops on releaseGitLock', () => {
+      expect(handlers.gitSafety).not.toBeNull();
+
+      handlers.acquireGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).not.toBeNull();
+      expect(handlers.gitSafety._lastHeartbeat).not.toBeNull();
+
+      handlers.releaseGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).toBeNull();
+      expect(handlers.gitSafety._lastHeartbeat).toBeNull();
+    });
+
+    it('heartbeat is null when no operation is in progress', () => {
+      expect(handlers.gitSafety._heartbeatInterval).toBeNull();
+      expect(handlers.gitSafety._lastHeartbeat).toBeNull();
+    });
+
+    it('multiple acquire/release cycles keep heartbeat consistent', () => {
+      handlers.acquireGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).not.toBeNull();
+      handlers.releaseGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).toBeNull();
+
+      handlers.acquireGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).not.toBeNull();
+      handlers.releaseGitLock();
+      expect(handlers.gitSafety._heartbeatInterval).toBeNull();
+    });
+  });
+
+  // ─── Category 12: Stale-lock auto-recovery ───────────────────────────
+  describe('Stale-lock auto-recovery', () => {
+    it('force-recovers a stale lock on the next acquireGitLock() call', () => {
+      handlers.gitOperationInProgress = true;
+      handlers.gitSafety._lastHeartbeat = Date.now() - 200000;
+      expect(handlers.gitSafety.checkStaleHeartbeat()).toBe(true);
+
+      const result = handlers.acquireGitLock();
+
+      expect(result).toBe(true);
+      expect(handlers.gitOperationInProgress).toBe(true);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('auto-recuperado')
+      );
+      expect(handlers.gitSafety._lastHeartbeat).toBeGreaterThan(Date.now() - 5000);
+    });
+
+    it('does NOT auto-recover when heartbeat is recent (active operation)', () => {
+      handlers.gitOperationInProgress = true;
+      handlers.gitSafety.startHeartbeat();
+      expect(handlers.gitSafety.checkStaleHeartbeat()).toBe(false);
+
+      const result = handlers.acquireGitLock();
+
+      expect(result).toBe(false);
+      expect(mockLogger.warn).toHaveBeenCalledWith('Git operation already in progress');
+    });
+
+    it('does NOT auto-recover when gitSafety is unavailable', () => {
+      const savedSafety = handlers.gitSafety;
+      handlers.gitSafety = null;
+      handlers.gitOperationInProgress = true;
+
+      const result = handlers.acquireGitLock();
+
+      expect(result).toBe(false);
+
+      handlers.gitSafety = savedSafety;
+      handlers.gitOperationInProgress = false;
+    });
+
+    it('stale recovery clears the stale _abortController and _lockTimeout', () => {
+      vi.useFakeTimers();
+
+      handlers.gitOperationInProgress = true;
+      handlers.gitSafety._lastHeartbeat = Date.now() - 200000;
+      const oldController = new AbortController();
+      handlers._abortController = oldController;
+      handlers._lockTimeout = setTimeout(() => {}, 99999);
+
+      handlers.acquireGitLock();
+
+      expect(handlers._abortController).not.toBe(oldController);
+      expect(handlers._abortController).not.toBeNull();
+
+      handlers.releaseGitLock();
+      vi.useRealTimers();
+    });
+  });
 });

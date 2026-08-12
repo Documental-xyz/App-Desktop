@@ -571,4 +571,121 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(Object.keys(git)).not.toContain('reset');
         });
   });
+
+  // ─── Precedence enforcement regression ────────────────────────────────
+  describe('Precedence enforcement before lock (Wave 2-3 regression)', () => {
+    it('gitPublishMain does NOT acquire the lock on PREVIEW_NOT_AHEAD', async () => {
+      mockPermissionHandlers.checkMainPermission.mockResolvedValue({
+        success: true,
+        canPushToMain: true,
+      });
+      git.resolveRef.mockResolvedValue('identical-sha');
+
+      const lockSpy = vi.spyOn(handlers, 'acquireGitLock');
+
+      const result = await handlers.gitPublishMain(1);
+
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('PREVIEW_NOT_AHEAD');
+      expect(lockSpy).not.toHaveBeenCalled();
+      expect(handlers.gitOperationInProgress).toBe(false);
+    });
+
+    it('gitPublishMain does NOT acquire the lock on MAIN_MISSING', async () => {
+      mockPermissionHandlers.checkMainPermission.mockResolvedValue({
+        success: true,
+        canPushToMain: true,
+      });
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'origin/preview') return 'preview-ahead-sha';
+        if (ref === 'origin/main') throw new Error('not found');
+        if (ref === 'preview') return 'preview-ahead-sha';
+        return 'sha';
+      });
+      git.fetch.mockImplementation(async ({ ref }) => {
+        if (ref === 'main') throw new Error('404 not found');
+        return {};
+      });
+
+      const lockSpy = vi.spyOn(handlers, 'acquireGitLock');
+
+      const result = await handlers.gitPublishMain(1);
+
+      expect(result.success).toBe(false);
+      expect(lockSpy).not.toHaveBeenCalled();
+      expect(handlers.gitOperationInProgress).toBe(false);
+    });
+  });
+
+  // ─── gitRefresh data-loss safety wrapper (Wave 1-3 regression) ────────
+  describe('gitRefresh — safe-checkout (backup on unpushed state)', () => {
+    it('routes through gitSafety._safeResetOrCheckout instead of _hardResetBranch directly', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([]);
+      git.fetch.mockResolvedValue({});
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'HEAD') return 'local-head-sha';
+        if (ref === 'refs/remotes/origin/preview') return 'remote-preview-sha';
+        if (ref === 'origin/preview') return 'remote-preview-sha';
+        return 'sha';
+      });
+      git.writeRef.mockResolvedValue(undefined);
+      git.checkout.mockResolvedValue(undefined);
+      git.branch.mockResolvedValue(undefined);
+      git.commit.mockResolvedValue('backup-sha');
+
+      expect(handlers.gitSafety).not.toBeNull();
+      const safeSpy = vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout');
+      const hardResetSpy = vi.spyOn(handlers, '_hardResetBranch');
+
+      const result = await handlers.gitRefresh(1);
+
+      expect(result.success).toBe(true);
+      expect(safeSpy).toHaveBeenCalledTimes(1);
+      // _hardResetBranch MUST NOT be called when gitSafety is available —
+      // safe-checkout is the data-loss guard.
+      expect(hardResetSpy).not.toHaveBeenCalled();
+    });
+
+    it('still completes refresh when gitSafety._safeResetOrCheckout creates a backup', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([]);
+      git.fetch.mockResolvedValue({});
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'HEAD') return 'local-head';
+        if (ref === 'refs/remotes/origin/preview') return 'remote-sha';
+        if (ref === 'origin/preview') return 'remote-sha';
+        return 'sha';
+      });
+      git.writeRef.mockResolvedValue(undefined);
+      git.checkout.mockResolvedValue(undefined);
+      git.branch.mockResolvedValue(undefined);
+
+      vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout').mockResolvedValue({
+        backupBranch: 'backup/preview-abc-1700000000000',
+      });
+
+      const result = await handlers.gitRefresh(1);
+
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('preview');
+    });
+
+    it('propagates backup failure as a non-success result (aborts destructive op)', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([]);
+      git.fetch.mockResolvedValue({});
+      git.resolveRef.mockResolvedValue('sha');
+
+      vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout').mockRejectedValue(
+        new Error('backup creation failed')
+      );
+
+      const result = await handlers.gitRefresh(1);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/backup creation failed/);
+      expect(handlers.gitOperationInProgress).toBe(false);
+    });
+  });
 });
