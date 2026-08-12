@@ -130,6 +130,18 @@ class PermissionHandlers {
         };
       }
 
+      // Fast path: if the user IS the repo owner, they always have push permission.
+      // This avoids false 404 from getCollaboratorPermissionLevel (owners aren't
+      // listed as "collaborators" in the GitHub API).
+      if (username === owner) {
+        this.logger.info(`🔐 ${username} is the owner of ${owner}/${repo} — permission granted (admin)`);
+        const cacheKey = `${owner}/${repo}:${username}`;
+        const result = { success: true, permission: 'admin', canPushToMain: true, cached: false };
+        this._permissionCache.set(cacheKey, { permission: 'admin', canPushToMain: true, timestamp: Date.now() });
+        this._indexCacheKey(String(projectId), cacheKey);
+        return result;
+      }
+
       // Step 3: check cache.
       const cacheKey = `${owner}/${repo}:${username}`;
       const now = Date.now();
