@@ -831,6 +831,12 @@ clearingCache: false,
         this.precedenceError = '';
         this.precedenceChecking = false;
         this.publishSetupModalOpen = true;
+        // Force preview selection after DOM renders. Alpine may re-render the
+        // <select> when the branches array changes, resetting x-model's value.
+        // Re-asserting on $nextTick guarantees preview stays pre-selected.
+        this.$nextTick(() => {
+            this.publishTargetBranch = 'preview';
+        });
     },
     get fullCommitMessage() {
         return this.userCommitSuffix.trim()
@@ -929,7 +935,12 @@ clearingCache: false,
                     }
                 }
             } catch (e) {
-                console.warn('checkPublishMain unavailable, deferring to backend:', e.message);
+                // Guardrail must BLOCK, not catch-and-continue. If the preflight
+                // check itself is unavailable, we cannot safely proceed — abort.
+                console.error('checkPublishMain failed, blocking publish:', e.message);
+                this.precedenceError = 'Não foi possível verificar pré-requisitos. Tente novamente.';
+                this.precedenceChecking = false;
+                return;
             }
             this.precedenceChecking = false;
             this.publishSetupModalOpen = false;
@@ -2129,7 +2140,7 @@ clearingCache: false,
     <select x-model="publishTargetBranch"
             class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark mb-4">
       <template x-for="branch in branches" :key="branch.name">
-        <option :value="branch.name" x-text="branch.name"></option>
+        <option :value="branch.name" x-text="branch.name" :selected="branch.name === 'preview'"></option>
       </template>
     </select>
 

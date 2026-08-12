@@ -1942,7 +1942,12 @@ class GitHandlers {
         if (preflightErr && preflightErr.name === 'AbortError') {
           return { success: false, cancelled: true, message: 'Operation aborted' };
         }
-        this.logger.warn('gitPublishMain: preflight threw (continuing):', preflightErr.message);
+        // Guardrail must BLOCK, not catch-and-continue. If the preflight itself
+        // throws, we cannot safely proceed — return an error instead of letting
+        // the body run and potentially push without verification.
+        this.logger.error('gitPublishMain: preflight threw (BLOCKING):', preflightErr);
+        this.sendOutput('❌ Não foi possível verificar pré-requisitos para publicar em main.');
+        return { success: false, code: 'PREFLIGHT_ERROR', error: preflightErr.message };
       }
     }
 
@@ -2006,6 +2011,27 @@ class GitHandlers {
         this.sendOutput('❌ Conflito ao integrar Preview em Main. Verifique manualmente.');
         return { success: false, code: 'MAIN_MERGE_CONFLICT', error: 'Merge conflict promoting preview to main' };
       }
+
+      // Detect no-op push: if local main already equals origin/main, the merge
+      // produced nothing new (origin/preview === origin/main). A push here would
+      // be a no-op and yield a false success. Fail explicitly instead.
+      try {
+        const localMainSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: BRANCH_MAIN });
+        let remoteMainSha = null;
+        try {
+          remoteMainSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${BRANCH_MAIN}` });
+        } catch (_e) { /* remote ref may not exist yet — proceed to push */ }
+
+        if (remoteMainSha && localMainSha === remoteMainSha) {
+          this.sendOutput('⚠️ Nada novo para publicar — preview e main estão idênticos no remoto.');
+          this.sendOutput('ℹ️ Publique suas alterações na branch preview primeiro.');
+          return {
+            success: false,
+            code: 'NOTHING_TO_PUSH',
+            error: 'Preview não tem mudanças além de main. Publique em preview primeiro.',
+          };
+        }
+      } catch (_e) { /* best effort — if check fails, proceed to push */ }
 
       this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
       await this._raceTimeout(
