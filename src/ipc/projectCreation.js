@@ -353,7 +353,56 @@ class ProjectCreationHandler {
         }
 
         // ── Clone ───────────────────────────────────────────────────────────
-        await git.clone(cloneArgs);
+        // isomorphic-git v1.38.4 races on parallel mkdir for nested dirs like
+        // `.github/workflows/` (index.cjs:7009-7023). The fast path stays as-is;
+        // on ENOENT/mkdir we fall back to a noCheckout clone + safe checkout.
+        const cloneArgsNoCheckout = { ...cloneArgs, noCheckout: true };
+        try {
+          await git.clone(cloneArgs);
+        } catch (cloneErr) {
+          if (!(cloneErr && cloneErr.code === 'ENOENT' && cloneErr.syscall === 'mkdir')) {
+            throw cloneErr;
+          }
+          this.logger.info(
+            '[clone-diag] race condition in parallel mkdir — retrying with noCheckout + safe checkout',
+            cloneErr
+          );
+          sendOutput('🔧 Corrigindo race condition em diretórios aninhados (noCheckout)...\n');
+
+          // Clean partial clone (rm -rf dir, mkdir recursive)
+          const { execa: execaRetry } = require('execa');
+          const isWindowsRetry = process.platform === 'win32';
+          try {
+            const rmCommand = isWindowsRetry ? 'rmdir' : 'rm';
+            const rmArgs = isWindowsRetry ? ['/s', '/q', dir] : ['-rf', dir];
+            await execaRetry(rmCommand, rmArgs, { stdio: 'ignore', killDescendants: true });
+          } catch (rmErr) {
+            this.logger.warn('[clone-diag] rm failed before noCheckout retry:', rmErr?.message);
+          }
+          await fsPromises.mkdir(dir, { recursive: true });
+
+          // Clone without checkout, then checkout safely
+          await git.clone(cloneArgsNoCheckout);
+
+          let checkoutRef;
+          try {
+            checkoutRef = await git.currentBranch({ fs: nodeFs, dir });
+          } catch (cbErr) {
+            checkoutRef = ref ? ref.replace(/^refs\/heads\//, '') : 'main';
+            this.logger.warn('[clone-diag] currentBranch failed, using fallback:', cbErr?.message, '→', checkoutRef);
+          }
+
+          try {
+            await git.checkout({ fs: nodeFs, dir, ref: checkoutRef, force: true });
+          } catch (checkoutErr) {
+            if (!(checkoutErr && checkoutErr.code === 'ENOENT' && checkoutErr.syscall === 'mkdir')) {
+              throw checkoutErr;
+            }
+            this.logger.info('[clone-diag] checkout also raced on mkdir — pre-creating tree dirs');
+            await this._preCreateTreeDirs(git, nodeFs, dir, checkoutRef);
+            await git.checkout({ fs: nodeFs, dir, ref: checkoutRef, force: true });
+          }
+        }
 
         // ── Diagnostic: post-clone state ────────────────────────────────────
         let gitDirExists = false;
@@ -413,12 +462,58 @@ class ProjectCreationHandler {
     }
   }
 
-   /**
-    * Update repo folder name in database
-   * @param {number} projectId - Project ID
-   * @param {string} folderName - Folder name
+  /**
+   * Pre-create every directory referenced in a commit's tree so that
+   * isomorphic-git's non-recursive checkout cannot race on missing parents
+   * (e.g. `.github/workflows/`). Best-effort: errors are logged, not thrown.
+   *
+   * @param {object} git - isomorphic-git module.
+   * @param {object} fs - Node fs module (the same one passed to git.clone).
+   * @param {string} dir - Working tree root.
+   * @param {string} ref - Ref name to materialize (branch / tag / HEAD).
    * @returns {Promise<void>}
    */
+  async _preCreateTreeDirs(git, fs, dir, ref) {
+    try {
+      const oid = await git.resolveRef({ fs, dir, ref });
+      const commit = await git.readCommit({ fs, dir, oid });
+      const treeOid = commit.commit.tree;
+      await this._walkAndMkdir(git, fs, dir, treeOid, '');
+    } catch (err) {
+      this.logger.warn('[clone-diag] _preCreateTreeDirs best-effort failed:', err?.message);
+    }
+  }
+
+  /**
+   * Recursive helper for `_preCreateTreeDirs`. Reads a tree, mkdir -p every
+   * subtree entry, then recurses into each subtree using `filepath` so that
+   * nested trees resolve against the right path.
+   *
+   * @param {object} git - isomorphic-git module.
+   * @param {object} fs - Node fs module.
+   * @param {string} dir - Working tree root.
+   * @param {string} treeOid - OID of the tree to walk.
+   * @param {string} prefix - Path prefix (relative to dir) for nested walks.
+   * @returns {Promise<void>}
+   */
+  async _walkAndMkdir(git, fs, dir, treeOid, prefix) {
+    const { readTree } = git;
+    const tree = await readTree({ fs, dir, oid: treeOid, ...(prefix ? { filepath: prefix } : {}) });
+    for (const entry of tree.tree) {
+      if (entry.type === 'tree') {
+        const subdir = prefix ? path.join(prefix, entry.path) : entry.path;
+        await fs.promises.mkdir(path.join(dir, subdir), { recursive: true });
+        await this._walkAndMkdir(git, fs, dir, entry.oid, subdir);
+      }
+    }
+  }
+
+   /**
+    * Update repo folder name in database
+    * @param {number} projectId - Project ID
+    * @param {string} folderName - Folder name
+    * @returns {Promise<void>}
+    */
   async updateRepoFolderName(projectId, folderName) {
     try {
       const db = await this.databaseManager.getDatabase();
