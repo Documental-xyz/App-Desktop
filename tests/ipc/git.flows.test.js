@@ -427,6 +427,18 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
     beforeEach(() => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
+      // Preflight's precedence check requires origin/preview to be AHEAD of
+      // origin/main (different SHAs) — otherwise it hard-blocks with
+      // PREVIEW_NOT_AHEAD before the body runs. Discriminate by ref so the
+      // success-path tests exercise the actual merge+push flow.
+      git.resolveRef.mockImplementation((args) => {
+        const ref = args && args.ref;
+        if (ref === 'origin/preview') return Promise.resolve('preview-ahead-sha');
+        if (ref === 'origin/main') return Promise.resolve('main-sha');
+        if (ref === 'refs/remotes/origin/preview') return Promise.resolve('preview-ahead-sha');
+        if (ref === 'refs/remotes/origin/main') return Promise.resolve('main-sha');
+        return Promise.resolve('head-sha');
+      });
     });
 
     it('rejects when canPushToMain=false', async () => {
@@ -443,6 +455,26 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(git.push).not.toHaveBeenCalled();
         });
 
+        it('hard-blocks with PREVIEW_NOT_AHEAD when preview === main (before lock)', async () => {
+          // Regression: user requirement — "o usuário só possa fazer publicação
+          // para main depois de já ter feito para preview". When origin/preview
+          // and origin/main point at the same SHA, the publish must be rejected
+          // BEFORE acquiring the lock or running merge/push.
+          mockPermissionHandlers.checkMainPermission.mockResolvedValue({
+            success: true,
+            canPushToMain: true,
+          });
+          // Equal SHAs → preflight precedence check returns PREVIEW_NOT_AHEAD.
+          git.resolveRef.mockResolvedValue('same-sha-both-branches');
+
+          const result = await handlers.gitPublishMain(1);
+
+          expect(result.success).toBe(false);
+          expect(result.code).toBe('PREVIEW_NOT_AHEAD');
+          expect(git.merge).not.toHaveBeenCalled();
+          expect(git.push).not.toHaveBeenCalled();
+        });
+
         it('merges origin/preview into main with --no-ff and no theirs driver', async () => {
           mockPermissionHandlers.checkMainPermission.mockResolvedValue({
             success: true,
@@ -450,7 +482,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.resolveRef.mockResolvedValue('fake-commit-oid');
           git.writeRef.mockResolvedValue(undefined);
           git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
@@ -482,7 +513,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.resolveRef.mockResolvedValue('fake-commit-oid');
           git.writeRef.mockResolvedValue(undefined);
           git.checkout.mockResolvedValue(undefined);
           git.merge.mockRejectedValue(new Error('merge conflict on main'));
@@ -502,7 +532,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.resolveRef.mockResolvedValue('fake-commit-oid');
           git.writeRef.mockResolvedValue(undefined);
           git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
@@ -524,7 +553,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           });
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
-          git.resolveRef.mockResolvedValue('fake-commit-oid');
           git.writeRef.mockResolvedValue(undefined);
           git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);

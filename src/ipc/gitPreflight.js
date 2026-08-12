@@ -71,8 +71,11 @@ class GitPreflight {
    * @param {Object} deps.logger - Logger instance
    * @param {Object} deps.gitOps - GitOperations instance (has getGitHubToken(), configureGitForUser())
    * @param {Object} deps.databaseManager - Database manager instance
+   * @param {Function} [deps.getGit] - Optional async function returning the isomorphic-git module.
+   *   When provided, the caller (GitHandlers) shares its cached module reference so that
+   *   test mocks applied to that instance are visible here. Defaults to local dynamic import.
    */
-  constructor({ logger, gitOps, databaseManager }) {
+  constructor({ logger, gitOps, databaseManager, getGit }) {
     this.logger = logger;
     this.gitOps = gitOps;
     this.databaseManager = databaseManager;
@@ -93,6 +96,12 @@ class GitPreflight {
      * @private
      */
     this._gitModuleCache = null;
+
+    /**
+     * Optional external git-loader (shares module cache with GitHandlers).
+     * @private
+     */
+    this._externalGetGit = typeof getGit === 'function' ? getGit : null;
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -153,9 +162,21 @@ class GitPreflight {
       }
     } else {
       // Unexpected fetch error (network / auth / corrupt) → hard block.
+      // Surface AbortError specially so callers can distinguish user cancellation.
+      const reason = branchResult.reason;
+      if (reason && reason.name === 'AbortError') {
+        return {
+          canProceed: false,
+          firstPublish: false,
+          checks,
+          warnings,
+          errors: [{ code: 'ABORTED', message: 'Operation aborted' }],
+          aborted: true,
+        };
+      }
       errors.push({
         code: 'FETCH_FAILED',
-        message: `Falha ao verificar branch ${BRANCH_PREVIEW}: ${branchResult.reason?.message || branchResult.reason}`,
+        message: `Falha ao verificar branch ${BRANCH_PREVIEW}: ${reason?.message || reason}`,
       });
     }
 
@@ -667,6 +688,9 @@ class GitPreflight {
    * @private
    */
   async _getGit() {
+    if (this._externalGetGit) {
+      return this._externalGetGit();
+    }
     if (!this._gitModuleCache) {
       this._gitModuleCache = await import('isomorphic-git');
     }

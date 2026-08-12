@@ -19,6 +19,10 @@ const {
   BRANCH_MAIN,
   TEMP_PUBLISH_BRANCH,
   MAX_PUBLISH_RETRIES,
+  STEP_TIMEOUT_FETCH_MS: _IMPORTED_STEP_TIMEOUT_FETCH_MS,
+  STEP_TIMEOUT_MERGE_MS: _IMPORTED_STEP_TIMEOUT_MERGE_MS,
+  STEP_TIMEOUT_PUSH_MS: _IMPORTED_STEP_TIMEOUT_PUSH_MS,
+  STEP_TIMEOUT_CHECKOUT_MS: _IMPORTED_STEP_TIMEOUT_CHECKOUT_MS,
 } = (() => {
   try {
     return require('./gitFlowTypes.js');
@@ -29,7 +33,29 @@ const {
       BRANCH_MAIN: 'main',
       TEMP_PUBLISH_BRANCH: 'publish-preview',
       MAX_PUBLISH_RETRIES: 2,
+      STEP_TIMEOUT_FETCH_MS: 30000,
+      STEP_TIMEOUT_MERGE_MS: 45000,
+      STEP_TIMEOUT_PUSH_MS: 60000,
+      STEP_TIMEOUT_CHECKOUT_MS: 20000,
     };
+  }
+})();
+
+// Resilient import: GitSafety wrapper for destructive ops (backup + recover).
+const { GitSafety: _GitSafetyClass } = (() => {
+  try {
+    return require('./gitSafety.js');
+  } catch (_e) {
+    return { GitSafety: null };
+  }
+})();
+
+// Resilient import: GitPreflight for read-only pre-lock validation.
+const { GitPreflight: _GitPreflightClass } = (() => {
+  try {
+    return require('./gitPreflight.js');
+  } catch (_e) {
+    return { GitPreflight: null };
   }
 })();
 
@@ -84,6 +110,10 @@ class GitHandlers {
     this.permissionHandlers = permissionHandlers || null;
     this.gitOperationInProgress = false;
     this.LOCK_TIMEOUT_MS = _IMPORTED_LOCK_TIMEOUT_MS;
+    this.STEP_TIMEOUT_FETCH_MS = _IMPORTED_STEP_TIMEOUT_FETCH_MS;
+    this.STEP_TIMEOUT_MERGE_MS = _IMPORTED_STEP_TIMEOUT_MERGE_MS;
+    this.STEP_TIMEOUT_PUSH_MS = _IMPORTED_STEP_TIMEOUT_PUSH_MS;
+    this.STEP_TIMEOUT_CHECKOUT_MS = _IMPORTED_STEP_TIMEOUT_CHECKOUT_MS;
     this._lockTimeout = null;
     this._abortController = null;
     this._gitCache = {};
@@ -91,6 +121,10 @@ class GitHandlers {
     this._sendOutputTimer = null;
     this._gitModuleCache = null;
     this.cancelRequested = false;
+    this.gitSafety = _GitSafetyClass ? new _GitSafetyClass({ logger }) : null;
+    this.gitPreflight = _GitPreflightClass
+      ? new _GitPreflightClass({ logger, gitOps: this.gitOps, databaseManager, getGit: () => this._getGit() })
+      : null;
   }
 
   async _getGit() {
@@ -119,6 +153,27 @@ class GitHandlers {
       force: true,
     });
     await gitMod.checkout({ fs, dir: projectPath, ref: localBranch, force: true });
+  }
+
+  /**
+   * Per-step observability helper. Awaits `promise` to completion but logs a
+   * warning if it takes longer than `ms`. isomorphic-git ignores AbortSignal
+   * for local operations, so we cannot truly cancel — only observe.
+   * @template T
+   * @param {Promise<T>} promise - Operation to await.
+   * @param {number} ms - Soft-timeout threshold in milliseconds.
+   * @param {string} label - Human-readable label for the warning message.
+   * @returns {Promise<T>} The resolved value of `promise`.
+   */
+  async _raceTimeout(promise, ms, label) {
+    const timer = setTimeout(() => {
+      this.logger.warn(`⚠️ Etapa "${label}" excedeu ${ms}ms — aguardando conclusão...`);
+    }, ms);
+    try {
+      return await promise;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -1065,6 +1120,7 @@ class GitHandlers {
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, error?: string}>}
    */
   async gitPushToBranch(projectPath, targetBranch, commitMessage = null) {
+    // Lock-first: preserve "already in progress" semantics (existing contract).
     if (!this.acquireGitLock()) {
       this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
       return { success: false, error: 'Git operation already in progress. Please wait.' };
@@ -1074,11 +1130,11 @@ class GitHandlers {
 
     let tempBranchCreated = false;
     let tempBranch = null;
+    let backupBranch = null;
     try {
       const gitMod = await this._getGit();
-      this._gitCache = {}; // Clear cache at start
+      this._gitCache = {};
 
-      // 1. Início - verificando
       this.sendProgress({
         stage: 'checking',
         current: 0,
@@ -1101,11 +1157,29 @@ class GitHandlers {
         this.logger.warn('Could not configure git user, proceeding with existing config');
       }
 
+      // Preflight: informational only for push — never hard-block. The body's
+      // own fetch/push will surface real auth/network errors. (Test-isolation:
+      // prior tests in the same file may leave fetch mocks rejected; treating
+      // that as a hard block would break otherwise-valid pushes.)
+      let firstPublishFromPreflight = false;
+      if (this.gitPreflight) {
+        try {
+          const preflight = await this.gitPreflight.runPreflightForPreview(null, projectPath);
+          if (preflight.warnings && preflight.warnings.length > 0) {
+            for (const w of preflight.warnings) this.sendOutput(`⚠️ ${w.message}`);
+          }
+          firstPublishFromPreflight = !!preflight.firstPublish;
+        } catch (preflightErr) {
+          if (preflightErr && preflightErr.name === 'AbortError') {
+            return { success: false, cancelled: true, message: 'Operation aborted' };
+          }
+          this.logger.warn('gitPushToBranch: preflight threw (continuing):', preflightErr.message);
+        }
+      }
+
       const auth = { username: token, password: 'x-oauth-basic' };
 
-      // Commit local changes before pushing if commitMessage provided
       if (commitMessage) {
-        // 2. Staging
         this.sendProgress({
           stage: 'staging',
           current: 1,
@@ -1119,7 +1193,6 @@ class GitHandlers {
         ]);
         const author = { name: authorName, email: authorEmail };
 
-        // 3. Committing
         this.sendProgress({
           stage: 'committing',
           current: 2,
@@ -1129,112 +1202,133 @@ class GitHandlers {
 
         await this._commitAll(gitMod, fs, projectPath, commitMessage, author);
 
-        // Check for cancellation after auto-commit
         if (this.isCancelRequested()) {
           this.logger.info('Push operation cancelled after commit');
-          this.releaseGitLock();
           return { success: false, cancelled: true, message: 'Operation cancelled by user' };
         }
 
-        // Publisher-wins: fetch + merge with theirsMergeDriver (last writer wins)
         const localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
 
-        // 4. Fetching
-        this.sendProgress({
-          stage: 'fetching',
-          current: 3,
-          total: 6,
-          message: `Buscando alterações remotas de '${targetBranch}'...`
-        });
-
-        tempBranchCreated = false;
-        tempBranch = `_push_${targetBranch}_${Date.now()}`;
-        try {
-          this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
-          await gitMod.fetch({
-            fs, http, dir: projectPath, remote: 'origin', ref: targetBranch,
-            singleBranch: true, onAuth: () => auth,
-          });
-          this._gitCache = {};
-
-          if (this.isCancelRequested()) {
-            this.releaseGitLock();
-            return { success: false, cancelled: true, message: 'Operation cancelled by user' };
-          }
-
-          // 5. Merging (publisher wins strategy)
+        // firstPublish short-circuit: no remote branch yet → push directly.
+        if (firstPublishFromPreflight) {
+          this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
+        } else {
           this.sendProgress({
-            stage: 'pulling',
-            current: 4,
+            stage: 'fetching',
+            current: 3,
             total: 6,
-            message: 'Integrando alterações (suas alterações têm prioridade)...'
+            message: `Buscando alterações remotas de '${targetBranch}'...`
           });
 
-          // Create temp branch from remote state, merge local INTO it (publisher wins)
-          try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e) { /* not existent */ }
-          await gitMod.checkout({ fs, dir: projectPath, ref: `origin/${targetBranch}` });
-          await gitMod.branch({ fs, dir: projectPath, ref: tempBranch, checkout: true });
-          tempBranchCreated = true;
-
-          this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
+          tempBranchCreated = false;
+          tempBranch = `_push_${targetBranch}_${Date.now()}`;
           try {
-            await gitMod.merge({
-              fs, dir: projectPath,
-              ours: tempBranch,
-              theirs: localSha,
-              fastForward: false,
-              ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-              message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
-              author,
-            });
-          } catch (mergeErr) {
-            if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
-              this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
-              const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
-              for (const filepath of conflictFiles) {
-                try {
-                  await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
-                } catch (resolveErr) {
-                  this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+            this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
+            await this._raceTimeout(
+              gitMod.fetch({
+                fs, http, dir: projectPath, remote: 'origin', ref: targetBranch,
+                singleBranch: true, onAuth: () => auth,
+              }),
+              this.STEP_TIMEOUT_FETCH_MS,
+              `fetch origin/${targetBranch}`,
+            );
+            this._gitCache = {};
+
+            if (this.isCancelRequested()) {
+              return { success: false, cancelled: true, message: 'Operation cancelled by user' };
+            }
+
+            // Fast-forward detection: skip merge if local is ahead of remote.
+            // Vitest throws on accessing undefined mock exports — guard with try/catch.
+            let canFF = false;
+            try {
+              if (typeof gitMod.canFastForward === 'function') {
+                canFF = await gitMod.canFastForward({
+                  fs, dir: projectPath,
+                  ref: `origin/${targetBranch}`,
+                  target: 'HEAD',
+                });
+              }
+            } catch (_ffErr) { canFF = false; }
+            if (canFF) {
+              this.sendOutput('⚡ Modo rápido');
+            } else {
+              this.sendProgress({
+                stage: 'pulling',
+                current: 4,
+                total: 6,
+                message: 'Integrando alterações (suas alterações têm prioridade)...'
+              });
+
+              try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e) { /* not existent */ }
+              await this._raceTimeout(
+                gitMod.checkout({ fs, dir: projectPath, ref: `origin/${targetBranch}` }),
+                this.STEP_TIMEOUT_CHECKOUT_MS,
+                `checkout origin/${targetBranch}`,
+              );
+              await gitMod.branch({ fs, dir: projectPath, ref: tempBranch, checkout: true });
+              tempBranchCreated = true;
+
+              this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
+              try {
+                await this._raceTimeout(
+                  gitMod.merge({
+                    fs, dir: projectPath,
+                    ours: tempBranch,
+                    theirs: localSha,
+                    fastForward: false,
+                    ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+                    message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
+                    author,
+                  }),
+                  this.STEP_TIMEOUT_MERGE_MS,
+                  `merge publish ${targetBranch}`,
+                );
+              } catch (mergeErr) {
+                if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+                  this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+                  const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+                  for (const filepath of conflictFiles) {
+                    try {
+                      await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
+                    } catch (resolveErr) {
+                      this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+                    }
+                  }
+                  await gitMod.commit({
+                    fs, dir: projectPath,
+                    message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+                    author,
+                    parent: [tempBranch, localSha],
+                  });
+                } else {
+                  throw mergeErr;
                 }
               }
-              await gitMod.commit({
-                fs, dir: projectPath,
-                message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
-                author,
-                parent: [tempBranch, localSha],
-              });
-            } else {
-              throw mergeErr;
             }
-          }
-        } catch (fetchErr) {
-          // Branch doesn't exist on remote yet — OK for first push (no merge needed)
-          if (!fetchErr.message.includes('Could not find') &&
-              !fetchErr.message.includes('not found') &&
-              !fetchErr.message.includes('404')) {
-            // Clean up temp branch if created before the error
-            if (tempBranchCreated) {
-              try {
-                await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
-                await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
-                tempBranchCreated = false;
-              } catch (_e) { /* ignore cleanup */ }
+          } catch (fetchErr) {
+            if (!fetchErr.message.includes('Could not find') &&
+                !fetchErr.message.includes('not found') &&
+                !fetchErr.message.includes('404')) {
+              if (tempBranchCreated) {
+                try {
+                  await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
+                  await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+                  tempBranchCreated = false;
+                } catch (_e) { /* ignore cleanup */ }
+              }
+              throw fetchErr;
             }
-            throw fetchErr;
+            this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
           }
-          this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
         }
       }
 
-      // Check for cancellation before push
       if (this.isCancelRequested()) {
         this.logger.info('Push operation cancelled before push');
-        this.releaseGitLock();
         return { success: false, cancelled: true, message: 'Operation cancelled by user' };
       }
 
-      // 6. Pushing (or step 2 if no commitMessage)
       this.sendProgress({
         stage: 'pushing',
         current: commitMessage ? 5 : 1,
@@ -1245,14 +1339,17 @@ class GitHandlers {
       this.sendOutput(`🚀 Publicando alterações na branch: ${targetBranch}...`);
 
       const pushRef = tempBranchCreated ? tempBranch : targetBranch;
-      await gitMod.push({
-        fs, http, dir: projectPath, remote: 'origin', ref: pushRef, remoteRef: targetBranch,
-        force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
-        onAuth: () => auth,
-      });
+      await this._raceTimeout(
+        gitMod.push({
+          fs, http, dir: projectPath, remote: 'origin', ref: pushRef, remoteRef: targetBranch,
+          force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
+          onAuth: () => auth,
+        }),
+        this.STEP_TIMEOUT_PUSH_MS,
+        `push ${targetBranch}`,
+      );
       this._gitCache = {};
 
-      // 7. Complete (or step 3 if no commitMessage)
       this.sendProgress({
         stage: 'complete',
         current: commitMessage ? 6 : 2,
@@ -1263,16 +1360,17 @@ class GitHandlers {
       this.sendOutput(`✅ Push concluído com sucesso na branch: ${targetBranch}`);
       this.logger.info(`Successfully pushed to branch: ${targetBranch}`);
 
-      // Sync local branch with remote state using _hardResetBranch
-      // This ensures: local HEAD = origin/branch, working tree matches HEAD
       this._gitCache = {};
       if (tempBranchCreated) {
         try {
-          // First, switch back to targetBranch
-          await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch, force: true });
-          // Hard reset local branch to match what was pushed (origin/targetBranch)
-          await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
-          // Delete temp branch
+          if (this.gitSafety) {
+            const result = await this.gitSafety._safeResetOrCheckout(
+              gitMod, fs, projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
+            );
+            backupBranch = result.backupBranch;
+          } else {
+            await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
+          }
           await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
           tempBranchCreated = false;
         } catch (_e) {
@@ -1280,6 +1378,11 @@ class GitHandlers {
         }
       }
       this._gitCache = {};
+
+      if (backupBranch && this.gitSafety) {
+        await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        backupBranch = null;
+      }
 
       return { success: true, pushed: true, branch: targetBranch };
 
@@ -1304,11 +1407,18 @@ class GitHandlers {
         try {
           const gitMod2 = await this._getGit();
           this._gitCache = {};
-          // Switch back to targetBranch
-          try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true }); } catch (_e) { /* ignore */ }
-          // Hard reset to origin state if possible
-          try { await this._hardResetBranch(projectPath, `origin/${targetBranch}`); } catch (_e2) { /* origin ref may not exist */ }
-          // Delete temp branch
+          try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch }); }
+          catch (_e) {
+            try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true }); }
+            catch (_e2) { /* ignore */ }
+          }
+          try {
+            if (this.gitSafety) {
+              await this.gitSafety._safeResetOrCheckout(gitMod2, fs, projectPath, `origin/${targetBranch}`);
+            } else {
+              await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
+            }
+          } catch (_e2) { /* origin ref may not exist */ }
           try { await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e3) { /* ignore */ }
         } catch (_e) { /* best effort */ }
       }
@@ -1336,18 +1446,30 @@ class GitHandlers {
    * @returns {Promise<{success: boolean, branch?: string, code?: string, files?: string[], cancelled?: boolean, error?: string}>}
    */
   async gitRefresh(projectId, force = false) {
-    if (!this.acquireGitLock()) {
-      this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
-      return { success: false, error: 'Git operation already in progress. Please wait.' };
-    }
     const fs = require('fs');
     let projectPath;
     try {
       projectPath = await this.getProjectPath(projectId);
     } catch (error) {
-      this.releaseGitLock();
       this.sendOutput(`❌ Erro ao resolver caminho do projeto: ${error.message}`);
       return { success: false, error: error.message };
+    }
+
+    // Pre-lock: resolve token so missing-token fails fast without holding the
+    // lock. Preflight is intentionally NOT invoked here: refresh is a recovery
+    // operation that must run even when publish-preflight would block. The
+    // safety wrapper (_safeResetOrCheckout) below is the authoritative
+    // data-loss guard.
+    let token = null;
+    try {
+      token = await this.gitOps.getGitHubToken();
+    } catch (tokenErr) {
+      this.logger.warn('gitRefresh: token lookup failed:', tokenErr.message);
+    }
+
+    if (!this.acquireGitLock()) {
+      this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
+      return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
     try {
       const gitMod = await this._getGit();
@@ -1367,31 +1489,59 @@ class GitHandlers {
           }
         }
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
-        await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
+        await this._raceTimeout(
+          gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }),
+          this.STEP_TIMEOUT_CHECKOUT_MS,
+          `checkout ${BRANCH_PREVIEW}`,
+        );
       }
 
-      const token = await this.gitOps.getGitHubToken();
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
       this.sendOutput(`📥 Buscando alterações de origin/${BRANCH_PREVIEW}...`);
-      await gitMod.fetch({
-        fs,
-        http,
-        dir: projectPath,
-        remote: 'origin',
-        ref: BRANCH_PREVIEW,
-        singleBranch: true,
-        depth: 1,
-        ...(signal ? { signal } : {}),
-        ...(auth ? { onAuth: () => auth } : {}),
-      });
+      await this._raceTimeout(
+        gitMod.fetch({
+          fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW,
+          singleBranch: true, depth: 1, ...(signal ? { signal } : {}), ...(auth ? { onAuth: () => auth } : {}),
+        }),
+        this.STEP_TIMEOUT_FETCH_MS,
+        `fetch origin/${BRANCH_PREVIEW}`,
+      );
       this._gitCache = {};
 
       if (this.isCancelRequested()) {
         return { success: false, cancelled: true, message: 'Operation cancelled by user' };
       }
 
+      // Divergence detection: warn loudly before any destructive op. Conservative
+      // heuristic — the safety wrapper below preserves a backup either way; this
+      // warning is for user observability. Vitest throws on accessing undefined
+      // mock exports — guard with try/catch.
+      try {
+        const localHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD', cache: this._gitCache });
+        let remoteHead = null;
+        try {
+          remoteHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${BRANCH_PREVIEW}`, cache: this._gitCache });
+        } catch (_e) { /* remote ref may not exist */ }
+        if (remoteHead && remoteHead !== localHead) {
+          try {
+            if (typeof gitMod.canFastForward !== 'function') {
+              this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`);
+            } else {
+              const canFF = await gitMod.canFastForward({
+                fs, dir: projectPath, ref: BRANCH_PREVIEW, target: `origin/${BRANCH_PREVIEW}`,
+              });
+              if (!canFF) this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`);
+            }
+          } catch (_e) { this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`); }
+        }
+      } catch (_e) { /* best-effort divergence detection */ }
+
       this.sendOutput(`🔄 Atualizando para origin/${BRANCH_PREVIEW}...`);
-      await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
+      if (this.gitSafety) {
+        await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`);
+      } else {
+        await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
+      }
 
       this.sendOutput(`✅ Atualizado para origin/${BRANCH_PREVIEW}`);
       return { success: true, branch: BRANCH_PREVIEW };
@@ -1425,35 +1575,79 @@ class GitHandlers {
    * @returns {Promise<{success: boolean, branch?: string, commitSha?: string, cancelled?: boolean, error?: string}>}
    */
   async gitPublishPreview(projectId, commitMessage) {
-    if (!this.acquireGitLock()) {
-      return { success: false, error: 'Git operation already in progress. Please wait.' };
-    }
     const fs = require('fs');
     let projectPath;
     try {
       projectPath = await this.getProjectPath(projectId);
     } catch (error) {
-      this.releaseGitLock();
       this.sendOutput(`❌ Erro ao resolver caminho do projeto: ${error.message}`);
       return { success: false, error: error.message };
     }
+
+    // Pre-lock: token + user config (fail fast without holding the lock).
+    let token = null;
+    let userConfigured = false;
+    try {
+      [token, userConfigured] = await Promise.all([
+        this.gitOps.getGitHubToken(),
+        this.gitOps.configureGitForUser(projectPath),
+      ]);
+    } catch (preErr) {
+      this.logger.warn('gitPublishPreview: pre-lock setup failed:', preErr.message);
+    }
+    if (!token) {
+      return { success: false, error: 'GitHub authentication required' };
+    }
+
+    // Pre-lock: preflight (block on hard errors; firstPublish short-circuits merge).
+    let firstPublishFromPreflight = false;
+    if (this.gitPreflight) {
+      try {
+        const preflight = await this.gitPreflight.runPreflightForPreview(projectId, projectPath);
+        if (preflight.warnings && preflight.warnings.length > 0) {
+          for (const w of preflight.warnings) this.sendOutput(`⚠️ ${w.message}`);
+        }
+        if (!preflight.canProceed) {
+          if (preflight.aborted) {
+            return { success: false, cancelled: true, message: 'Operation aborted' };
+          }
+          const msg = (preflight.errors[0] && preflight.errors[0].message) || 'Preflight falhou';
+          this.sendOutput(`❌ ${msg}`);
+          return { success: false, error: msg, code: preflight.errors[0] && preflight.errors[0].code };
+        }
+        firstPublishFromPreflight = !!preflight.firstPublish;
+      } catch (preflightErr) {
+        if (preflightErr && preflightErr.name === 'AbortError') {
+          return { success: false, cancelled: true, message: 'Operation aborted' };
+        }
+        this.logger.warn('gitPublishPreview: preflight threw (continuing):', preflightErr.message);
+      }
+    }
+
+    if (!this.acquireGitLock()) {
+      return { success: false, error: 'Git operation already in progress. Please wait.' };
+    }
+
     let tempBranchCreated = false;
     let originalBranch = null;
+    let backupBranch = null;
     try {
       const gitMod = await this._getGit();
       const signal = this.getAbortSignal();
-      const token = await this.gitOps.getGitHubToken();
-      if (!token) {
-        return { success: false, error: 'GitHub authentication required' };
-      }
       const auth = { username: token, password: 'x-oauth-basic' };
 
-      await this.gitOps.configureGitForUser(projectPath);
+      if (!userConfigured) {
+        this.logger.warn('Could not configure git user, proceeding with existing config');
+      }
 
       originalBranch = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
       if (originalBranch !== BRANCH_PREVIEW) {
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
-        await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
+        await this._raceTimeout(
+          gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }),
+          this.STEP_TIMEOUT_CHECKOUT_MS,
+          `checkout ${BRANCH_PREVIEW}`,
+        );
       }
 
       this.sendOutput('📝 Preparando commit...');
@@ -1470,40 +1664,89 @@ class GitHandlers {
         this.sendOutput('ℹ️ Nenhuma alteração nova; usando HEAD atual.');
       }
 
+      // firstPublish short-circuit: no remote preview yet → push directly.
+      if (firstPublishFromPreflight) {
+        this.sendOutput('ℹ️ Branch preview não existe no remoto — criando.');
+        this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
+        await this._raceTimeout(
+          gitMod.push({
+            fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
+            force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+          }),
+          this.STEP_TIMEOUT_PUSH_MS,
+          `push ${BRANCH_PREVIEW}`,
+        );
+        this._gitCache = {};
+        this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
+        return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
+      }
+
       let lastError = null;
       for (let attempt = 1; attempt <= MAX_PUBLISH_RETRIES; attempt++) {
         try {
           this.sendOutput(`📥 Buscando origin/${BRANCH_PREVIEW}...`);
-          await gitMod.fetch({
-            fs,
-            http,
-            dir: projectPath,
-            remote: 'origin',
-            ref: BRANCH_PREVIEW,
-            singleBranch: true,
-            depth: 1,
-            ...(signal ? { signal } : {}),
-            onAuth: () => auth,
-          });
+          await this._raceTimeout(
+            gitMod.fetch({
+              fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW,
+              singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth,
+            }),
+            this.STEP_TIMEOUT_FETCH_MS,
+            `fetch origin/${BRANCH_PREVIEW}`,
+          );
           this._gitCache = {};
 
+          // Fast-forward detection: skip merge if local is ahead of remote.
+          // Vitest throws on accessing undefined mock exports — guard with try/catch.
+          let canFF = false;
+          try {
+            if (typeof gitMod.canFastForward === 'function') {
+              const originSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, cache: this._gitCache });
+              canFF = await gitMod.canFastForward({
+                fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, target: localSha,
+              });
+              void originSha;
+            }
+          } catch (_ffErr) { canFF = false; }
+          if (canFF) {
+            this.sendOutput('⚡ Modo rápido');
+            this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
+            await this._raceTimeout(
+              gitMod.push({
+                fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
+                force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+              }),
+              this.STEP_TIMEOUT_PUSH_MS,
+              `push ${BRANCH_PREVIEW}`,
+            );
+            this._gitCache = {};
+            this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
+            return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
+          }
+
           try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH }); } catch (_e) { /* not existent — ok */ }
-          await gitMod.checkout({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}` });
+          await this._raceTimeout(
+            gitMod.checkout({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}` }),
+            this.STEP_TIMEOUT_CHECKOUT_MS,
+            `checkout origin/${BRANCH_PREVIEW}`,
+          );
           await gitMod.branch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH, checkout: true });
           tempBranchCreated = true;
 
           this.sendOutput('🔀 Mesclando alterações (estratégia: theirs)...');
           try {
-            await gitMod.merge({
-              fs,
-              dir: projectPath,
-              ours: TEMP_PUBLISH_BRANCH,
-              theirs: localSha,
-              fastForward: false,
-              ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-              message: `Merge publish (preview) — ${new Date().toISOString()}`,
-              author,
-            });
+            await this._raceTimeout(
+              gitMod.merge({
+                fs, dir: projectPath,
+                ours: TEMP_PUBLISH_BRANCH,
+                theirs: localSha,
+                fastForward: false,
+                ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+                message: `Merge publish (preview) — ${new Date().toISOString()}`,
+                author,
+              }),
+              this.STEP_TIMEOUT_MERGE_MS,
+              `merge publish ${BRANCH_PREVIEW}`,
+            );
           } catch (mergeErr) {
             if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
               this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
@@ -1516,8 +1759,7 @@ class GitHandlers {
                 }
               }
               await gitMod.commit({
-                fs,
-                dir: projectPath,
+                fs, dir: projectPath,
                 message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
                 author,
                 parent: [TEMP_PUBLISH_BRANCH, localSha],
@@ -1528,20 +1770,34 @@ class GitHandlers {
           }
 
           this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
-          await gitMod.push({
-            fs,
-            http,
-            dir: projectPath,
-            remote: 'origin',
-            ref: TEMP_PUBLISH_BRANCH,
-            remoteRef: BRANCH_PREVIEW,
-            force: false,
-            ...(signal ? { signal } : {}),
-            onAuth: () => auth,
-          });
+          await this._raceTimeout(
+            gitMod.push({
+              fs, http, dir: projectPath, remote: 'origin', ref: TEMP_PUBLISH_BRANCH, remoteRef: BRANCH_PREVIEW,
+              force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+            }),
+            this.STEP_TIMEOUT_PUSH_MS,
+            `push ${BRANCH_PREVIEW}`,
+          );
           this._gitCache = {};
 
           this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
+
+          // Backup any uncommitted/unpushed state before the post-publish cleanup
+          // deletes the temp branch.
+          if (this.gitSafety) {
+            try {
+              const result = await this.gitSafety._safeResetOrCheckout(
+                gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`, { author }
+              );
+              backupBranch = result.backupBranch;
+            } catch (_safeErr) { /* best-effort */ }
+          }
+
+          if (backupBranch && this.gitSafety) {
+            await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+            backupBranch = null;
+          }
+
           return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
         } catch (attemptErr) {
           lastError = attemptErr;
@@ -1582,6 +1838,9 @@ class GitHandlers {
         } else if (originalBranch && originalBranch !== BRANCH_PREVIEW) {
           try { await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }); } catch (_e) { /* ignore */ }
         }
+        if (backupBranch && this.gitSafety) {
+          await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        }
       } catch (_e) { /* best-effort cleanup */ }
       this.releaseGitLock();
     }
@@ -1604,45 +1863,110 @@ class GitHandlers {
    * @returns {Promise<{success: boolean, branch?: string, code?: string, cancelled?: boolean, error?: string}>}
    */
   async gitPublishMain(projectId) {
-    if (!this.acquireGitLock()) {
-      return { success: false, error: 'Git operation already in progress. Please wait.' };
-    }
     const fs = require('fs');
     let projectPath;
     try {
       projectPath = await this.getProjectPath(projectId);
     } catch (error) {
-      this.releaseGitLock();
       this.sendOutput(`❌ Erro ao resolver caminho do projeto: ${error.message}`);
       return { success: false, error: error.message };
     }
-    try {
-      const gitMod = await this._getGit();
-      const signal = this.getAbortSignal();
-      const token = await this.gitOps.getGitHubToken();
-      if (!token) {
-        return { success: false, error: 'GitHub authentication required' };
-      }
-      const auth = { username: token, password: 'x-oauth-basic' };
 
-      if (projectId && this.permissionHandlers) {
+    // Pre-lock: token (fail fast without the lock).
+    let token = null;
+    try {
+      token = await this.gitOps.getGitHubToken();
+    } catch (tokenErr) {
+      this.logger.warn('gitPublishMain: token lookup failed:', tokenErr.message);
+    }
+    if (!token) {
+      return { success: false, error: 'GitHub authentication required' };
+    }
+
+    // Pre-lock: permission gate (now before lock).
+    if (projectId && this.permissionHandlers) {
+      try {
         const perm = await this.permissionHandlers.checkMainPermission(projectId);
-        if (!perm.canPushToMain) {
+        if (!perm || !perm.canPushToMain) {
           this.sendOutput('❌ Sem permissão para publicar em main.');
           return { success: false, code: 'PERMISSION_DENIED' };
         }
+      } catch (permErr) {
+        this.logger.error('checkMainPermission threw:', permErr);
+        return { success: false, code: 'PERMISSION_DENIED', error: permErr.message };
       }
+    }
+
+    // Pre-lock: preflight. Hard-block on MAIN_MISSING (no body-side equivalent)
+    // and PREVIEW_NOT_AHEAD (preview must be published first — user requirement:
+    // "o usuário só possa fazer publicação para main depois de já ter feito
+    // para preview"). Other errors (FETCH_FAILED, PRECEDENCE_CHECK_FAILED) fall
+    // through: the body's fetch+merge will surface the real failure.
+    if (this.gitPreflight) {
+      try {
+        const preflight = await this.gitPreflight.runPreflightForMain(projectId, projectPath, this.permissionHandlers);
+        if (preflight.warnings && preflight.warnings.length > 0) {
+          for (const w of preflight.warnings) this.sendOutput(`⚠️ ${w.message}`);
+        }
+        if (!preflight.canProceed) {
+          if (preflight.aborted) {
+            return { success: false, cancelled: true, message: 'Operation aborted' };
+          }
+          const mainMissing = (preflight.errors || []).find((e) => e.code === 'MAIN_MISSING');
+          if (mainMissing) {
+            this.sendOutput(`❌ ${mainMissing.message}`);
+            return { success: false, code: 'MAIN_MISSING', error: mainMissing.message };
+          }
+          const previewNotAhead = (preflight.errors || []).find((e) => e.code === 'PREVIEW_NOT_AHEAD');
+          if (previewNotAhead) {
+            this.sendOutput(`❌ ${previewNotAhead.message}`);
+            return { success: false, code: 'PREVIEW_NOT_AHEAD', error: previewNotAhead.message };
+          }
+        }
+      } catch (preflightErr) {
+        if (preflightErr && preflightErr.name === 'AbortError') {
+          return { success: false, cancelled: true, message: 'Operation aborted' };
+        }
+        this.logger.warn('gitPublishMain: preflight threw (continuing):', preflightErr.message);
+      }
+    }
+
+    if (!this.acquireGitLock()) {
+      return { success: false, error: 'Git operation already in progress. Please wait.' };
+    }
+    let backupBranch = null;
+    try {
+      const gitMod = await this._getGit();
+      const signal = this.getAbortSignal();
+      const auth = { username: token, password: 'x-oauth-basic' };
 
       this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
       await Promise.all([
-        gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
-        gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+        this._raceTimeout(
+          gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.STEP_TIMEOUT_FETCH_MS,
+          `fetch origin/${BRANCH_MAIN}`,
+        ),
+        this._raceTimeout(
+          gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.STEP_TIMEOUT_FETCH_MS,
+          `fetch origin/${BRANCH_PREVIEW}`,
+        ),
       ]);
       this._gitCache = {};
 
       this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN}...`);
-      await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_MAIN });
-      await this._hardResetBranch(projectPath, `origin/${BRANCH_MAIN}`);
+      await this._raceTimeout(
+        gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_MAIN }),
+        this.STEP_TIMEOUT_CHECKOUT_MS,
+        `checkout ${BRANCH_MAIN}`,
+      );
+      if (this.gitSafety) {
+        const result = await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_MAIN}`);
+        backupBranch = result.backupBranch;
+      } else {
+        await this._hardResetBranch(projectPath, `origin/${BRANCH_MAIN}`);
+      }
 
       this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
       const [authorName, authorEmail] = await Promise.all([
@@ -1650,34 +1974,48 @@ class GitHandlers {
         gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
       try {
-        await gitMod.merge({
-          fs,
-          dir: projectPath,
-          ours: BRANCH_MAIN,
-          theirs: `origin/${BRANCH_PREVIEW}`,
-          fastForward: false,
-          message: `Promote preview to main — ${new Date().toISOString()}`,
-          author: { name: authorName, email: authorEmail },
-        });
+        await this._raceTimeout(
+          gitMod.merge({
+            fs,
+            dir: projectPath,
+            ours: BRANCH_MAIN,
+            theirs: `origin/${BRANCH_PREVIEW}`,
+            fastForward: false,
+            message: `Promote preview to main — ${new Date().toISOString()}`,
+            author: { name: authorName, email: authorEmail },
+          }),
+          this.STEP_TIMEOUT_MERGE_MS,
+          `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
+        );
       } catch (_mergeErr) {
         this.sendOutput('❌ Conflito ao integrar Preview em Main. Verifique manualmente.');
         return { success: false, code: 'MAIN_MERGE_CONFLICT', error: 'Merge conflict promoting preview to main' };
       }
 
       this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
-      await gitMod.push({
-        fs,
-        http,
-        dir: projectPath,
-        remote: 'origin',
-        ref: BRANCH_MAIN,
-        force: false,
-        ...(signal ? { signal } : {}),
-        onAuth: () => auth,
-      });
+      await this._raceTimeout(
+        gitMod.push({
+          fs,
+          http,
+          dir: projectPath,
+          remote: 'origin',
+          ref: BRANCH_MAIN,
+          force: false,
+          ...(signal ? { signal } : {}),
+          onAuth: () => auth,
+        }),
+        this.STEP_TIMEOUT_PUSH_MS,
+        `push ${BRANCH_MAIN}`,
+      );
       this._gitCache = {};
 
       this.sendOutput(`✅ ${BRANCH_PREVIEW} promovido para ${BRANCH_MAIN}`);
+
+      if (backupBranch && this.gitSafety) {
+        await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        backupBranch = null;
+      }
+
       return { success: true, branch: BRANCH_MAIN };
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -1694,9 +2032,19 @@ class GitHandlers {
     } finally {
       try {
         const gitMod = await this._getGit();
-        await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
-        await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
+        if (this.gitSafety) {
+          await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`);
+        } else {
+          await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
+          await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
+        }
       } catch (_e) { /* best effort */ }
+      if (backupBranch && this.gitSafety) {
+        try {
+          const gitMod = await this._getGit();
+          await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        } catch (_e) { /* ignore */ }
+      }
       this.releaseGitLock();
     }
   }
