@@ -16,8 +16,9 @@ vi.mock('electron', () => ({
   ipcMain: mockIpcMain
 }));
 
-// Mock isomorphic-git completely to prevent any actual git operations
-vi.mock('isomorphic-git', () => ({}));
+// isomorphic-git is intentionally NOT mocked at module level: vitest's
+// vi.mock does not intercept CommonJS `require()` used by src/ipc/git.js,
+// so behavior tests below spy on the real module's methods instead.
 vi.mock('isomorphic-git/http/node', () => ({}));
 
 describe('GitHandlers Unit Tests', () => {
@@ -256,6 +257,73 @@ describe('GitHandlers Unit Tests', () => {
     it('should validate unregisterHandlers method exists', () => {
       expect(typeof gitHandlers.unregisterHandlers).toBe('function');
       // We don't call it to avoid ipcMain dependency issues
+    });
+  });
+
+  describe('gitCheckoutBranch — remote-only tracking branch creation', () => {
+    let gitHandlers;
+    let gitMod;
+    let checkoutSpy;
+    let branchSpy;
+    let setConfigSpy;
+    let listBranchesSpy;
+
+    beforeEach(async () => {
+      vi.clearAllMocks();
+      const { GitHandlers } = await import('../../src/ipc/git.js');
+      // src/ipc/git.js does `const git = require('isomorphic-git')` at load,
+      // holding a reference to the same cached module object. Spies installed
+      // on it therefore intercept calls made from inside git.js methods.
+      gitMod = require('isomorphic-git');
+
+      gitHandlers = new GitHandlers({
+        logger: mockLogger,
+        databaseManager: mockDatabaseManager
+      });
+
+      checkoutSpy = vi.spyOn(gitMod, 'checkout');
+      branchSpy = vi.spyOn(gitMod, 'branch');
+      setConfigSpy = vi.spyOn(gitMod, 'setConfig').mockResolvedValue(undefined);
+      listBranchesSpy = vi.spyOn(gitHandlers, 'gitListBranches');
+    });
+
+    afterEach(() => {
+      checkoutSpy.mockRestore();
+      branchSpy.mockRestore();
+      setConfigSpy.mockRestore();
+      listBranchesSpy.mockRestore();
+    });
+
+    it('should create local branch from origin/<name> (not HEAD) when only remote exists', async () => {
+      checkoutSpy.mockRejectedValue(new Error('ref does not match any known ref'));
+      listBranchesSpy.mockResolvedValue({
+        branches: [{ name: 'preview', isRemote: true }],
+        current: 'main'
+      });
+      branchSpy.mockResolvedValue(undefined);
+
+      await gitHandlers.gitCheckoutBranch('/repo', 'preview');
+
+      expect(branchSpy).toHaveBeenCalledTimes(1);
+      const branchCall = branchSpy.mock.calls[0][0];
+      expect(branchCall.ref).toBe('preview');
+      expect(branchCall.checkout).toBe(true);
+      expect(branchCall.object).toBe('origin/preview');
+
+      expect(setConfigSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'branch.preview.remote', value: 'origin' })
+      );
+      expect(setConfigSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'branch.preview.merge', value: 'refs/heads/preview' })
+      );
+    });
+
+    it('should NOT call git.branch when local branch exists', async () => {
+      checkoutSpy.mockResolvedValue(undefined);
+
+      await gitHandlers.gitCheckoutBranch('/repo', 'main');
+
+      expect(branchSpy).not.toHaveBeenCalled();
     });
   });
 });

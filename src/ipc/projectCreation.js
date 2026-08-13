@@ -935,9 +935,21 @@ class ProjectCreationHandler {
       if (!isExistingGitRepo) {
         step2Output('🔍 Verificando e garantindo branch preview...\n');
         try {
-          await this.gitOps.gitEnsurePreviewBranch(repoDirPath, step2Output);
-          step2Output('✅ Preview branch checked out.\n');
-          step2Status('success');
+          const previewResult = await this.gitOps.gitEnsurePreviewBranch(repoDirPath, step2Output);
+          if (previewResult && previewResult.pushFailed) {
+            // Push was attempted but failed. The local preview branch exists,
+            // so the project can still open — this is a WARNING, not an error.
+            // Status stays 'success' so the renderer advances the flow (a
+            // 'failure' status would hide the Finish button and block opening).
+            // The warning is surfaced via the step log (output) instead.
+            step2Output(`⚠️ Branch preview criada localmente, mas não foi possível publicá-la no repositório remoto.\n`);
+            step2Output(`💡 erro: ${previewResult.pushError}\n`);
+            step2Output(`💡 Publique manualmente com: git push -u origin preview\n`);
+            step2Status('success');
+          } else {
+            step2Output('✅ Preview branch checked out.\n');
+            step2Status('success');
+          }
         } catch (error) {
           step2Output(`❌ Error checking out preview branch: ${error.message}\n`);
           // Don't throw error for checkout failure, continue with setup
