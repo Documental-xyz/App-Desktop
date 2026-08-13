@@ -7,6 +7,7 @@
 'use strict';
 
 const git = require('isomorphic-git');
+const http = require('isomorphic-git/http/node');
 const fs = require('fs');
 const path = require('path');
 const { secureTokenService } = require('../services/secureTokenService.js');
@@ -407,42 +408,57 @@ class GitOperations {
       sendOutput(`✅ Branch 'preview' criada a partir de '${baseBranch}' com sucesso\n`);
       
       // Optionally push to remote if remote exists and user has authentication
+      this.logger?.info?.('[preview-push] starting push attempt', { dir });
+      let pushFailed = false;
+      let pushErrorMsg = null;
       try {
         const remoteUrl = await this.gitGetRemoteUrl(dir);
+        this.logger?.info?.('[preview-push] remoteUrl resolved', { remoteUrl });
         if (remoteUrl) {
           sendOutput(`🌐 Repositório remoto encontrado: ${remoteUrl}\n`);
           sendOutput(`🚀 Tentando publicar branch 'preview' para o repositório remoto...\n`);
           
           const token = await this.getGitHubToken();
+          this.logger?.info?.('[preview-push] token retrieved', { hasToken: Boolean(token), tokenLen: token ? token.length : 0 });
           if (token) {
             sendOutput(`🔐 Autenticação GitHub configurada\n`);
             const auth = { username: token, password: 'x-oauth-basic' };
             
-            await git.push({
-              fs,
-              http,
-              dir,
-              url: remoteUrl,
-              ref: 'preview:preview',
-              auth,
-              force: false
-            });
+            this.logger?.info?.('[preview-push] calling _pushWithRetry', { ref: 'preview', remoteRef: 'preview', authUsernamePrefix: token.substring(0, 4) });
+            await this._pushWithRetry(dir, remoteUrl, auth, 'preview', 'preview', sendOutput);
+            this.logger?.info?.('[preview-push] push succeeded');
             this._gitCache = {};
             sendOutput(`✅ Branch 'preview' publicada com sucesso para o repositório remoto\n`);
           } else {
+            this.logger?.info?.('[preview-push] no token — skipping push');
             sendOutput(`⚠️ Autenticação GitHub não configurada\n`);
             sendOutput(`💡 Configure a autenticação GitHub para publicar automaticamente\n`);
           }
         } else {
+          this.logger?.info?.('[preview-push] no remoteUrl found — skipping push');
           sendOutput(`ℹ️ Nenhum repositório remoto configurado\n`);
         }
-      } catch (pushError) {
-        sendOutput(`⚠️ Não foi possível publicar branch 'preview' para o repositório remoto: ${pushError.message}\n`);
+      } catch (pushErr) {
+        // Push was attempted but failed — surface this to the caller so it can
+        // show a visible warning. This is NOT a fatal error: the local preview
+        // branch exists and the project can still open. (skip-vs-fail: an
+        // absent remote/token skips push entirely and never enters this catch.)
+        pushFailed = true;
+        pushErrorMsg = pushErr.message;
+        this.logger?.error?.('[preview-push] PUSH FAILED — error swallowed by outer catch', {
+          message: pushErr.message,
+          code: pushErr.code,
+          status: pushErr.status,
+          name: pushErr.name,
+          data: pushErr.data ? JSON.stringify(pushErr.data).substring(0, 500) : undefined,
+          stack: pushErr.stack
+        });
+        sendOutput(`⚠️ Não foi possível publicar branch 'preview' para o repositório remoto: ${pushErr.message}\n`);
         sendOutput(`💡 A branch 'preview' foi criada localmente e pode ser publicada manualmente depois\n`);
         sendOutput(`💡 Comando para publicar manualmente: git push -u origin preview\n`);
       }
       
-      return { created: true, checkedOut: true, baseBranch };
+      return { created: true, checkedOut: true, baseBranch, pushFailed, pushError: pushFailed ? pushErrorMsg : undefined };
     } catch (error) {
       const errorMsg = `❌ Erro ao garantir branch 'preview': ${error.message}\n`;
       sendOutput(errorMsg);
@@ -459,6 +475,88 @@ class GitOperations {
       
       throw error;
     }
+  }
+
+  /**
+   * Push a branch to the remote with exponential backoff retry for
+   * transient failures (network errors, HTTP 5xx). Non-retriable errors
+   * (auth 401/403, non-fast-forward, ref conflict) abort immediately.
+   * @param {string} dir - Repository directory
+   * @param {string} url - Remote URL
+   * @param {Object} auth - Auth object ({ username, password })
+   * @param {string} ref - Source branch name to push (e.g. 'preview')
+   * @param {string} remoteRef - Destination branch name on the remote (e.g. 'preview')
+   * @param {Function} sendOutput - Output function
+   * @param {number} maxAttempts - Max attempts (default 3)
+   * @returns {Promise<void>}
+   */
+  async _pushWithRetry(dir, url, auth, ref, remoteRef, sendOutput, maxAttempts = 3) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      this.logger?.info?.('[push-retry] attempt starting', { attempt, maxAttempts });
+      try {
+        await git.push({
+          fs,
+          http,
+          dir,
+          url,
+          ref,
+          remoteRef,
+          onAuth: () => auth,
+          force: false
+        });
+        this.logger?.info?.('[push-retry] push succeeded', { attempt });
+        return;
+      } catch (error) {
+        lastError = error;
+        this.logger?.info?.('[push-retry] error caught', {
+          attempt,
+          code: error.code,
+          status: error.status,
+          name: error.name,
+          message: error.message,
+          isRetriable: this._isRetriablePushError(error)
+        });
+        if (!this._isRetriablePushError(error)) {
+          throw error;
+        }
+        if (attempt === maxAttempts) {
+          break;
+        }
+        const delayMs = 1000 * Math.pow(2, attempt - 1);
+        this.logger?.info?.('[push-retry] will retry', { attempt, delayMs: 1000 * Math.pow(2, attempt - 1) });
+        sendOutput(`⚠️ Tentativa ${attempt} falhou: ${error.message}. Retentando em ${delayMs / 1000}s...\n`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+    this.logger?.error?.('[push-retry] exhausted all attempts', { maxAttempts, lastErrorMessage: lastError?.message });
+    throw new Error(
+      `Falha ao criar branch preview remota após ${maxAttempts} tentativas. ` +
+      `Último erro: ${lastError.message}. Verifique conectividade e permissões.`
+    );
+  }
+
+  /**
+   * Determine whether a git.push error is transient (retriable).
+   * @param {Error} error - Error thrown by git.push
+   * @returns {boolean} True if the error is retriable
+   */
+  _isRetriablePushError(error) {
+    if (!error) return false;
+    let retriable = false;
+    if (['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND'].includes(error.code)) {
+      retriable = true;
+    } else if (error.code === 'PushRejectedError') {
+      retriable = false;
+    } else {
+      const status = error.response && error.response.status;
+      if (status) {
+        if (status >= 500 && status < 600) retriable = true;
+        if ([401, 403, 409, 422].includes(status)) retriable = false;
+      }
+    }
+    this.logger?.info?.('[push-retry] classification', { code: error?.code, status: error?.response?.status, retriable });
+    return retriable;
   }
 
   /**
