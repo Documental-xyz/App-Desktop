@@ -820,6 +820,19 @@ class ProjectCreationHandler {
           const pagesResult = await githubForkService.enableGitHubPages(pagesOwner, pagesRepo);
           if (pagesResult.success) {
             step6Output(await t('create.pages_success') + '\n');
+
+            try {
+              const envResult = await githubForkService.configurePagesEnvironment(pagesOwner, pagesRepo);
+              if (envResult && envResult.warning) {
+                step6Output(`⚠️ ${envResult.warning}\n`);
+              } else if (envResult && envResult.error) {
+                step6Output(`⚠️ ${envResult.error}\n`);
+              } else if (envResult && envResult.success) {
+                step6Output('Environment github-pages + preview configurado\n');
+              }
+            } catch (envError) {
+              step6Output(`⚠️ ${envError.message}\n`);
+            }
           } else {
             step6Output(await t('create.pages_error', { error: pagesResult.error || 'Unknown' }) + '\n');
           }

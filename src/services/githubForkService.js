@@ -471,6 +471,99 @@ class GithubForkService {
       return { exists: false, error: error?.message || 'Unknown error' };
     }
   }
+
+  /**
+   * Configure GitHub Pages (workflow build type), both `github-pages` and
+   * `preview` deployment environments, and a branch policy authorizing the
+   * `preview` branch to deploy to each environment.
+   *
+   * Degrades gracefully when environments are unavailable (422/403, e.g.
+   * private repo on a Free plan): returns `{ success: true, warning }`.
+   *
+   * @param {string} owner - Repository owner.
+   * @param {string} repo - Repository name.
+   * @returns {Promise<{ success: boolean, warning?: string, error?: string }>}
+   * @author Documental Team
+   * @since 1.1.0
+   */
+  async configurePagesEnvironment(owner, repo) {
+    try {
+      const token = await secureTokenService.getToken();
+      if (!token) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const { Octokit } = await import('@octokit/rest');
+      const octokit = new Octokit({ auth: token });
+
+      try {
+        await octokit.repos.createPagesSite({ owner, repo, build_type: 'workflow' });
+        this.logger?.info?.('GitHub Pages enabled for', owner + '/' + repo);
+      } catch (error) {
+        if (error && error.status === 409) {
+          this.logger?.info?.('GitHub Pages already enabled for', owner + '/' + repo);
+          try {
+            await octokit.repos.updateInformationAboutPagesSite({ owner, repo, build_type: 'workflow' });
+          } catch (updateError) {
+            this.logger?.debug?.('Pages update returned:', updateError?.message);
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      const branchPolicy = { protected_branches: false, custom_branch_policies: true };
+      const environments = ['github-pages', 'preview'];
+      for (const environmentName of environments) {
+        try {
+          await octokit.repos.createOrUpdateEnvironment({
+            owner,
+            repo,
+            environment_name: environmentName,
+            deployment_branch_policy: branchPolicy
+          });
+        } catch (error) {
+          if (error && (error.status === 422 || error.status === 403)) {
+            this.logger?.warn?.(
+              'Could not configure environment',
+              environmentName,
+              'for',
+              owner + '/' + repo,
+              '(likely private repo on Free plan):',
+              error?.message
+            );
+            return {
+              success: true,
+              warning: `Environments unavailable (${error.status}). Branch policies skipped.`
+            };
+          }
+          throw error;
+        }
+      }
+
+      for (const environmentName of environments) {
+        try {
+          await octokit.repos.createDeploymentBranchPolicy({
+            owner,
+            repo,
+            environment_name: environmentName,
+            name: 'preview',
+            type: 'branch'
+          });
+        } catch (error) {
+          if (error && error.status === 303) {
+            this.logger?.debug?.('Branch policy already exists for', environmentName);
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      this.logger?.error?.('Failed to configure Pages environment:', error?.message);
+      return { success: false, error: error?.message || 'Unknown error' };
+    }
+  }
 }
 
 module.exports = {

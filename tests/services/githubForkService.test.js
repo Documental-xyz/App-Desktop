@@ -17,7 +17,11 @@ const {
     repos: {
       createFork: vi.fn(),
       createUsingTemplate: vi.fn(),
-      get: vi.fn()
+      get: vi.fn(),
+      createPagesSite: vi.fn(),
+      updateInformationAboutPagesSite: vi.fn(),
+      createOrUpdateEnvironment: vi.fn(),
+      createDeploymentBranchPolicy: vi.fn()
     },
     users: {
       getAuthenticated: vi.fn()
@@ -673,5 +677,157 @@ describe.skip('GithubForkService', () => {
 
       expect(mockOctokitInstance.repos.get).toHaveBeenCalledWith({ owner: 'test-user', repo: 'my-repo' });
     });
+  });
+});
+
+// Tests below run (the describe above is quarantined). They cover
+// configurePagesEnvironment, which is NOT subject to the known-failure
+// quarantine because it touches none of the refactored polling code.
+describe('GithubForkService#configurePagesEnvironment', () => {
+  let service;
+  let mockLogger;
+  let tokenMock;
+
+  beforeAll(() => {
+    const mod = require('../../src/services/secureTokenService.js');
+    tokenMock = vi.spyOn(mod.secureTokenService, 'getToken');
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    tokenMock.mockResolvedValue('fake-token');
+
+    mockLogger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn()
+    };
+
+    const { GithubForkService } = await import('../../src/services/githubForkService.js');
+    service = new GithubForkService({ logger: mockLogger });
+
+    mockOctokitInstance.repos.createPagesSite.mockResolvedValue({ status: 201 });
+    mockOctokitInstance.repos.updateInformationAboutPagesSite.mockResolvedValue({ status: 200 });
+    mockOctokitInstance.repos.createOrUpdateEnvironment.mockResolvedValue({ status: 200 });
+    mockOctokitInstance.repos.createDeploymentBranchPolicy.mockResolvedValue({ status: 201 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function expectCreateOrUpdateEnvironment(name) {
+    expect(mockOctokitInstance.repos.createOrUpdateEnvironment).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      environment_name: name,
+      deployment_branch_policy: { protected_branches: false, custom_branch_policies: true }
+    });
+  }
+
+  function expectCreateDeploymentBranchPolicy(envName) {
+    expect(mockOctokitInstance.repos.createDeploymentBranchPolicy).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      environment_name: envName,
+      name: 'preview',
+      type: 'branch'
+    });
+  }
+
+  it('creates environment github-pages with custom_branch_policies: true', async () => {
+    await service.configurePagesEnvironment('owner', 'repo');
+
+    expectCreateOrUpdateEnvironment('github-pages');
+  });
+
+  it('creates environment preview with custom_branch_policies: true', async () => {
+    await service.configurePagesEnvironment('owner', 'repo');
+
+    expectCreateOrUpdateEnvironment('preview');
+  });
+
+  it('adds branch policy preview to BOTH environments', async () => {
+    await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(mockOctokitInstance.repos.createDeploymentBranchPolicy).toHaveBeenCalledTimes(2);
+    expectCreateDeploymentBranchPolicy('github-pages');
+    expectCreateDeploymentBranchPolicy('preview');
+  });
+
+  it('executes 5 calls in correct order (Pages → env1 → env2 → policy1 → policy2)', async () => {
+    const order = [];
+    mockOctokitInstance.repos.createPagesSite.mockImplementation(() => {
+      order.push('createPagesSite');
+      return Promise.resolve({ status: 201 });
+    });
+    mockOctokitInstance.repos.createOrUpdateEnvironment.mockImplementation((params) => {
+      order.push('createOrUpdateEnvironment:' + params.environment_name);
+      return Promise.resolve({ status: 200 });
+    });
+    mockOctokitInstance.repos.createDeploymentBranchPolicy.mockImplementation((params) => {
+      order.push('createDeploymentBranchPolicy:' + params.environment_name);
+      return Promise.resolve({ status: 201 });
+    });
+
+    await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(order).toEqual([
+      'createPagesSite',
+      'createOrUpdateEnvironment:github-pages',
+      'createOrUpdateEnvironment:preview',
+      'createDeploymentBranchPolicy:github-pages',
+      'createDeploymentBranchPolicy:preview'
+    ]);
+  });
+
+  it('treats 409 (Pages exists) by degrading to updateInformationAboutPagesSite', async () => {
+    const existsErr = Object.assign(new Error('Conflict'), { status: 409 });
+    mockOctokitInstance.repos.createPagesSite.mockRejectedValue(existsErr);
+
+    const result = await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(result.success).toBe(true);
+    expect(mockOctokitInstance.repos.updateInformationAboutPagesSite).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      build_type: 'workflow'
+    });
+    // Subsequent steps still run
+    expect(mockOctokitInstance.repos.createOrUpdateEnvironment).toHaveBeenCalledTimes(2);
+    expect(mockOctokitInstance.repos.createDeploymentBranchPolicy).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats 422 (private repo on Free) with non-blocking warning', async () => {
+    const privateErr = Object.assign(new Error('Validation Failed'), { status: 422 });
+    mockOctokitInstance.repos.createOrUpdateEnvironment.mockRejectedValue(privateErr);
+
+    const result = await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(result.success).toBe(true);
+    expect(result.warning).toEqual(expect.any(String));
+    // Branch policy steps are skipped because environments failed
+    expect(mockOctokitInstance.repos.createDeploymentBranchPolicy).not.toHaveBeenCalled();
+  });
+
+  it('returns auth error if token missing', async () => {
+    tokenMock.mockResolvedValue(null);
+
+    const result = await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(result).toEqual({ success: false, error: 'Not authenticated' });
+    expect(mockOctokitInstance.repos.createPagesSite).not.toHaveBeenCalled();
+  });
+
+  it('idempotency: 303 (already exists) on branch policy treated as success', async () => {
+    const policyExistsErr = Object.assign(new Error('Already exists'), { status: 303 });
+    mockOctokitInstance.repos.createDeploymentBranchPolicy.mockRejectedValue(policyExistsErr);
+
+    const result = await service.configurePagesEnvironment('owner', 'repo');
+
+    expect(result).toEqual({ success: true });
+    // Both policy calls attempted (both 303 → both succeed)
+    expect(mockOctokitInstance.repos.createDeploymentBranchPolicy).toHaveBeenCalledTimes(2);
   });
 });
