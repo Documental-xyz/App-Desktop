@@ -307,8 +307,11 @@ class GitOperations {
           fs,
           dir,
           ref: branchName,
+          object: `origin/${branchName}`,
           checkout: true
         });
+        await git.setConfig({ fs, dir, path: `branch.${branchName}.remote`, value: 'origin' });
+        await git.setConfig({ fs, dir, path: `branch.${branchName}.merge`, value: `refs/heads/${branchName}` });
         this._gitCache = {};
         sendOutput(`✅ Branch local '${branchName}' criada e selecionada\n`);
       } else {

@@ -732,8 +732,11 @@ class GitHandlers {
               fs,
               dir: projectPath,
               ref: branchName,
+              object: `origin/${branchName}`,
               checkout: true
             });
+            await git.setConfig({ fs, dir: projectPath, path: `branch.${branchName}.remote`, value: 'origin' });
+            await git.setConfig({ fs, dir: projectPath, path: `branch.${branchName}.merge`, value: `refs/heads/${branchName}` });
             this._gitCache = {};
             this.logger.info(`✅ Created and checked out local branch: ${branchName}`);
           } else {
