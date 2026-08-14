@@ -59,10 +59,10 @@
         .modal-backdrop {
             backdrop-filter: blur(4px);
         }
-        .repo-header { padding-top: 12vh !important; }
-        @media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
-        @media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
-        @media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+        .repo-header { padding-top: calc(12vh / var(--zoom, 1)) !important; }
+        @media (min-height: 800px) { .repo-header { padding-top: calc(15vh / var(--zoom, 1)) !important; } }
+        @media (min-height: 1000px) { .repo-header { padding-top: calc(18vh / var(--zoom, 1)) !important; } }
+        @media (min-height: 1200px) { .repo-header { padding-top: calc(22vh / var(--zoom, 1)) !important; } }
         /* Theme picker (top-right) */
         .theme-picker {
             position: fixed;
@@ -118,11 +118,6 @@
 <script src="script.js" defer></script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
-<!-- Branding -->
-<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback class="brand-logo-3x" style="width:144px;height:144px;display:flex;align-items:center;justify-content:center"></div>
-</div>
-<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
@@ -149,7 +144,7 @@
         </button>
     </div>
 </div>
-<div class="flex flex-col h-screen" x-data="{
+<div class="app-shell flex flex-col" x-data="{
         projectId: null,
         projectPath: '',
         githubUrl: '',
@@ -536,6 +531,9 @@
             await this.startCreationProcess();
     }
 }" x-cloak>
+<!-- Branding -->
+<div class="brand-logo-3x" x-html="renderLogoSVG({size:'lg'})" data-logo-fallback></div>
+<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Header -->
 <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
   <div class="max-w-4xl mx-auto mt-auto w-full">
@@ -553,7 +551,7 @@
 </header>
 
 <main class="flex-1 overflow-hidden flex flex-col">
-  <div class="flex-1 flex items-start justify-center px-8 pb-4 overflow-y-auto">
+  <div class="app-scroll flex items-start justify-center px-8 pb-4">
     <div class="w-full max-w-2xl" style="margin-top: 5vh;">
 
 <div class="text-center mb-8">
@@ -600,8 +598,7 @@
 </div>
 </div>
 </main>
-<footer style="position:fixed;bottom:0;left:0;right:0;z-index:50">
-<div class="p-4 border-t border-border-subtle bg-surface-dark">
+<footer class="app-footer shrink-0">
     <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
         <button @click="cancelProcess()" class="bg-danger hover:bg-danger-dark text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
             <span class="material-symbols-outlined align-middle mr-1">close</span>
@@ -620,7 +617,6 @@
  </template>
         </div>
     </div>
-</div>
 </footer>
 </div>
 
