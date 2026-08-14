@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  safelist: ['app-shell', 'app-scroll', 'app-footer', 'brand-logo-3x'],
   content: [
     "./renderer/**/*.{html,js}",
     "./src/**/*.{js,ts}"
