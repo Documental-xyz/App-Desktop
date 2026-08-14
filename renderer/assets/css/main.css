@@ -247,4 +247,11 @@
     .progress-bar-fill {
         @apply bg-primary h-full rounded-full transition-all duration-300;
     }
+
+    /* Zoom-safe app frame — canonical pattern (evidence: .omo/evidence/task-1-zoom-matrix.md) */
+    .app-shell { position: relative; display: flex; flex-direction: column; height: calc(100vh / var(--zoom, 1)); }
+    .app-scroll { flex: 1 1 0%; min-height: 0; overflow-y: auto; }
+    .app-footer { flex-shrink: 0; width: 100%; padding: 1rem; border-top: 1px solid var(--color-border-subtle); background: var(--color-surface-dark); }
+    .brand-logo-3x { position: absolute; top: 24px; left: 24px; width: 160px; height: 160px; border-radius: 6px; }
+    .brand-logo-3x svg, .brand-logo-3x img { width: 100%; height: 100%; }
 }

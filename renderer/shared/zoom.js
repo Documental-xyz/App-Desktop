@@ -55,6 +55,7 @@
         applyZoom: function () {
           var scale = this.zoomLevel / 100;
           document.body.style.zoom = scale.toString();
+          document.documentElement.style.setProperty('--zoom', String(scale));
           sessionStorage.setItem('zoom-level', this.zoomLevel.toString());
         },
 
