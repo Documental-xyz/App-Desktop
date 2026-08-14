@@ -10,10 +10,8 @@
     <link href="./assets/css/theme-override.css" rel="stylesheet"/>
     <style>
         html, body {
-            height: 100%;
             margin: 0;
             padding: 0;
-            overflow: hidden;
         }
 
         /* Subtle animated gradient background */
@@ -287,12 +285,14 @@
         </div>
     </div>
 
-    <div class="bg-scene h-screen flex flex-col items-center justify-center relative overflow-y-auto">
+    <div class="app-shell bg-scene">
         <!-- Decorative dot grid -->
         <div class="dot-grid"></div>
 
+        <!-- Scrollable content (margin-auto centering: centered when it fits, top reachable when it overflows) -->
+        <div class="app-scroll flex flex-col">
         <!-- Content -->
-        <div class="relative z-10 flex flex-col items-center px-6">
+        <div class="relative z-10 flex flex-col items-center px-6 m-auto">
             <!-- Logo -->
             <div class="anim-logo mb-8 flex justify-center">
                 <img class="app-logo-hero" src="./assets/img/logo-documental.svg" alt="Documental" />
@@ -357,6 +357,7 @@
                 </div>
 
             </div>
+        </div>
         </div>
 
         <!-- Footer -->
