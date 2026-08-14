@@ -83,11 +83,6 @@
 <script src="script.js" defer></script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
-<!-- Fixed top-left branding -->
-<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback class="brand-logo-3x" style="width:144px;height:144px;display:flex;align-items:center;justify-content:center"></div>
-</div>
-<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
@@ -108,7 +103,10 @@
         </button>
     </div>
 </div>
-<div class="flex flex-col h-screen">
+<div class="app-shell flex flex-col">
+  <!-- Top-left branding (canonical, zoom-safe; absolute on .app-shell) -->
+  <div class="brand-logo-3x" x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback></div>
+  <script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 
   <!-- Header (shrink-0) -->
   <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
@@ -125,7 +123,7 @@
 
   <!-- Main content -->
   <main class="flex-1 overflow-hidden flex flex-col">
-    <div class="flex-1 overflow-y-auto px-8 pb-4">
+    <div class="app-scroll px-8 pb-4">
       <div class="max-w-4xl mx-auto w-full repo-content">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div class="bg-surface-dark rounded-lg p-6 flex flex-col items-center text-center hover:ring-2 hover:ring-primary transition-all duration-300 cursor-pointer" data-navigate="repo-select.html">

@@ -142,10 +142,6 @@ if (document.readyState === 'loading') {
 </script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
-<!-- Fixed top-left branding -->
-<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size:'lg'})" class="brand-logo-3x" style="width:clamp(96px,12vw,192px);height:clamp(96px,12vw,192px);display:flex;align-items:center;justify-content:center"></div>
-</div>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
@@ -166,8 +162,11 @@ if (document.readyState === 'loading') {
         </button>
     </div>
 </div>
-<div class="flex flex-col h-screen">
-<div class="flex-1 overflow-y-auto">
+<div class="app-shell flex flex-col">
+<!-- Top-left branding (canonical, zoom-safe; absolute on .app-shell) -->
+<div class="brand-logo-3x" x-html="renderLogoSVG({size:'lg'})" data-logo-fallback></div>
+<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
+<div class="app-scroll">
 <div class="flex items-center justify-center min-h-full p-8">
 <div class="w-full max-w-4xl">
 <div class="text-center mb-8">
