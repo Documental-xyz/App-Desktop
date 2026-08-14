@@ -18,10 +18,12 @@
         var(--color-background-dark);
 }
 
-.repo-header { padding-top: 12vh !important; }
-@media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
-@media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
-@media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+/* Header rhythm in vh, divided by --zoom so the visual proportion holds
+   at any zoom (12vh at 100%; identical rendering when zoom=1). */
+.repo-header { padding-top: calc(12vh / var(--zoom, 1)) !important; }
+@media (min-height: 800px) { .repo-header { padding-top: calc(15vh / var(--zoom, 1)) !important; } }
+@media (min-height: 1000px) { .repo-header { padding-top: calc(18vh / var(--zoom, 1)) !important; } }
+@media (min-height: 1200px) { .repo-header { padding-top: calc(22vh / var(--zoom, 1)) !important; } }
 .repo-content { padding-top: 1rem; }
 @media (min-height: 800px) { .repo-content { padding-top: 1.25rem; } }
 @media (min-height: 1000px) { .repo-content { padding-top: 1.5rem; } }
@@ -273,21 +275,8 @@ document.addEventListener('DOMContentLoaded', function() {
 <script src="./assets/js/alpine.min.js" defer></script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
-<!-- Branding -->
-<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback class="brand-logo-3x" style="width:144px;height:144px;display:flex;align-items:center;justify-content:center"></div>
-</div>
-<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
-<div class="theme-picker" x-data="{
-        zoomLevel: 100,
-        zoomIn() { if (this.zoomLevel < 200) { this.zoomLevel += 25; this.applyZoom(); } },
-        zoomOut() { if (this.zoomLevel > 50) { this.zoomLevel -= 25; this.applyZoom(); } },
-        resetZoom() { this.zoomLevel = 100; this.applyZoom(); },
-        initZoom() { const s = sessionStorage.getItem('zoom-level'); this.zoomLevel = s ? parseInt(s, 10) : 100; this.applyZoom(); },
-        applyZoom() { document.body.style.zoom = (this.zoomLevel / 100).toString(); sessionStorage.setItem('zoom-level', this.zoomLevel.toString()); },
-        init() { this.initZoom(); }
-    }">
+<div class="theme-picker" x-data="zoomControls">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
         <button id="zoom-out" @click="zoomOut()" :disabled="zoomLevel <= 50" class="theme-btn" aria-label="Zoom out"><span class="material-symbols-outlined">zoom_out</span></button>
         <button id="zoom-reset" @click="resetZoom()" class="theme-btn" aria-label="Reset zoom"><span class="material-symbols-outlined">zoom_out_map</span></button>
@@ -306,7 +295,11 @@ document.addEventListener('DOMContentLoaded', function() {
         </button>
     </div>
 </div>
-<div class="flex flex-col h-screen">
+<div class="app-shell flex flex-col" x-data="repoSelect" x-init="init()">
+
+  <!-- Branding -->
+  <div class="brand-logo-3x" x-html="renderLogoSVG({size:'lg'})" data-logo-fallback></div>
+  <script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 
   <!-- Header (shrink-0) -->
   <header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
@@ -319,11 +312,11 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
   </header>
 
-  <!-- Main content (Alpine scope covers list + footer) -->
-  <main x-data="repoSelect" x-init="init()" class="flex-1 overflow-hidden flex flex-col">
+  <!-- Main content -->
+  <main class="flex-1 overflow-hidden flex flex-col">
 
     <!-- Scrollable repo list area (fixed-height box with internal scroll) -->
-    <div class="flex-1 overflow-y-auto px-8 pb-4">
+    <div class="app-scroll px-8 pb-4">
       <div class="page-center max-w-4xl mx-auto w-full repo-content">
 
         <!-- Scanning state (documental detection) -->
@@ -409,8 +402,8 @@ document.addEventListener('DOMContentLoaded', function() {
             </button>
           </div>
 
-          <!-- Fixed-height scrollable repo grid -->
-          <div x-show="filteredRepos.length > 0" x-cloak class="border border-border-subtle rounded-lg bg-surface-dark text-left" style="max-height: 540px; overflow-y: auto;">
+          <!-- Repo grid (scrolls at the .app-scroll level — single canonical scroller) -->
+          <div x-show="filteredRepos.length > 0" x-cloak class="border border-border-subtle rounded-lg bg-surface-dark text-left">
 
             <!-- Single-owner layout: flat grid (no group headers) -->
             <template x-if="!hasMultipleOwners">
@@ -484,34 +477,6 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
     </div>
 
-    <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
-    <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="p-4 border-t border-border-subtle bg-surface-dark" style="position:fixed;bottom:0;left:0;right:0;z-index:50">
-      <div class="flex items-center max-w-4xl mx-auto gap-3">
-        <!-- Left: Back button -->
-        <div class="flex-1 flex justify-start">
-          <button data-navigate="index.html" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-            <span class="material-symbols-outlined">arrow_back</span>
-            <span data-i18n="common.back">Back</span>
-          </button>
-        </div>
-        <!-- Center: Create fork -->
-        <div class="flex justify-center">
-          <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-            <span class="material-symbols-outlined">alt_route</span>
-            <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
-          </button>
-        </div>
-        <!-- Right: Continue -->
-        <div class="flex-1 flex justify-end">
-          <button @click="continueWithSelected()" :disabled="!selectedRepo"
-                  class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-            <span class="material-symbols-outlined">arrow_forward</span>
-            <span data-i18n="repo_select.button_continue">Continue</span>
-          </button>
-        </div>
-      </div>
-    </footer>
-
     <!-- Confirmation modal: non-Documental repo selected -->
     <div x-show="showNonDocumentalConfirm" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" @click.self="cancelNonDocumental()">
       <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md mx-4" @click.stop>
@@ -528,6 +493,34 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
 
   </main>
+
+  <!-- Footer with action buttons (inline because Alpine directives :disabled/@click) -->
+  <footer x-show="!loading &amp;&amp; !scanning &amp;&amp; !error" x-cloak class="app-footer shrink-0">
+    <div class="flex items-center max-w-4xl mx-auto gap-3">
+      <!-- Left: Back button -->
+      <div class="flex-1 flex justify-start">
+        <button data-navigate="index.html" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+          <span class="material-symbols-outlined">arrow_back</span>
+          <span data-i18n="common.back">Back</span>
+        </button>
+      </div>
+      <!-- Center: Create fork -->
+      <div class="flex justify-center">
+        <button @click="createFork()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-background-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+          <span class="material-symbols-outlined">alt_route</span>
+          <span data-i18n="repo_select.button_create_fork">Create New Fork</span>
+        </button>
+      </div>
+      <!-- Right: Continue -->
+      <div class="flex-1 flex justify-end">
+        <button @click="continueWithSelected()" :disabled="!selectedRepo"
+                class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          <span class="material-symbols-outlined">arrow_forward</span>
+          <span data-i18n="repo_select.button_continue">Continue</span>
+        </button>
+      </div>
+    </div>
+  </footer>
 </div>
 
 <script>
