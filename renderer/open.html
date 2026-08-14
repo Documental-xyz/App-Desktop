@@ -114,11 +114,6 @@
 <script src="script.js" defer></script>
 </head>
 <body class="bg-scene bg-background-dark text-text-dark antialiased">
-<!-- Fixed top-left branding -->
-<div style="position:fixed;top:clamp(16px,2.5vw,40px);left:clamp(16px,2.5vw,40px);z-index:9999;display:flex;align-items:center;gap:clamp(8px,1.2vw,20px)">
-    <div x-html="renderLogoSVG({size: 'lg'})" data-logo-fallback class="brand-logo-3x" style="width:144px;height:144px;display:flex;align-items:center;justify-content:center"></div>
-</div>
-<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Theme picker (top-right) -->
 <div class="theme-picker" x-data="{
         zoomLevel: 100,
@@ -126,7 +121,7 @@
         zoomOut() { if (this.zoomLevel > 50) { this.zoomLevel -= 25; this.applyZoom(); } },
         resetZoom() { this.zoomLevel = 100; this.applyZoom(); },
         initZoom() { const s = sessionStorage.getItem('zoom-level'); this.zoomLevel = s ? parseInt(s, 10) : 100; this.applyZoom(); },
-        applyZoom() { document.body.style.zoom = (this.zoomLevel / 100).toString(); sessionStorage.setItem('zoom-level', this.zoomLevel.toString()); },
+        applyZoom() { document.body.style.zoom = (this.zoomLevel / 100).toString(); document.documentElement.style.setProperty('--zoom', (this.zoomLevel / 100).toString()); sessionStorage.setItem('zoom-level', this.zoomLevel.toString()); },
         init() { this.initZoom(); }
     }">
     <div id="zoom-controls" class="inline-flex items-center gap-1 theme-picker-group" style="padding:0.25rem;border-radius:0.5rem;background:var(--color-surface-dark);border:1px solid var(--color-border-subtle)">
@@ -153,8 +148,8 @@
         </button>
     </div>
 </div>
-<!-- Page wrapper: matches renderLayout() output from shared/layout.js ('flex flex-col h-screen' + 'flex-1 overflow-hidden' main + 'shrink-0' footer). -->
-<div class="flex flex-col h-screen" id="page-layout" x-data="{
+<!-- Page shell: canonical app frame (.app-shell, zoom-compensated) — replaces renderLayout()'s 'flex flex-col h-screen' output; scroller uses .app-scroll, footer is in-flow as last child. -->
+<div class="app-shell flex flex-col" id="page-layout" x-data="{
         projectId: null,
         projectPath: '',
         githubUrl: '',
@@ -473,8 +468,11 @@
             await this.startOpenProcess();
     }
 }" x-cloak>
+<!-- Canonical top-left branding (absolute within .app-shell) -->
+<div class="brand-logo-3x" x-html="renderLogoSVG({size:'lg'})" data-logo-fallback></div>
+<script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <main class="flex-1 overflow-hidden flex flex-col">
-<div class="flex-1 overflow-y-auto p-8 pb-4">
+<div class="app-scroll p-8 pb-4">
 <div class="flex items-center justify-center min-h-full">
 <div class="w-full max-w-2xl">
 
@@ -542,8 +540,7 @@
 </main>
 <!-- Footer: 3-zone pattern (info | main buttons | progress) mirroring renderFooter() from shared/footer.js.
      Kept inline (not via dynamic renderFooter call) so all Alpine directives on action buttons are present in the DOM stream before Alpine.js scans the tree. -->
-<footer style="position:fixed;bottom:0;left:0;right:0;z-index:50">
-<div class="p-4 border-t border-border-subtle bg-surface-dark">
+<footer class="app-footer shrink-0">
     <div class="flex items-center justify-between gap-4 max-w-2xl mx-auto">
         <div class="flex-1 flex justify-start gap-2"></div>
         <div class="flex justify-center gap-3">
@@ -563,7 +560,6 @@
         </div>
         <div class="flex-1 flex justify-end gap-2"></div>
     </div>
-</div>
 </footer>
 </div>
 
