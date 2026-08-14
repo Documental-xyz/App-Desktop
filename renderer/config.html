@@ -259,7 +259,8 @@
 </div>
 </header>
 <div class="flex flex-1 overflow-hidden">
-<aside class="w-64 bg-surface-dark p-4 border-r border-border-subtle overflow-y-auto min-h-0">
+<aside class="w-64 bg-surface-dark p-4 border-r border-border-subtle overflow-y-auto min-h-0" style="padding-top:96px">
+<!-- 96px = brand wordmark painted bottom (~134px) + clearance: keeps nav below the overlay logo -->
 <nav class="space-y-2">
 <h3 class="px-3 text-xs font-semibold text-muted-dark uppercase tracking-wider" x-text="$store.i18n.t('config.section_interface')">Interface</h3>
 <a :class="{'bg-surface-secondary text-primary': activeTab === 'geral', 'hover:bg-surface-secondary text-text-dark': activeTab !== 'geral'}" @click.prevent="activeTab = 'geral'" class="flex items-center px-3 py-2 rounded-md text-sm font-medium cursor-pointer" href="#">
