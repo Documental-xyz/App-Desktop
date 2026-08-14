@@ -2,8 +2,8 @@
  * @fileoverview Pre-flight checks for publish-to-preview and publish-to-main flows.
  *
  * Runs all read-only validation BEFORE any git lock is acquired, so the user
- * gets fast feedback (token, permission, branch protection, precedence,
- * workflows) without blocking other concurrent operations. The actual publish
+ * gets fast feedback (token, branch protection, precedence, workflows)
+ * without blocking other concurrent operations. The actual publish
  * steps (fetch/checkout/merge/push) live in GitHandlers and acquire the lock
  * only after preflight returns `canProceed: true`.
  *
@@ -215,15 +215,20 @@ class GitPreflight {
    *
    * Checks:
    *   1. Token (HARD block).
-   *   2. Permission to push to main (HARD block if denied).
-   *   3. Branch protection status (informational warning; never blocks).
-   *   4. Precedence: preview must be ahead of main (HARD block if equal).
-   *   5. main branch exists on remote (HARD block if missing).
-   *   6. Workflows warning.
+   *   2. Branch protection status (informational warning; never blocks).
+   *   3. Precedence: preview must be ahead of main (HARD block if equal).
+   *   4. main branch exists on remote (HARD block if missing).
+   *   5. Workflows warning.
+   *
+   * Push-permission gating (RBAC) has been removed: the collaborator
+   * permission level is no longer consulted. Publish eligibility is decided
+   * by the precedence check below plus whatever branch-protection rules
+   * GitHub enforces server-side on the push itself.
    *
    * @param {number|string} projectId - Project ID.
    * @param {string} projectPath - Absolute path to the local repository working tree.
-   * @param {Object} permissionHandlers - PermissionHandlers instance (has checkMainPermission, checkBranchProtection).
+   * @param {Object} [permissionHandlers] - Optional PermissionHandlers instance. Only
+   *   `checkBranchProtection` is consulted (informational warning); ignored if absent.
    * @returns {Promise<PreflightResult>} Aggregated preflight result.
    */
   async runPreflightForMain(projectId, projectPath, permissionHandlers) {
@@ -243,28 +248,12 @@ class GitPreflight {
     const auth = { username: token, password: 'x-oauth-basic' };
     const gitMod = await this._getGit();
 
-    // ── Steps 2 & 3 in parallel (both use cached permission data) ───────────
-    const [permResult, protectionResult] = await Promise.all([
-      this._checkMainPermission(projectId, permissionHandlers, errors),
-      this._checkBranchProtection(projectId, BRANCH_MAIN, permissionHandlers, warnings, checks),
-    ]);
+    // ── Step 2: branch protection (informational warning; never blocks) ──────
+    // Push-permission gating (RBAC) was removed — precedence below is now the
+    // sole hard gate besides token presence and branch existence.
+    await this._checkBranchProtection(projectId, BRANCH_MAIN, permissionHandlers, warnings, checks);
 
-    // Permission is a hard block — short-circuit remaining checks if denied.
-    // (We still let protection/warnings accumulate for visibility, but no point
-    // fetching refs if the user can't push anyway.)
-    if (!permResult) {
-      // Best-effort: still run workflows warning in parallel-ish fashion.
-      const workflows = await this._checkWorkflows(projectId).catch(() => null);
-      if (workflows === true) {
-        warnings.push({
-          code: 'WORKFLOWS_WILL_FIRE',
-          message: '⚡ Actions serão disparadas neste publish',
-        });
-      }
-      return { canProceed: false, checks, warnings, errors };
-    }
-
-    // ── Steps 4, 5, 6 in parallel ───────────────────────────────────────────
+    // ── Steps 3, 4, 5 in parallel ───────────────────────────────────────────
     const [precedenceResult, mainExistsResult, workflowsResult] = await Promise.allSettled([
       this._checkPrecedence(projectPath, auth, gitMod, warnings),
       this._checkBranchExists(projectPath, BRANCH_MAIN, auth, gitMod),
@@ -494,41 +483,6 @@ class GitPreflight {
   }
 
   /**
-   * Permission check for pushing to main. Hard-blocks via `errors` on denial.
-   * @param {number|string} projectId
-   * @param {Object} permissionHandlers
-   * @param {PreflightCheckEntry[]} errors
-   * @returns {Promise<boolean>} true if user can push to main.
-   * @private
-   */
-  async _checkMainPermission(projectId, permissionHandlers, errors) {
-    if (!permissionHandlers || typeof permissionHandlers.checkMainPermission !== 'function') {
-      // No permission handler available — fail open (don't block) but log.
-      this.logger.warn('⚠️ No permissionHandlers provided to preflight; skipping permission check');
-      return true;
-    }
-    try {
-      const perm = await permissionHandlers.checkMainPermission(projectId);
-      if (!perm || !perm.canPushToMain) {
-        errors.push({
-          code: 'PERMISSION_DENIED',
-          message: 'Sem permissão para publicar em main',
-        });
-        return false;
-      }
-      return true;
-    } catch (error) {
-      // Treat thrown permission check as denial — safer to block.
-      this.logger.error('❌ checkMainPermission threw:', error);
-      errors.push({
-        code: 'PERMISSION_DENIED',
-        message: `Sem permissão para publicar em main: ${error.message}`,
-      });
-      return false;
-    }
-  }
-
-  /**
    * Branch protection check. Always informational — pushes warnings, never errors.
    * @param {number|string} projectId
    * @param {string} branchName
@@ -690,9 +644,8 @@ class GitPreflight {
       );
     }
 
-    // d. Hard block: preview must be ahead of main (main must be ancestor
-    //    of preview). Fast path: identical SHAs → preview has zero new
-    //    commits beyond main.
+    // d. Hard block: preview must be ahead of main. Fast path: identical
+    //    SHAs → preview has zero new commits beyond main.
     if (previewSha === mainSha) {
       return {
         code: 'PREVIEW_NOT_AHEAD',
@@ -700,31 +653,11 @@ class GitPreflight {
       };
     }
 
-    // Check ancestry: is main an ancestor of preview?
-    // If yes → preview is ahead (has main's history + new commits) → OK to promote.
-    // If no  → main has commits preview doesn't have → user must publish to preview first.
-    let isMainAncestorOfPreview = false;
-    try {
-      isMainAncestorOfPreview = await gitMod.isDescendent({
-        fs,
-        dir: projectPath,
-        ancestor: mainSha,
-        oid: previewSha,
-        depth: -1,
-      });
-    } catch (e) {
-      // isDescendent may fail if commits aren't available locally (shallow clone).
-      // Fall back to equality check — already handled above.
-      this.logger?.warn?.('_checkPrecedence: isDescendent failed, falling back to equality:', e.message);
-    }
-
-    if (!isMainAncestorOfPreview && previewSha !== mainSha) {
-      // main has commits that preview doesn't have → preview is behind.
-      return {
-        code: 'PREVIEW_NOT_AHEAD',
-        message: 'Publique em preview primeiro — a branch main tem mudanças que a preview ainda não incorporou',
-      };
-    }
+    // With shallow fetch (depth:1), isDescendent cannot walk commit history
+    // (fails for BOTH directions). Rely on SHA comparison instead:
+    // - previewSha !== mainSha here → preview has commits main lacks → allow.
+    // - The gitPublishMain body's NOTHING_TO_PUSH guard catches the edge case
+    //   where the merge produces no new commits.
 
     // e. Hard block: local preview must be in sync with origin/preview.
     //    If local preview !== origin/preview, the user has unpushed commits
@@ -840,3 +773,4 @@ class GitPreflight {
 }
 
 module.exports = { GitPreflight, WORKFLOWS_CACHE_TTL_MS };
+

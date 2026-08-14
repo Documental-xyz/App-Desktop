@@ -80,7 +80,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshProject: (projectId, force) => ipcRenderer.invoke('git:refresh', projectId, force),
   publishToPreview: (projectId, commitMessage) => ipcRenderer.invoke('git:publish-preview', projectId, commitMessage),
   publishToMain: (projectId) => ipcRenderer.invoke('git:publish-main', projectId),
-  checkMainPermission: (projectId) => ipcRenderer.invoke('git:check-main-permission', projectId),
   checkPublishMain: (projectId) => ipcRenderer.invoke('git:check-publish-main', projectId),
   invalidatePermissionCache: (projectId) => ipcRenderer.invoke('git:invalidate-permission-cache', projectId),
   listRemoteBranches: (projectId) => ipcRenderer.invoke('git:list-remote-branches', projectId),

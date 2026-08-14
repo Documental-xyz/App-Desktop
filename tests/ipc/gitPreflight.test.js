@@ -135,12 +135,8 @@ describe('GitPreflight', () => {
 
   // ─── runPreflightForMain ───────────────────────────────────────────────
   describe('runPreflightForMain', () => {
-    function makePermissionHandlers({ canPush = true, isProtected = false, canUserPush = true } = {}) {
+    function makePermissionHandlers({ isProtected = false, canUserPush = true } = {}) {
       return {
-        checkMainPermission: vi.fn().mockResolvedValue({
-          success: true,
-          canPushToMain: canPush,
-        }),
         checkBranchProtection: vi.fn().mockResolvedValue({
           success: true,
           isProtected,
@@ -151,7 +147,6 @@ describe('GitPreflight', () => {
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when origin/preview === origin/main', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       // Equal SHAs — precedence check returns PREVIEW_NOT_AHEAD.
       git.resolveRef.mockResolvedValue('equal-sha');
@@ -159,48 +154,40 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(false);
       expect(result.errors.some((e) => e.code === 'PREVIEW_NOT_AHEAD')).toBe(true);
     });
 
-    it('hard-blocks with PREVIEW_NOT_AHEAD when main moved ahead of preview (not ancestor)', async () => {
+    it('allows proceed when SHAs differ (isDescendent no longer consulted)', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
-      // Different SHAs (so equality fast-path is skipped), but isDescendent
-      // returns false → main has commits preview doesn't have → BLOCK.
+      // Different SHAs (equality fast-path skipped). Previously this would
+      // call isDescendent; with shallow fetch (depth:1) isDescendent fails
+      // for BOTH directions and incorrectly blocked legitimate promotions.
+      // Now SHA inequality alone means preview has commits main lacks → allow.
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/preview') return 'preview-behind-sha';
         if (ref === 'origin/main') return 'main-ahead-sha';
         if (ref === 'preview') return 'preview-behind-sha';
         return 'sha';
       });
-      git.isDescendent.mockResolvedValue(false);
 
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
-      expect(result.canProceed).toBe(false);
-      expect(result.errors.some((e) => e.code === 'PREVIEW_NOT_AHEAD')).toBe(true);
-      // Verify isDescendent was called with main as ancestor and preview as oid
-      expect(git.isDescendent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          ancestor: 'main-ahead-sha',
-          oid: 'preview-behind-sha',
-          depth: -1,
-        })
-      );
+      expect(result.canProceed).toBe(true);
+      // isDescendent must no longer be consulted from the precedence path.
+      expect(git.isDescendent).not.toHaveBeenCalled();
     });
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when working tree has uncommitted changes', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       // Remote SHAs would normally allow proceed, but statusMatrix reports
       // a dirty file → must block BEFORE promoting to main.
@@ -218,7 +205,7 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(false);
@@ -229,22 +216,20 @@ describe('GitPreflight', () => {
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when local preview diverges from origin/preview (unpushed work)', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
-      // Ancestry OK (preview is ahead of main), but local preview ref points
-      // at a different SHA than origin/preview → user has unpushed commits.
+      // Remote SHAs differ (would allow), but local preview ref points at a
+      // different SHA than origin/preview → user has unpushed commits.
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/preview') return 'origin-preview-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'local-preview-sha'; // diverged!
         return 'sha';
       });
-      git.isDescendent.mockResolvedValue(true);
 
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(false);
@@ -253,31 +238,28 @@ describe('GitPreflight', () => {
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when local preview ref does not exist', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
-      // Ancestry OK, but resolving local 'preview' ref throws → user has
-      // never published locally → must publish to preview first.
+      // Remote SHAs differ (would allow), but resolving local 'preview' ref
+      // throws → user has never published locally → must publish first.
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') throw new Error('ref not found');
         return 'sha';
       });
-      git.isDescendent.mockResolvedValue(true);
 
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(false);
       expect(result.errors.some((e) => e.code === 'PREVIEW_NOT_AHEAD')).toBe(true);
     });
 
-    it('allows proceed when preview is a descendant of main (isDescendent true)', async () => {
+    it('allows proceed when preview and main have different SHAs', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
@@ -285,12 +267,11 @@ describe('GitPreflight', () => {
         if (ref === 'preview') return 'preview-ahead-sha';
         return 'sha';
       });
-      git.isDescendent.mockResolvedValue(true);
 
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(true);
@@ -299,7 +280,6 @@ describe('GitPreflight', () => {
 
     it('hard-blocks with MAIN_MISSING when fetch origin/main rejects with "not found"', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/main') throw new Error('not found');
@@ -314,7 +294,7 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(false);
@@ -323,7 +303,6 @@ describe('GitPreflight', () => {
 
     it('allows proceed when preview is ahead of main (different SHAs)', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
@@ -335,7 +314,7 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       expect(result.canProceed).toBe(true);
@@ -347,7 +326,6 @@ describe('GitPreflight', () => {
     it('surfaces branch-protection warning but still allows proceed', async () => {
       const { preflight } = makePreflight();
       const permissionHandlers = makePermissionHandlers({
-        canPush: true,
         isProtected: true,
         canUserPush: false,
       });
@@ -371,18 +349,28 @@ describe('GitPreflight', () => {
       expect(result.canProceed).toBe(true);
     });
 
-    it('hard-blocks with PERMISSION_DENIED when canPushToMain is false', async () => {
+    it('allows proceed after a prior preview→main merge (main has merge commit preview lacks)', async () => {
+      // Regression: after the first successful publish-main (which does a
+      // --no-ff merge of preview into main), origin/main contains a merge
+      // commit that origin/preview does NOT have. With a SHA-based check
+      // (no isDescendent) the differing SHAs correctly allow promotion.
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: false });
+
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'origin/preview') return 'preview-new-sha';
+        if (ref === 'origin/main') return 'main-merge-sha';
+        if (ref === 'preview') return 'preview-new-sha';
+        return 'sha';
+      });
 
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
-      expect(result.canProceed).toBe(false);
-      expect(result.errors.some((e) => e.code === 'PERMISSION_DENIED')).toBe(true);
+      expect(result.canProceed).toBe(true);
+      expect(result.errors.some((e) => e.code === 'PREVIEW_NOT_AHEAD')).toBe(false);
     });
 
     it('hard-blocks with NO_TOKEN when gitOps.getGitHubToken returns null', async () => {
@@ -391,7 +379,7 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        makePermissionHandlers()
+        null
       );
 
       expect(result.canProceed).toBe(false);
@@ -408,24 +396,8 @@ describe('GitPreflight', () => {
       expect(result.errors.some((e) => e.code === 'NO_TOKEN')).toBe(true);
     });
 
-    it('handles missing permissionHandlers gracefully (fail-open)', async () => {
-      const { preflight } = makePreflight();
-      git.resolveRef.mockImplementation(async ({ ref }) => {
-        if (ref === 'origin/preview') return 'preview-ahead-sha';
-        if (ref === 'origin/main') return 'main-sha-behind';
-        if (ref === 'preview') return 'preview-ahead-sha';
-        return 'sha';
-      });
-
-      const result = await preflight.runPreflightForMain(PROJECT_ID, PROJECT_PATH, null);
-
-      // No permission handler → fail open
-      expect(result.canProceed).toBe(true);
-    });
-
     it('PRECEDENCE_CHECK_FAILED when resolveRef throws for preview unexpectedly', async () => {
       const { preflight } = makePreflight();
-      const permissionHandlers = makePermissionHandlers({ canPush: true });
 
       // precedence uses Promise.all of two fetches; if both resolve OK then
       // resolveRef('origin/preview') rejects → PREVIEW_NOT_AHEAD is returned
@@ -440,13 +412,40 @@ describe('GitPreflight', () => {
       const result = await preflight.runPreflightForMain(
         PROJECT_ID,
         PROJECT_PATH,
-        permissionHandlers
+        null
       );
 
       // Either FETCH_FAILED (main-exists fetch wrapper catches) or
       // PRECEDENCE_CHECK_FAILED (precedence Promise.all rejects). Both are
       // hard-blocks — the key invariant is canProceed === false.
       expect(result.canProceed).toBe(false);
+    });
+
+    it('does NOT call checkMainPermission (RBAC removed)', async () => {
+      const { preflight } = makePreflight();
+      // A permission handler that WOULD deny — proves permission is no longer
+      // a gate: runPreflightForMain must not consult it at all.
+      const permissionHandlers = {
+        checkMainPermission: vi.fn().mockResolvedValue({ success: true, canPushToMain: false }),
+      };
+
+      // Precedence alone decides: preview is ahead of main → should proceed.
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'origin/preview') return 'preview-ahead-sha';
+        if (ref === 'origin/main') return 'main-sha-behind';
+        if (ref === 'preview') return 'preview-ahead-sha';
+        return 'sha';
+      });
+
+      const result = await preflight.runPreflightForMain(
+        PROJECT_ID,
+        PROJECT_PATH,
+        permissionHandlers
+      );
+
+      expect(permissionHandlers.checkMainPermission).not.toHaveBeenCalled();
+      expect(result.canProceed).toBe(true);
+      expect(result.errors.some((e) => e.code === 'PERMISSION_DENIED')).toBe(false);
     });
   });
 

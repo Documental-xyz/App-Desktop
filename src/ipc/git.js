@@ -1901,20 +1901,6 @@ class GitHandlers {
       return { success: false, error: 'GitHub authentication required' };
     }
 
-    // Pre-lock: permission gate (now before lock).
-    if (projectId && this.permissionHandlers) {
-      try {
-        const perm = await this.permissionHandlers.checkMainPermission(projectId);
-        if (!perm || !perm.canPushToMain) {
-          this.sendOutput('❌ Sem permissão para publicar em main.');
-          return { success: false, code: 'PERMISSION_DENIED' };
-        }
-      } catch (permErr) {
-        this.logger.error('checkMainPermission threw:', permErr);
-        return { success: false, code: 'PERMISSION_DENIED', error: permErr.message };
-      }
-    }
-
     // Pre-lock: preflight. Hard-block on MAIN_MISSING (no body-side equivalent)
     // and PREVIEW_NOT_AHEAD (preview must be published first — user requirement:
     // "o usuário só possa fazer publicação para main depois de já ter feito
@@ -1996,6 +1982,11 @@ class GitHandlers {
         gitMod.getConfig({ fs, dir: projectPath, path: 'user.name', cache: this._gitCache }).then((v) => v || 'documental'),
         gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
+      // Resolve theirs (origin/preview) OID up-front for the binary fallback path.
+      let theirsOid = null;
+      try {
+        theirsOid = await gitMod.resolveRef({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}` });
+      } catch (_refErr) { /* best effort — binary fallback will simply fail later */ }
       try {
         await this._raceTimeout(
           gitMod.merge({
@@ -2004,15 +1995,40 @@ class GitHandlers {
             ours: BRANCH_MAIN,
             theirs: `origin/${BRANCH_PREVIEW}`,
             fastForward: false,
+            ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
             message: `Promote preview to main — ${new Date().toISOString()}`,
             author: { name: authorName, email: authorEmail },
           }),
           this.STEP_TIMEOUT_MERGE_MS,
           `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
         );
-      } catch (_mergeErr) {
-        this.sendOutput('❌ Conflito ao integrar Preview em Main. Verifique manualmente.');
-        return { success: false, code: 'MAIN_MERGE_CONFLICT', error: 'Merge conflict promoting preview to main' };
+      } catch (mergeErr) {
+        if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+          this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
+          const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+          for (const filepath of conflictFiles) {
+            try {
+              await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, theirsOid);
+            } catch (resolveErr) {
+              this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+            }
+          }
+          await gitMod.commit({
+            fs, dir: projectPath,
+            message: `Promote preview to main (binary resolved) — ${new Date().toISOString()}`,
+            author: { name: authorName, email: authorEmail },
+            parent: [BRANCH_MAIN, `origin/${BRANCH_PREVIEW}`],
+          });
+        } else {
+          // Non-recoverable merge failure: restore repo state before propagating.
+          // isomorphic-git has no `merge --abort`; reset via the safety helper.
+          try {
+            if (this.gitSafety) {
+              await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_MAIN}`);
+            }
+          } catch (_resetErr) { /* best effort */ }
+          throw mergeErr;
+        }
       }
 
       // Detect no-op push: if local main already equals origin/main, the merge
@@ -2066,9 +2082,15 @@ class GitHandlers {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
       const msg = error.message || '';
-      if (msg.includes('403') || msg.includes('protected branch')) {
-        this.sendOutput('❌ Sem permissão (branch protegida).');
-        return { success: false, code: 'PERMISSION_DENIED', error: msg };
+      const isForbidden =
+        (error.data && (error.data.code === 403 || error.data.status === 403)) ||
+        (error.message && /403|forbidden/i.test(error.message)) ||
+        msg.includes('protected branch');
+      if (isForbidden) {
+        const forbiddenMsg =
+          'Push rejeitado pelo GitHub (403). Verifique permissões do token ou se a branch main está protegida.';
+        this.sendOutput(`❌ ${forbiddenMsg}`);
+        return { success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg };
       }
       this.logger.error('Error in gitPublishMain:', error);
       this.sendOutput(`❌ Erro ao publicar em main: ${error.message}`);

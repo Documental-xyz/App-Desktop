@@ -198,8 +198,6 @@ clearingCache: false,
           warnings: [],
           fastPath: false,
       },
-      // Permission gating for publish-to-main
-      canPublishToMain: false,
       // Inline precedence error surfaced inside the publish setup modal
       precedenceError: '',
       precedenceChecking: false,
@@ -782,8 +780,7 @@ clearingCache: false,
     },
     translateGitExecError(result) {
         if (result.code === 'DIRTY_LOCAL') return __t('main.discard_local_desc');
-        if (result.code === 'PERMISSION_DENIED') return __t('main.git_exec_error_main_permission');
-        if (result.code === 'MAIN_MERGE_CONFLICT') return __t('main.git_exec_error_generic');
+        if (result.code === 'PUSH_FORBIDDEN') return __t('main.git_exec_error_main_permission');
         if (result.code === 'PREVIEW_NOT_AHEAD') return __t('main.git_exec_error_preview_not_ahead');
         if (result.code === 'MAIN_MISSING') return __t('main.git_exec_error_main_missing');
         if (result.cancelled) return __t('common.canceling');
@@ -791,17 +788,6 @@ clearingCache: false,
         if (err.includes('401') || err.includes('403')) return __t('main.git_exec_error_auth');
         if (err.includes('network') || err.includes('ECONNREFUSED') || err.includes('ETIMEDOUT')) return __t('main.git_exec_error_network');
         return err || __t('main.git_exec_error_generic');
-    },
-    async loadCanPublishToMain() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) { this.canPublishToMain = false; return; }
-        try {
-            const result = await window.electronAPI.checkMainPermission(projectId);
-            this.canPublishToMain = result.canPushToMain;
-        } catch (e) {
-            console.error('Error checking main permission:', e);
-            this.canPublishToMain = false;
-        }
     },
     async openPublishSetupModal() {
         const projectId = sessionStorage.getItem('currentProjectId');
@@ -818,7 +804,6 @@ clearingCache: false,
             return a.name.localeCompare(b.name);
         });
         this.branches = sortedBranches;
-        await this.loadCanPublishToMain();
         this.publishTargetBranch = 'preview';
         try {
             const userInfo = await window.electronAPI.getUserInfo();
@@ -903,14 +888,6 @@ clearingCache: false,
         if (this.precedenceChecking) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         if (this.publishTargetBranch === 'main') {
-            // Informational only — do NOT hard-block. The renderer permission
-            // check can falsely return false when the project isn't fully
-            // registered in the DB or the auth state is mismatched. The
-            // backend's gitPublishMain does its own authoritative permission
-            // check via GitHub's collaborator API, so we defer to it.
-            if (!this.canPublishToMain) {
-                console.warn('Publish to main: permission check returned false — deferring to backend gate');
-            }
             this.precedenceChecking = true;
             this.precedenceError = '';
             try {
@@ -969,7 +946,6 @@ clearingCache: false,
         }
     },
     async onPublishMainClick() {
-        if (!this.canPublishToMain) return;
         const projectId = sessionStorage.getItem('currentProjectId');
         this.openGitExecModal('publish-main', 4);
         this.gitExecution.preflightRunning = true;
@@ -1408,9 +1384,6 @@ clearingCache: false,
         
         // Load repository information
         await this.loadRepositoryInfo();
-
-        // Check publish-to-main permission (Wave 3)
-        await this.loadCanPublishToMain();
         
         // Set up periodic refresh for repository info (every 30 seconds)
         setInterval(async () => {

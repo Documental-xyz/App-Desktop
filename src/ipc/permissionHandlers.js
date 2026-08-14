@@ -19,22 +19,10 @@ const { PERMISSION_CACHE_TTL_MS } = (() => {
 })();
 
 /**
- * @typedef {Object} PermissionResult
- * @property {boolean} success - Whether the check succeeded
- * @property {('admin'|'maintain'|'write'|'triage'|'read'|'none')} permission - GitHub permission level
- * @property {boolean} canPushToMain - Whether the user can push directly to main
- * @property {boolean} cached - Whether the result came from cache
- * @property {string} [error] - Error message if success is false
- */
-
-/**
  * Regex to extract owner/repo from a GitHub remote URL.
  * Handles both SSH (git@github.com:owner/repo.git) and HTTPS (https://github.com/owner/repo.git) forms.
  */
 const GITHUB_URL_RE = /github\.com[\/:]([^\/]+)\/([^\/\.]+)(\.git)?$/;
-
-/** Permissions that allow pushing directly to a protected branch like main. */
-const MAIN_PUSH_PERMISSIONS = ['admin', 'maintain', 'write'];
 
 /** Network error codes that should trigger a single retry with backoff. */
 const RETRYABLE_ERROR_CODES = new Set(['ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN']);
@@ -45,9 +33,10 @@ const NETWORK_RETRY_BACKOFF_MS = 1000;
 /**
  * Permission IPC Handlers.
  *
- * Wraps `octokit.repos.getCollaboratorPermissionLevel` with a 30-minute
- * in-memory cache so repeated UI gating checks for the same user/repo
- * resolve in microseconds instead of round-tripping the GitHub API.
+ * Provides branch-protection lookups (cached for PERMISSION_CACHE_TTL_MS)
+ * for the preflight informational warning. Push-permission gating has been
+ * removed — publish to main is now governed solely by the preflight's
+ * precedence check and by branch-protection rules on the remote.
  */
 class PermissionHandlers {
   /**
@@ -90,103 +79,6 @@ class PermissionHandlers {
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
-
-  /**
-   * Check whether the current user has permission to push to the main branch
-   * of the repository associated with `projectId`.
-   *
-   * Flow:
-   *  1. Resolve owner/repo from the project via the database.
-   *  2. Resolve the current username.
-   *  3. Return a cached entry if still fresh (< PERMISSION_CACHE_TTL_MS).
-   *  4. Otherwise call GitHub's collaborator permission endpoint, cache, return.
-   *
-   * @param {number|string} projectId - Project ID to check.
-   * @returns {Promise<PermissionResult>} Permission result.
-   */
-  async checkMainPermission(projectId) {
-    try {
-      // Step 1: resolve owner/repo from the project row.
-      const { owner, repo, remoteUrl } = await this._resolveRepo(projectId);
-      if (!owner || !repo) {
-        return {
-          success: false,
-          permission: 'none',
-          canPushToMain: false,
-          cached: false,
-          error: `Could not determine owner/repo for project ${projectId} (remoteUrl: ${remoteUrl || 'unknown'})`,
-        };
-      }
-
-      // Step 2: resolve the current username.
-      const username = await this._resolveUsername();
-      if (!username) {
-        return {
-          success: false,
-          permission: 'none',
-          canPushToMain: false,
-          cached: false,
-          error: 'Not authenticated. Sign in to GitHub first.',
-        };
-      }
-
-      // Fast path: if the user IS the repo owner, they always have push permission.
-      // This avoids false 404 from getCollaboratorPermissionLevel (owners aren't
-      // listed as "collaborators" in the GitHub API).
-      if (username === owner) {
-        this.logger.info(`🔐 ${username} is the owner of ${owner}/${repo} — permission granted (admin)`);
-        const cacheKey = `${owner}/${repo}:${username}`;
-        const result = { success: true, permission: 'admin', canPushToMain: true, cached: false };
-        this._permissionCache.set(cacheKey, { permission: 'admin', canPushToMain: true, timestamp: Date.now() });
-        this._indexCacheKey(String(projectId), cacheKey);
-        return result;
-      }
-
-      // Step 3: check cache.
-      const cacheKey = `${owner}/${repo}:${username}`;
-      const now = Date.now();
-      const cached = this._permissionCache.get(cacheKey);
-      if (cached && (now - cached.timestamp) < PERMISSION_CACHE_TTL_MS) {
-        this.logger.info(`🔐 Permission cache HIT for ${cacheKey}`);
-        return {
-          success: true,
-          permission: cached.permission,
-          canPushToMain: cached.canPushToMain,
-          cached: true,
-        };
-      }
-
-      // Step 4: call GitHub.
-      const permission = await this._fetchPermissionWithRetry(owner, repo, username);
-      const canPushToMain = MAIN_PUSH_PERMISSIONS.includes(permission);
-
-      // Cache & index for invalidation.
-      this._permissionCache.set(cacheKey, { permission, canPushToMain, timestamp: Date.now() });
-      this._indexCacheKey(String(projectId), cacheKey);
-
-      return { success: true, permission, canPushToMain, cached: false };
-    } catch (error) {
-      this.logger.error(`❌ checkMainPermission failed for project ${projectId}:`, error);
-
-      // 401/403 → re-authentication required; propagate a clear message.
-      if (error.status === 401 || error.status === 403) {
-        return {
-          success: false,
-          permission: 'none',
-          canPushToMain: false,
-          cached: false,
-          error: 'Authentication expired. Sign in again.',
-        };
-      }
-      return {
-        success: false,
-        permission: 'none',
-        canPushToMain: false,
-        cached: false,
-        error: error.message,
-      };
-    }
-  }
 
   /**
    * Check whether a branch is protected and what rules apply.
@@ -313,10 +205,6 @@ class PermissionHandlers {
     this.logger.info('🔐 Registering permission IPC handlers');
 
     ipcMainInstance.handle(
-      'git:check-main-permission',
-      async (_event, projectId) => this.checkMainPermission(projectId),
-    );
-    ipcMainInstance.handle(
       'git:check-branch-protection',
       async (_event, projectId, branchName) => this.checkBranchProtection(projectId, branchName),
     );
@@ -337,7 +225,6 @@ class PermissionHandlers {
    * @returns {void}
    */
   unregister(ipcMainInstance = ipcMain) {
-    ipcMainInstance.removeHandler('git:check-main-permission');
     ipcMainInstance.removeHandler('git:check-branch-protection');
     ipcMainInstance.removeHandler('git:invalidate-permission-cache');
     this.logger.info('🔐 Permission IPC handlers unregistered');
@@ -450,69 +337,6 @@ class PermissionHandlers {
     }
     const { Octokit } = await import('@octokit/rest');
     return new Octokit({ auth: token });
-  }
-
-  /**
-   * Fetch the collaborator permission level for (owner, repo, username),
-   * retrying once on transient network errors.
-   *
-   * Error mapping:
-   *  - 404 → 'none' (user is not a collaborator)
-   *  - 401/403 → thrown (propagated to caller, which converts to auth-expired message)
-   *  - network (ENOTFOUND, ETIMEDOUT, ...) → retry once after backoff, then propagate
-   *
-   * @param {string} owner
-   * @param {string} repo
-   * @param {string} username
-   * @returns {Promise<string>} Permission level ('admin'|'maintain'|'write'|'triage'|'read'|'none')
-   * @private
-   */
-  async _fetchPermissionWithRetry(owner, repo, username) {
-    try {
-      return await this._fetchPermission(owner, repo, username);
-    } catch (error) {
-      if (this._isRetryableNetworkError(error)) {
-        this.logger.warn(`🌐 Transient network error checking permission for ${owner}/${repo}; retrying in ${NETWORK_RETRY_BACKOFF_MS}ms...`, error.message);
-        await this._sleep(NETWORK_RETRY_BACKOFF_MS);
-        return this._fetchPermission(owner, repo, username); // propagate if it fails again
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Single attempt to fetch the collaborator permission level.
-   * @param {string} owner
-   * @param {string} repo
-   * @param {string} username
-   * @returns {Promise<string>}
-   * @private
-   */
-  async _fetchPermission(owner, repo, username) {
-    const octokit = await this._getOctokit();
-    if (!octokit) {
-      // No token means we cannot authenticate — surface as auth error.
-      const err = new Error('Authentication expired. Sign in again.');
-      err.status = 401;
-      throw err;
-    }
-
-    try {
-      const { data } = await octokit.repos.getCollaboratorPermissionLevel({
-        owner,
-        repo,
-        username,
-      });
-      return data && data.permission ? data.permission : 'read';
-    } catch (error) {
-      // 404: user is not a collaborator → treat as no permission, not an error.
-      if (error.status === 404) {
-        this.logger.info(`ℹ️ ${username} is not a collaborator on ${owner}/${repo} (404 → 'none')`);
-        return 'none';
-      }
-      // 401/403 and network errors propagate to the retry/caller layers.
-      throw error;
-    }
   }
 
   /**

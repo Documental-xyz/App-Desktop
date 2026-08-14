@@ -38,6 +38,19 @@ describe('Static code invariants', () => {
     expect(result).toBe('');
   });
 
+  it('NEVER uses getCollaboratorPermissionLevel in src/ipc/ (RBAC removed)', () => {
+    const ipcDir = path.join(ROOT, 'src/ipc');
+    const result = execSync(
+      `grep -rn "getCollaboratorPermissionLevel" ${ipcDir}/ || true`
+    ).toString().trim();
+    expect(result).toBe('');
+  });
+
+  it('NEVER has _checkMainPermission in gitPreflight.js', () => {
+    const content = fs.readFileSync(path.join(ROOT, 'src/ipc/gitPreflight.js'), 'utf8');
+    expect(content).not.toMatch(/_checkMainPermission/);
+  });
+
   it('core.autocrlf and core.filemode are set in configureGitForUser', () => {
     const content = fs.readFileSync(path.join(ROOT, 'src/ipc/gitOperations.js'), 'utf8');
     expect(content).toMatch(/core\.autocrlf/);
