@@ -526,8 +526,8 @@ async function scrollbarIffOverflow(page, scrollerSelector, expectOverflow) {
 /**
  * logoBoxConsistent — metrics for the canonical branding box: the
  * `[data-logo-fallback].brand-logo-3x` box must be square at `expectedPx`
- * (±2) and its inner svg/img must fill it (>= 90%). Current state (48px SVG
- * inside a 144px box) intentionally fails — that is the baseline.
+ * (±2, in CSS px — gBCR is normalized by the applied body zoom) and its
+ * inner svg/img must fill it (>= 90%).
  *
  * @param {import('@playwright/test').Page} page - Playwright page.
  * @param {number} expectedPx - Canonical box size (TARGET_LOGO_BOX_PX).
@@ -539,16 +539,22 @@ async function logoBoxConsistent(page, expectedPx, selector = '.brand-logo-3x') 
     (args) => {
       const el = document.querySelector(args.selector);
       if (!el) return { present: false, selector: args.selector, expectedPx: args.expectedPx };
-      const box = el.getBoundingClientRect();
+      // getBoundingClientRect returns VISUAL px (layout px × body zoom). The canonical
+      // box is defined in CSS px (Task 1 spike: layout px constant at 160, visual =
+      // 160×zoom is correct magnification), so normalize by the applied body zoom
+      // before comparing against expectedPx. Ratios (fill) are zoom-invariant.
+      const zoomFactor = parseFloat(getComputedStyle(document.body).zoom) || 1;
+      const rawBox = el.getBoundingClientRect();
+      const box = { width: rawBox.width / zoomFactor, height: rawBox.height / zoomFactor };
       const inner = el.querySelector('svg, img');
       let innerInfo = null;
       if (inner) {
         const r = inner.getBoundingClientRect();
         innerInfo = {
           tag: inner.tagName.toLowerCase(),
-          width: r.width,
-          height: r.height,
-          fillRatio: box.width > 0 ? r.width / box.width : 0
+          width: r.width / zoomFactor,
+          height: r.height / zoomFactor,
+          fillRatio: box.width > 0 ? r.width / rawBox.width : 0
         };
       }
       const boxDeltaW = Math.abs(box.width - args.expectedPx);
@@ -562,7 +568,8 @@ async function logoBoxConsistent(page, expectedPx, selector = '.brand-logo-3x') 
         present: true,
         selector: args.selector,
         expectedPx: args.expectedPx,
-        visible: box.width > 0 && box.height > 0,
+        zoomFactor,
+        visible: rawBox.width > 0 && rawBox.height > 0,
         boxWidth: box.width,
         boxHeight: box.height,
         boxDeltaW,
