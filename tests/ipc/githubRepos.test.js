@@ -235,7 +235,7 @@ describe('GithubReposHandlers', () => {
 
       const repo = result.repos[0];
       expect(Object.keys(repo).sort()).toEqual(
-        ['clone_url', 'description', 'full_name', 'id', 'name', 'private', 'updated_at']
+        ['clone_url', 'description', 'fork', 'full_name', 'id', 'name', 'owner', 'private', 'updated_at']
       );
       expect(repo.id).toBe(1);
       expect(repo.name).toBe('test-repo');
