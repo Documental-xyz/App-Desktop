@@ -56,13 +56,17 @@ const MIN_TOKEN_LENGTH = 20;
  * store (libsecret via DBus, Windows/macOS keychains) becoming reachable
  * or unlocked on cold start — Electron documents exactly this temporary
  * unavailability for the sync API, so transient failures are retried.
+ * 5 attempts cover ~7.5s of slow keyring activation (antivirus-scanned
+ * Windows Credential Manager, DBus under load) before reporting "no token".
  */
-const DECRYPT_MAX_ATTEMPTS = 3;
+const DECRYPT_MAX_ATTEMPTS = 5;
 
 /**
- * Backoff delays in ms before decrypt attempts 2 and 3 (300ms → 900ms).
+ * Backoff delays in ms before decrypt attempts 2–5 (500ms → 1000ms →
+ * 2000ms → 4000ms, exponential). Attempt 1 fires at t=0, attempt 5 at
+ * ~7.5s; the last attempt has no following delay.
  */
-const DECRYPT_RETRY_DELAYS_MS = [300, 900];
+const DECRYPT_RETRY_DELAYS_MS = [500, 1000, 2000, 4000];
 
 /**
  * Derive an encryption key from machine-specific data.

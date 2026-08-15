@@ -350,7 +350,8 @@ describe('SecureTokenService', () => {
 // are intentionally left untouched (separate module instance, no overlap).
 
 describe('getToken transient decrypt retry (cold-start keyring race)', () => {
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 5;
+  const TOTAL_BACKOFF_MS = 500 + 1000 + 2000 + 4000; // ~7.5s coverage
 
   let retryElectron;
   let retryFs;
@@ -446,7 +447,7 @@ describe('getToken transient decrypt retry (cold-start keyring race)', () => {
       .mockReturnValue(VALID_CLASSIC_TOKEN);
 
     const pending = retryService.getToken();
-    await vi.advanceTimersByTimeAsync(300); // first backoff elapses → attempt 2
+    await vi.advanceTimersByTimeAsync(500); // first backoff elapses → attempt 2
     const token = await pending;
 
     expect(token).toBe(VALID_CLASSIC_TOKEN);
@@ -455,14 +456,35 @@ describe('getToken transient decrypt retry (cold-start keyring race)', () => {
     expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1); // only decrypt is retried
   });
 
-  it('returns null (does not throw) after exactly 3 decrypt attempts when the keyring stays unreachable', async () => {
+  it('returns the valid token when decryptString throws twice (transient) then succeeds on attempt 3 — mid-recovery retry works', async () => {
+    vi.useFakeTimers();
+    retryElectron.safeStorage.decryptString
+      .mockImplementationOnce(() => {
+        throw new Error('keyring not unlocked yet');
+      })
+      .mockImplementationOnce(() => {
+        throw new Error('keyring still warming up');
+      })
+      .mockReturnValue(VALID_CLASSIC_TOKEN);
+
+    const pending = retryService.getToken();
+    await vi.advanceTimersByTimeAsync(500 + 1000); // first two backoffs elapse → attempt 3
+    const token = await pending;
+
+    expect(token).toBe(VALID_CLASSIC_TOKEN);
+    expect(retryElectron.safeStorage.decryptString).toHaveBeenCalledTimes(3);
+    expect(retryFs.promises.unlink).not.toHaveBeenCalled();
+    expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1); // only decrypt is retried
+  });
+
+  it('returns null (does not throw) after exactly 5 decrypt attempts when the keyring stays unreachable', async () => {
     vi.useFakeTimers();
     retryElectron.safeStorage.decryptString.mockImplementation(() => {
       throw new Error('libsecret DBus service unavailable');
     });
 
     const pending = retryService.getToken();
-    await vi.advanceTimersByTimeAsync(300 + 900); // both backoffs elapse
+    await vi.advanceTimersByTimeAsync(TOTAL_BACKOFF_MS); // all four backoffs elapse
     const token = await pending;
 
     expect(token).toBeNull();
