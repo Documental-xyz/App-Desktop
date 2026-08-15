@@ -100,6 +100,38 @@ const INIT_SCRIPT_TEMPLATE = `
   window.__QA_FIXTURE__ = fixture;
   window.__QA_STUB_UNCOVERED__ = [];
 
+  // --- Stub parametrization (configurable delay/failure for regression
+  // --- specs, e.g. scan-regression.spec.js). Params are read from the page
+  // --- URL query string so specs can simulate slow/failing GitHub API
+  // --- responses WITHOUT touching renderer/ production code. Absent or
+  // --- non-numeric values fall back to the defaults below, so existing
+  // --- visual specs (which navigate with no stub* params) behave EXACTLY
+  // --- as before: delay 0, no forced failure.
+  //
+  // Supported params:
+  //   ?stubListDelayMs=<ms>  Artificial delay (ms) before listUserRepos
+  //                          resolves — simulates a slow repo-list fetch.
+  //   ?stubScanDelayMs=<ms>  Artificial delay (ms) before findDocumentalRepos
+  //                          resolves — simulates a slow Documental tag scan
+  //                          (the >15s case that exposed the loading race).
+  //   ?stubScanFail=1        Forces findDocumentalRepos to resolve with
+  //                          { success: false, error: 'stub scan failure' }
+  //                          — simulates a scan error (error-screen path).
+  function stubParam(name, fallback) {
+    var raw = null;
+    try {
+      raw = new URLSearchParams(window.location.search).get(name);
+    } catch (e) { /* URLSearchParams unavailable — keep fallback */ }
+    if (raw === null || !/^-?\\d+(\\.\\d+)?$/.test(raw.trim())) return fallback;
+    return Number(raw);
+  }
+  var listDelayMs = stubParam('stubListDelayMs', 0);
+  var scanDelayMs = stubParam('stubScanDelayMs', 0);
+  var scanFail = stubParam('stubScanFail', 0);
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   var TRANSLATIONS = __QA_TRANSLATIONS_JSON__;
 
   // --- Synthetic data builders ---
@@ -242,9 +274,18 @@ const INIT_SCRIPT_TEMPLATE = `
     openDirectoryDialog: function () { return Promise.resolve('/home/qa/selected-project'); },
 
     // repo browsing (repo-select init)
-    listUserRepos: function () { return Promise.resolve({ success: true, repos: REPOS }); },
+    listUserRepos: function () {
+      return sleep(listDelayMs).then(function () {
+        return { success: true, repos: REPOS };
+      });
+    },
     findDocumentalRepos: function () {
-      return Promise.resolve({ success: true, documentalRepos: DOCUMENTAL_REPOS });
+      return sleep(scanDelayMs).then(function () {
+        if (scanFail) {
+          return { success: false, error: 'stub scan failure' };
+        }
+        return { success: true, documentalRepos: DOCUMENTAL_REPOS };
+      });
     },
     listUserOrgs: function () {
       return Promise.resolve({ success: true, orgs: [{ login: 'documental-org' }, { login: 'acme-org' }] });
