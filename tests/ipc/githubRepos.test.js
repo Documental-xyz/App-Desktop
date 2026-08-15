@@ -270,7 +270,7 @@ describe('GithubReposHandlers', () => {
       });
     });
 
-    it('filters repo fields to {id, name, full_name, clone_url, private, updated_at, description}', async () => {
+    it('filters repo fields to {id, name, full_name, clone_url, private, fork, owner, updated_at, description}', async () => {
       tokenMock.mockResolvedValue('fake-token');
       mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
         data: [makeRepo(1, 'test-repo')],
