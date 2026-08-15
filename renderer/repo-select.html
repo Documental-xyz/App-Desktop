@@ -475,15 +475,15 @@ document.addEventListener('DOMContentLoaded', function() {
                         <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                       </div>
                       <div class="flex items-center gap-1.5 flex-shrink-0">
-                         <template x-if="repo.isDocumental">
-                            <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                          </template>
                          <template x-if="repo.fork">
                             <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);" x-text="__t('repo_select.fork_badge')">Fork</span>
                           </template>
                          <template x-if="repo.private">
                            <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
                          </template>
+                         <template x-if="repo.isDocumental">
+                            <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
+                          </template>
                       </div>
                     </div>
                   </div>
@@ -508,14 +508,14 @@ document.addEventListener('DOMContentLoaded', function() {
                               <span class="text-sm text-muted-dark truncate" x-text="repo.description || repo.full_name"></span>
                             </div>
                             <div class="flex items-center gap-1.5 flex-shrink-0">
-                               <template x-if="repo.isDocumental">
-                                 <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
-                               </template>
                                <template x-if="repo.fork">
                                   <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);" x-text="__t('repo_select.fork_badge')">Fork</span>
                                 </template>
                                <template x-if="repo.private">
                                  <span class="bg-surface-dark text-muted-dark text-xs font-medium rounded-full px-2 py-0.5" x-text="__t('repo_select.private_repo_label')">Private</span>
+                               </template>
+                               <template x-if="repo.isDocumental">
+                                 <span class="badge-primary" x-text="__t('repo_select.documental_badge')">Documental</span>
                                </template>
                             </div>
                           </div>
