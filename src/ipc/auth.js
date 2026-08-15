@@ -92,6 +92,7 @@ class AuthHandlers {
         height: 550,
         show: false,
         icon: getAppIcon(),
+        title: 'Documental',
         parent: BrowserWindow.getFocusedWindow(),
         modal: true,
         resizable: false,

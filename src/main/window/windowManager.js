@@ -77,6 +77,7 @@ class WindowManager {
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
       icon: getAppIcon(),
+      title: 'Documental',
       resizable: windowConfig.resizable !== false,
       maximizable: windowConfig.maximizable !== false,
       minimizable: windowConfig.minimizable !== false,
@@ -121,6 +122,7 @@ class WindowManager {
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
       icon: getAppIcon(),
+      title: 'Documental',
       webPreferences: this.config.windowConfig.webPreferences
     });
 
@@ -226,6 +228,7 @@ class WindowManager {
   createCustomWindow(windowConfig = {}) {
     const config = {
       icon: getAppIcon(),
+      title: 'Documental',
       ...this.config.windowConfig,
       ...windowConfig,
       webPreferences: {

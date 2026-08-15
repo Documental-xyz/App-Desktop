@@ -177,6 +177,7 @@ class SystemHandlers {
         show: false,
         backgroundColor: WINDOW_BG_COLOR,
         icon: getAppIcon(),
+        title: 'Documental',
         webPreferences: {
           preload: path.resolve(__dirname, '..', '..', 'preload.js'),
           contextIsolation: true,
@@ -912,6 +913,7 @@ async verifyNodeInstallation() {
           show: false,
           backgroundColor: WINDOW_BG_COLOR,
           icon: getAppIcon(),
+          title: 'Documental',
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
