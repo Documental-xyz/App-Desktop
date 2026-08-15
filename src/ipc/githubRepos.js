@@ -15,6 +15,10 @@ const MAX_REPOS = 500;
 class GithubReposHandlers {
   constructor({ logger }) {
     this.logger = logger;
+    // Single-flight guard: concurrent `github:find-documental-repos` invokes
+    // share the in-flight scan promise (check-before-acquire, release in
+    // finally — same discipline as GitHandlers.gitOperationInProgress).
+    this._documentalScanInFlight = null;
   }
 
   async listUserRepos() {
@@ -111,7 +115,7 @@ class GithubReposHandlers {
   /**
    * Finds all repositories containing a documental.json marker file.
    * Uses GitHub Code Search API for efficiency (1-N calls instead of N calls).
-   * @returns {Promise<{success: boolean, documentalRepos?: string[], fallback?: boolean, error?: string}>}
+   * @returns {Promise<{success: boolean, documentalRepos?: string[], skippedOrgs?: string[], fallback?: boolean, error?: string}>}
    */
   async findDocumentalRepos() {
     let token;
@@ -136,6 +140,7 @@ class GithubReposHandlers {
     }
 
     const documentalRepos = new Set();
+    const skippedOrgs = [];
 
     try {
       const { data: user } = await octokit.rest.users.getAuthenticated();
@@ -180,6 +185,12 @@ class GithubReposHandlers {
             documentalRepos.add(item.repository.full_name);
           }
         } catch (error) {
+          if (error.status === 401) {
+            // Fail fast: the token is dead, so every remaining org (and the
+            // getContent fallback, which uses the same token) would fail too.
+            this.logger.warn('GitHub token expired during org code search');
+            return { success: false, error: 'Token expired. Please re-authenticate.' };
+          }
           if (error.status === 422) {
             this.logger.warn(`Code search 422 on org qualifier-only query (${org.login}); retrying with literal term`);
             try {
@@ -192,13 +203,21 @@ class GithubReposHandlers {
             } catch (innerError) {
               this.logger.warn(`Code search alternative query failed for org ${org.login}:`, innerError.message);
             }
-          } else {
+          } else if (error.status === 403) {
+            // PRESERVED (load-bearing): the code-search rate pool (10/min) is
+            // exhausted — rethrow so the outer catch switches to the getContent
+            // fallback, which draws from the core API pool (5000/hr). Never
+            // "continue" the loop on 403.
             throw error;
+          } else {
+            // 5xx / network / anything else: skip this org, keep scanning.
+            skippedOrgs.push(org.login);
+            this.logger.warn(`Org code search failed for ${org.login} (status: ${error?.status ?? 'network'}); skipping org:`, error.message);
           }
         }
       }
 
-      return { success: true, documentalRepos: Array.from(documentalRepos) };
+      return { success: true, documentalRepos: Array.from(documentalRepos), skippedOrgs };
     } catch (error) {
       if (error.status === 403) {
         this.logger.warn('GitHub rate limit hit during code search; attempting getContent fallback');
@@ -245,15 +264,42 @@ class GithubReposHandlers {
               })
             )
           );
-          results.forEach((result, idx) => {
+          for (let idx = 0; idx < results.length; idx++) {
+            const result = results[idx];
             if (result.status === 'fulfilled') {
               fallbackRepos.add(chunk[idx].full_name);
+              continue;
             }
-            // 404 (rejected) = file not present, ignore.
-          });
+            const reason = result.reason;
+            if (reason && reason.status === 404) {
+              // documental.json not present → repo is not Documental (silent).
+              continue;
+            }
+            // 401/403/5xx/no-status (network): the probe is INCONCLUSIVE, not
+            // negative. Fail the whole scan atomically — returning a partial
+            // set would silently untag repos we could not verify.
+            if (reason && reason.status === 401) {
+              return {
+                success: false,
+                error: 'Token expired. Please re-authenticate.'
+              };
+            }
+            if (reason && reason.status === 403) {
+              return {
+                success: false,
+                error: 'GitHub API rate limit exceeded. Try again later.'
+              };
+            }
+            const statusLabel = (reason && reason.status) || 'no status';
+            const detail = (reason && reason.message) || 'network error';
+            return {
+              success: false,
+              error: `Documental scan failed while probing repositories (${statusLabel}): ${detail}`
+            };
+          }
         }
 
-        return { success: true, documentalRepos: Array.from(fallbackRepos), fallback: true };
+        return { success: true, documentalRepos: Array.from(fallbackRepos), fallback: true, skippedOrgs };
       } catch (fallbackError) {
         if (fallbackError.status === 403) {
           return { success: false, error: 'GitHub API rate limit exceeded. Try again later.' };
@@ -275,7 +321,25 @@ class GithubReposHandlers {
       }
     });
     ipcMain.handle('github:find-documental-repos', async () => {
-      return await this.findDocumentalRepos();
+      try {
+        // Single-flight: a concurrent invoke joins the in-flight scan instead
+        // of starting a duplicate one; both callers receive the same result.
+        if (this._documentalScanInFlight) {
+          return await this._documentalScanInFlight;
+        }
+        const scanPromise = this.findDocumentalRepos();
+        this._documentalScanInFlight = scanPromise;
+        try {
+          return await scanPromise;
+        } finally {
+          if (this._documentalScanInFlight === scanPromise) {
+            this._documentalScanInFlight = null;
+          }
+        }
+      } catch (error) {
+        this.logger.error('findDocumentalRepos error:', error);
+        return { success: false, error: error.message };
+      }
     });
     ipcMain.handle('github:list-user-orgs', async () => {
       try {
