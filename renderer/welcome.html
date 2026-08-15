@@ -18,15 +18,17 @@
                 var(--color-background-dark);
         }
 
+        /* No height/min-height on html/body: 100vh/100% resolve against the
+           UNZOOMED viewport while the shell compensates via --zoom, so any
+           body min-height double-scales and spawns an outer document
+           scrollbar (double-scrollbar bug). The .app-shell governs height. */
         html, body {
-            height: 100%;
             margin: 0;
             padding: 0;
             overflow-x: hidden;
         }
-        
+
         body {
-            min-height: 100vh;
             position: relative;
         }
         

@@ -535,7 +535,10 @@
 <div class="brand-logo-3x" x-html="renderLogoSVG({size:'lg'})" data-logo-fallback></div>
 <script>(function(){var el=document.querySelector('[data-logo-fallback]');if(el&&typeof renderLogoSVG==='function'){el.innerHTML=renderLogoSVG({size:'lg'});}})();</script>
 <!-- Header -->
-<header class="shrink-0 px-8 flex flex-col repo-header" style="padding-bottom: 0;">
+<!-- min-h-0 + overflow-hidden (not shrink-0): under pt-BR the taller wrapped
+     header must yield inside the compensated shell at 900x600@200% — same
+     pattern new.html ships (Task 8); identical rendering wherever space exists. -->
+<header class="px-8 flex flex-col repo-header min-h-0 overflow-hidden" style="padding-bottom: 0;">
   <div class="max-w-4xl mx-auto mt-auto w-full">
     <div class="flex items-center justify-center gap-3 mb-2">
       <span id="page-logo"></span>

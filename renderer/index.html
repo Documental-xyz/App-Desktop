@@ -62,10 +62,13 @@
   }
   [x-cloak] { display: none !important; }
 
-.repo-header { padding-top: 12vh !important; }
-@media (min-height: 800px) { .repo-header { padding-top: 15vh !important; } }
-@media (min-height: 1000px) { .repo-header { padding-top: 18vh !important; } }
-@media (min-height: 1200px) { .repo-header { padding-top: 22vh !important; } }
+  /* Header rhythm in vh, divided by --zoom so visual proportion holds
+     under body zoom (100vh resolves UNZOOMED — uncompensated vh double-scales
+     and overflows the compensated shell; same pattern as create/repo-select). */
+  .repo-header { padding-top: calc(12vh / var(--zoom, 1)) !important; }
+  @media (min-height: 800px) { .repo-header { padding-top: calc(15vh / var(--zoom, 1)) !important; } }
+  @media (min-height: 1000px) { .repo-header { padding-top: calc(18vh / var(--zoom, 1)) !important; } }
+  @media (min-height: 1200px) { .repo-header { padding-top: calc(22vh / var(--zoom, 1)) !important; } }
 .repo-content { padding-top: 1rem; }
 @media (min-height: 800px) { .repo-content { padding-top: 1.25rem; } }
 @media (min-height: 1000px) { .repo-content { padding-top: 1.5rem; } }
