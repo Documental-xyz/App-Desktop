@@ -79,6 +79,7 @@
 <script src="./shared/footer.js"></script>
 <script src="./shared/logo.js"></script>
 <script src="./shared/i18n-apply.js"></script>
+<script src="./shared/scan-safety.js"></script>
 <script src="./shared/theme-init.js" defer></script>
 
 <script src="./i18n.js"></script>
@@ -97,21 +98,43 @@ document.addEventListener('alpine:init', () => {
     privateFilter: false,
     personalFilter: false,
     showNonDocumentalConfirm: false,
+    skippedOrgs: [],
 
     async init() {
+      // Epoch guard: rotating the token invalidates every pending
+      // continuation of a PREVIOUS init() (e.g. "Try Again" clicked while an
+      // older scan is still in flight) — stale continuations never mutate
+      // shared state below.
+      if (!this._scanEpoch) this._scanEpoch = window.ScanSafety.createEpoch();
+      const epoch = this._scanEpoch;
+      epoch.advance();
+      const token = epoch.current();
       this.loading = true;
       this.scanning = true;
       this.error = null;
+      this.skippedOrgs = [];
       try {
         if (window.__i18nReady) await window.__i18nReady;
-        const result = await window.electronAPI.listUserRepos();
-        if (result.success) {
+        if (!epoch.isCurrent(token)) return;
+        // Whole-init safety timeout: loading/scanning persist until the repo
+        // list AND the Documental scan fully complete, or this fires and the
+        // error state below renders. fn rejections propagate to this catch.
+        const outcome = await window.ScanSafety.runWithSafetyTimeout(async () => {
+          const result = await window.electronAPI.listUserRepos();
+          if (!result.success) {
+            throw new Error(result.error || __t('repo_select.error_generic') || 'Failed to load repositories');
+          }
+          if (!epoch.isCurrent(token)) return;
           this.repos = result.repos || [];
-          await this._scanAndMarkDocumental();
-        } else {
-          this.error = result.error || __t('repo_select.error_generic') || 'Failed to load repositories';
+          if (this.repos.length === 0) return;
+          await this._scanAndMarkDocumental(token);
+        }, 120000);
+        if (!epoch.isCurrent(token)) return;
+        if (outcome.status === 'timeout') {
+          this.error = __t('repo_select.error_timeout') || 'The repository scan is taking too long. Please try again.';
         }
       } catch (err) {
+        if (!epoch.isCurrent(token)) return;
         this.error = (err && err.message) ? err.message : 'Failed to load repositories';
       } finally {
         // Force Alpine to process the repos array change BEFORE clearing flags.
@@ -119,6 +142,7 @@ document.addEventListener('alpine:init', () => {
         // with a stale filteredRepos value (empty), causing a flash of the
         // "no repos found" empty state before the actual list appears.
         await this.$nextTick();
+        if (!epoch.isCurrent(token)) return;
         this.scanning = false;
         this.loading = false;
       }
@@ -222,30 +246,34 @@ document.addEventListener('alpine:init', () => {
       window.electronAPI.navigateTo('new.html');
     },
 
+    dismissSkippedOrgs() {
+      this.skippedOrgs = [];
+    },
+
     /**
      * Detects which repos are Documental repos via backend scan.
      * Rebuilds the repos array with isDocumental flag so Alpine
      * detects the change reactively. Does NOT manage the scanning
-     * flag — caller is responsible for that.
+     * flag — caller is responsible for that. Throws on scan failure
+     * so the caller's error path renders the error state (never
+     * silently untag everything).
+     * @param {Object} token Epoch token captured by the caller's init();
+     *   state mutations are skipped when a newer init() has started.
      */
-    async _scanAndMarkDocumental() {
-      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 15000));
-      try {
-        const result = await Promise.race([
-          window.electronAPI.findDocumentalRepos(),
-          timeoutPromise
-        ]);
-        const documentalSet = (result && result.success && Array.isArray(result.documentalRepos))
-          ? new Set(result.documentalRepos)
-          : new Set();
-        this.repos = this.repos.map(repo => ({
-          ...repo,
-          isDocumental: documentalSet.has(repo.full_name)
-        }));
-      } catch (err) {
-        console.warn('Documental detection failed:', err);
-        this.repos = this.repos.map(repo => ({ ...repo, isDocumental: false }));
+    async _scanAndMarkDocumental(token) {
+      const result = await window.electronAPI.findDocumentalRepos();
+      if (!result || result.success === false) {
+        throw new Error((result && result.error) || 'Failed to detect Documental repositories');
       }
+      if (!this._scanEpoch.isCurrent(token)) return;
+      const documentalSet = (Array.isArray(result.documentalRepos))
+        ? new Set(result.documentalRepos)
+        : new Set();
+      this.repos = this.repos.map(repo => ({
+        ...repo,
+        isDocumental: documentalSet.has(repo.full_name)
+      }));
+      this.skippedOrgs = Array.isArray(result.skippedOrgs) ? result.skippedOrgs : [];
     }
   }));
 });
@@ -334,10 +362,16 @@ document.addEventListener('DOMContentLoaded', function() {
         <!-- Error state -->
         <div x-show="error &amp;&amp; !loading &amp;&amp; !scanning" x-cloak class="text-center py-20 min-h-[16rem] flex flex-col items-center justify-center">
           <p class="text-danger mb-4" x-text="error"></p>
-          <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
-            <span class="material-symbols-outlined">refresh</span>
-            <span data-i18n="common.try_again">Try Again</span>
-          </button>
+          <div class="flex items-center justify-center gap-3">
+            <button @click="init()" class="inline-flex items-center gap-2 bg-surface-secondary hover:bg-surface-dark text-text-dark font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+              <span class="material-symbols-outlined">refresh</span>
+              <span data-i18n="common.try_again">Try Again</span>
+            </button>
+            <button @click="createFork()" class="inline-flex items-center gap-2 bg-primary hover:bg-primary-hover text-white font-semibold py-2 px-5 rounded-md transition-colors duration-300 text-sm">
+              <span class="material-symbols-outlined">alt_route</span>
+              <span data-i18n="repo_select.button_create_repo">Create New Repository</span>
+            </button>
+          </div>
         </div>
 
         <!-- Repo list (with filter + toggle + scrollable grid) -->
@@ -354,6 +388,14 @@ document.addEventListener('DOMContentLoaded', function() {
                      class="input w-full pl-10 pr-4 py-2 bg-surface-dark border border-border-subtle rounded-md text-text-dark placeholder-muted-dark focus:outline-none focus:ring-2 focus:ring-primary" />
             </div>
             <span class="text-sm text-muted-dark whitespace-nowrap" x-text="window.__t('repo_select.repo_count', { count: filteredRepos.length })"></span>
+          </div>
+
+          <!-- Skipped-orgs notice: scan could not reach some organizations -->
+          <div x-show="skippedOrgs.length > 0" x-cloak class="mb-4 flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-dark px-4 py-2">
+            <p class="text-sm text-muted-dark" x-text="__t('repo_select.notice_skipped_orgs', { orgs: skippedOrgs.join(', ') })"></p>
+            <button @click="dismissSkippedOrgs()" class="flex-shrink-0 text-muted-dark hover:text-text-dark transition-colors duration-200" aria-label="Dismiss">
+              <span class="material-symbols-outlined">close</span>
+            </button>
           </div>
 
           <!-- Filter toggles -->
