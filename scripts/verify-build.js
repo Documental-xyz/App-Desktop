@@ -96,8 +96,9 @@ class BuildVerifier {
       if (fs.existsSync(asarPath)) {
         try {
           const asar = require('asar');
-          const asarFiles = asar.listFile(asarPath);
-          
+          const listAsar = asar.listPackage || asar.listFile;
+          const asarFiles = listAsar(asarPath);
+
           return checks.map(check => ({
             name: check.name,
             exists: asarFiles.some(file => file.endsWith(check.name))
@@ -130,7 +131,8 @@ class BuildVerifier {
       if (fs.existsSync(asarPath)) {
         try {
           const asar = require('asar');
-          const asarFiles = asar.listFile(asarPath);
+          const listAsar = asar.listPackage || asar.listFile;
+          const asarFiles = listAsar(asarPath);
 
           return checks.map(check => ({
             name: check.name,

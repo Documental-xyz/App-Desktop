@@ -31,21 +31,18 @@ asarUnpack:
   - node_modules/sqlite3/**/*
   - node_modules/keytar/**/*
 extraResources:
-  - "resources/config/**/*"
+  - from: resources/config
+    to: config
 linux:
+  # Snap needs snapcraft installed and arm64 was never a release target;
+  # both stay available via explicit CLI overrides (npm run build:linux:snap).
   target:
     - target: AppImage
       arch:
         - x64
-        - arm64
     - target: deb
       arch:
         - x64
-        - arm64
-    - target: snap
-      arch:
-        - x64
-        - arm64
   icon: assets/icons
   category: Development
   # desktopName is a package.json ROOT field (not under linux) in electron-builder 26.15.3;

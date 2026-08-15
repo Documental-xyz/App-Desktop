@@ -89,21 +89,28 @@ class PostBuildProcessor {
   copyResources(distPath) {
     try {
       const sourceResourcesPath = path.join(this.projectRoot, 'resources');
-      const targetResourcesPath = path.join(distPath, '..', '..', 'resources');
-      
+      const targetResourcesPath = path.join(distPath, '..', '..');
+
       if (!fs.existsSync(sourceResourcesPath)) {
         console.warn('⚠️  Source resources directory not found');
         return false;
       }
-      
-      // Remove existing resources if they exist
-      if (fs.existsSync(targetResourcesPath)) {
-        fs.rmSync(targetResourcesPath, { recursive: true, force: true });
+
+      // targetResourcesPath is the build's own resources/ dir and holds
+      // app.asar — never delete it wholesale, only the entries below.
+      fs.mkdirSync(targetResourcesPath, { recursive: true });
+
+      for (const entry of fs.readdirSync(sourceResourcesPath)) {
+        const sourceEntryPath = path.join(sourceResourcesPath, entry);
+        const targetEntryPath = path.join(targetResourcesPath, entry);
+
+        if (fs.existsSync(targetEntryPath)) {
+          fs.rmSync(targetEntryPath, { recursive: true, force: true });
+        }
+        fs.cpSync(sourceEntryPath, targetEntryPath, { recursive: true });
       }
-      
-      // Copy resources directory
-      fs.cpSync(sourceResourcesPath, targetResourcesPath, { recursive: true });
-      console.log('✅ Resources copied successfully');
+
+      console.log(`✅ Resources copied successfully to ${targetResourcesPath}`);
       return true;
     } catch (error) {
       console.error('❌ Failed to copy resources:', error.message);
