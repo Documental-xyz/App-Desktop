@@ -51,6 +51,20 @@ const GITHUB_TOKEN_PATTERNS = {
 const MIN_TOKEN_LENGTH = 20;
 
 /**
+ * Total attempts for a safeStorage decrypt before giving up.
+ * The first decryptString of a process lifetime can race the OS secret
+ * store (libsecret via DBus, Windows/macOS keychains) becoming reachable
+ * or unlocked on cold start — Electron documents exactly this temporary
+ * unavailability for the sync API, so transient failures are retried.
+ */
+const DECRYPT_MAX_ATTEMPTS = 3;
+
+/**
+ * Backoff delays in ms before decrypt attempts 2 and 3 (300ms → 900ms).
+ */
+const DECRYPT_RETRY_DELAYS_MS = [300, 900];
+
+/**
  * Derive an encryption key from machine-specific data.
  * This is used as a fallback when safeStorage is not available.
  * @returns {string} Hex-encoded 32-byte key
@@ -133,6 +147,40 @@ class SecureTokenService {
   }
 
   /**
+   * Decrypt via safeStorage, retrying transient failures with backoff.
+   * On cold start the OS secret store may not be reachable/unlocked yet and
+   * the synchronous decryptString throws until it is; retrying bridges that
+   * window so a momentarily-unavailable keyring is not reported as
+   * "no token". ENOENT never reaches this method (fast null upstream).
+   * @param {Buffer} buffer - Encrypted payload read from the token file
+   * @returns {Promise<{ok: boolean, token: string|null}>} ok=false after
+   *   DECRYPT_MAX_ATTEMPTS exhausted failures (token file is kept)
+   * @private
+   */
+  async _decryptWithRetry(buffer) {
+    for (let attempt = 1; attempt <= DECRYPT_MAX_ATTEMPTS; attempt++) {
+      try {
+        return { ok: true, token: safeStorage.decryptString(buffer) };
+      } catch (error) {
+        if (attempt < DECRYPT_MAX_ATTEMPTS) {
+          const delay = DECRYPT_RETRY_DELAYS_MS[attempt - 1];
+          logger.warn(
+            `⚠️ safeStorage decrypt failed (attempt ${attempt}/${DECRYPT_MAX_ATTEMPTS}), ` +
+            `retrying in ${delay}ms — keyring may still be warming up: ${error.message}`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        } else {
+          logger.warn(
+            `❌ safeStorage decrypt failed after ${DECRYPT_MAX_ATTEMPTS} attempts ` +
+            `(keyring unavailable?): ${error.message}`
+          );
+        }
+      }
+    }
+    return { ok: false, token: null };
+  }
+
+  /**
    * Store GitHub token securely
    * @param {string} token - GitHub OAuth token
    * @returns {Promise<boolean>} Success status
@@ -186,7 +234,13 @@ class SecureTokenService {
         let token;
 
         if (data.method === 'safeStorage') {
-          token = safeStorage.decryptString(Buffer.from(data.encrypted, 'base64'));
+          const decrypted = await this._decryptWithRetry(Buffer.from(data.encrypted, 'base64'));
+          if (!decrypted.ok) {
+            // Transient keyring failure — keep the token file so a later
+            // call can succeed once the secret store is reachable.
+            return null;
+          }
+          token = decrypted.token;
         } else if (data.method === 'fallback') {
           token = _fallbackDecrypt(data);
         } else {
@@ -211,7 +265,9 @@ class SecureTokenService {
           }
         }
       } catch (readError) {
-        // File doesn't exist or can't be read
+        // File missing/unreadable or payload undecryptable (fallback/legacy
+        // paths) — safeStorage transient failures are retried above and
+        // never reach this catch.
       }
 
       logger.info('ℹ️ No GitHub token found in secure storage');

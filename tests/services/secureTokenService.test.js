@@ -338,3 +338,157 @@ describe('SecureTokenService', () => {
     });
   });
 });
+
+// ── Task 9: transient safeStorage decrypt retry (cold-start keyring race) ──
+//
+// HARNESS NOTE: vi.mock('electron') does NOT intercept the CJS
+// require('electron') inside this service (documented at
+// tests/ipc/githubRepos.test.js L61). We use that file's proven pattern:
+// a Module._load monkey-patch scoped to the service's own requires plus a
+// fresh require() of the REAL module, then drive its electron/fs bindings
+// directly. The 6 pre-existing failures above are a documented baseline and
+// are intentionally left untouched (separate module instance, no overlap).
+
+describe('getToken transient decrypt retry (cold-start keyring race)', () => {
+  const MAX_ATTEMPTS = 3;
+
+  let retryElectron;
+  let retryFs;
+  let retryLogger;
+  let RetryService;
+  let retryService;
+  let Module;
+  let originalLoad;
+
+  const TOKEN_FILE_PAYLOAD = JSON.stringify({
+    method: 'safeStorage',
+    encrypted: Buffer.from('encrypted-data').toString('base64'),
+    updatedAt: new Date().toISOString()
+  });
+
+  beforeAll(() => {
+    retryElectron = {
+      safeStorage: {
+        encryptString: vi.fn(() => Buffer.from('encrypted-data')),
+        decryptString: vi.fn(() => VALID_CLASSIC_TOKEN),
+        isEncryptionAvailable: vi.fn(() => true)
+      },
+      app: { getPath: vi.fn(() => '/tmp/test-userdata') }
+    };
+    retryFs = {
+      promises: {
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        unlink: vi.fn()
+      }
+    };
+    retryLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+    // Scoped electron/fs/logger mocks — only visible to requires whose
+    // PARENT is secureTokenService.js, so nothing else in the run is affected.
+    Module = require('module');
+    originalLoad = Module._load;
+    Module._load = function (request, parent, ...rest) {
+      const fromService =
+        parent && typeof parent.filename === 'string' &&
+        parent.filename.includes('secureTokenService.js');
+      if (fromService) {
+        if (request === 'electron') return retryElectron;
+        if (request === 'fs') return retryFs;
+        if (request === '../main/logging/logger') {
+          return { getLogger: () => retryLogger };
+        }
+      }
+      return originalLoad.call(this, request, parent, ...rest);
+    };
+
+    // Fresh REAL module — its top-level require('electron') hits the patch.
+    // Proven distinct from the ESM-imported instance above (different cache).
+    RetryService = require('../../src/services/secureTokenService.js').SecureTokenService;
+  });
+
+  afterAll(() => {
+    Module._load = originalLoad;
+  });
+
+  beforeEach(() => {
+    retryElectron.safeStorage.encryptString.mockReset();
+    retryElectron.safeStorage.decryptString.mockReset();
+    retryElectron.safeStorage.isEncryptionAvailable.mockReset();
+    retryFs.promises.readFile.mockReset();
+    retryFs.promises.writeFile.mockReset();
+    retryFs.promises.unlink.mockReset();
+    retryLogger.info.mockClear();
+    retryLogger.warn.mockClear();
+    retryLogger.error.mockClear();
+    retryLogger.debug.mockClear();
+
+    retryElectron.safeStorage.encryptString.mockReturnValue(Buffer.from('encrypted-data'));
+    retryElectron.safeStorage.decryptString.mockReturnValue(VALID_CLASSIC_TOKEN);
+    retryElectron.safeStorage.isEncryptionAvailable.mockReturnValue(true);
+    retryFs.promises.readFile.mockResolvedValue(TOKEN_FILE_PAYLOAD);
+    retryFs.promises.writeFile.mockResolvedValue(undefined);
+    retryFs.promises.unlink.mockResolvedValue(undefined);
+
+    retryService = new RetryService();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns the valid token when decryptString throws once (transient) then succeeds — retry works, token file kept', async () => {
+    vi.useFakeTimers();
+    retryElectron.safeStorage.decryptString
+      .mockImplementationOnce(() => {
+        throw new Error('keyring not unlocked yet');
+      })
+      .mockReturnValue(VALID_CLASSIC_TOKEN);
+
+    const pending = retryService.getToken();
+    await vi.advanceTimersByTimeAsync(300); // first backoff elapses → attempt 2
+    const token = await pending;
+
+    expect(token).toBe(VALID_CLASSIC_TOKEN);
+    expect(retryElectron.safeStorage.decryptString).toHaveBeenCalledTimes(2);
+    expect(retryFs.promises.unlink).not.toHaveBeenCalled();
+    expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1); // only decrypt is retried
+  });
+
+  it('returns null (does not throw) after exactly 3 decrypt attempts when the keyring stays unreachable', async () => {
+    vi.useFakeTimers();
+    retryElectron.safeStorage.decryptString.mockImplementation(() => {
+      throw new Error('libsecret DBus service unavailable');
+    });
+
+    const pending = retryService.getToken();
+    await vi.advanceTimersByTimeAsync(300 + 900); // both backoffs elapse
+    const token = await pending;
+
+    expect(token).toBeNull();
+    expect(retryElectron.safeStorage.decryptString).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+    expect(retryFs.promises.unlink).not.toHaveBeenCalled();
+    expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null immediately on ENOENT (not logged in) without ever calling decryptString', async () => {
+    const enoent = Object.assign(new Error('ENOENT: no such file or directory'), {
+      code: 'ENOENT'
+    });
+    retryFs.promises.readFile.mockRejectedValue(enoent);
+
+    const token = await retryService.getToken();
+
+    expect(token).toBeNull();
+    expect(retryElectron.safeStorage.decryptString).not.toHaveBeenCalled();
+    expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the token after a single decrypt attempt when the keyring is already warm (happy path)', async () => {
+    const token = await retryService.getToken();
+
+    expect(token).toBe(VALID_CLASSIC_TOKEN);
+    expect(retryElectron.safeStorage.decryptString).toHaveBeenCalledTimes(1);
+    expect(retryFs.promises.readFile).toHaveBeenCalledTimes(1);
+  });
+});

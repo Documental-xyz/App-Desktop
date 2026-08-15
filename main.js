@@ -33,6 +33,7 @@ const { NodeDetectionService } = require('./src/main/services/nodeDetectionServi
 const { ThemeService } = require('./src/main/services/themeService.js');
 const { createIpcRegistry } = require('./src/ipc/index.js');
 const { killAllActiveExecs } = require('./src/ipc/system.js');
+const { secureTokenService } = require('./src/services/secureTokenService.js');
 
 // Initialize modular logging system
 const logger = getLogger('MainProcess');
@@ -151,6 +152,12 @@ async function initializeServices() {
     processManager = ipcRegistry.projectCreationHandler.processManager;
     ipcRegistry.registerIpcHandlers();
     logger.info('✅ IPC registry initialized');
+
+    // Warm up the OS keyring: the process's first safeStorage decrypt can
+    // race the secret store (libsecret/keychain) unlocking on cold start.
+    // Absorbing that call here — with its internal transient retry — means
+    // the first user-visible github:* request already finds a warm keyring.
+    await secureTokenService.getToken().catch(() => null);
 
     logger.info('✅ All core services initialized successfully');
     isInitialized = true;
