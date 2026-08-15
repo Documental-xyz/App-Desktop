@@ -2,6 +2,10 @@ appId: com.documental.app
 productName: Documental
 directories:
   output: dist
+extraMetadata:
+  env:
+    GITHUB_CLIENT_ID:
+      $fromFile: electron-builder.env
 files:
   - "main.js"
   - "preload.js"
@@ -43,12 +47,15 @@ linux:
         - x64
         - arm64
   icon: assets/icon.png
-  desktopName: documental
   category: Development
+  # desktopName is a package.json ROOT field (not under linux) in electron-builder 26.15.3;
+  # syncDesktopName: true derives the .desktop filename + StartupWMClass from it.
+  syncDesktopName: true
   desktop:
-    Name: Documental
-    Comment: Ambiente de documentação centralizado com integração Git
-    Keywords: documentation;git;github;development;
+    entry:
+      Name: Documental
+      Comment: Ambiente de documentação centralizado com integração Git
+      Keywords: documentation;git;github;development;
   maintainer: Documental Team <team@documental.com>
 win:
   target:
@@ -59,8 +66,6 @@ win:
       arch:
         - x64
   icon: assets/icon.ico
-  sign: false
-  signDlls: false
 nsis:
   installerIcon: assets/icon.ico
   uninstallerIcon: assets/icon.ico

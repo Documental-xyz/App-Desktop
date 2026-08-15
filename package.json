@@ -2,6 +2,7 @@
   "name": "documental",
   "version": "1.0.0",
   "description": "Ambiente de documentação centralizado com integração Git",
+  "desktopName": "documental",
   "main": "main.js",
   "homepage": "https://github.com/Documental-xyz/Desktop",
   "scripts": {
@@ -59,7 +60,7 @@
     "autoprefixer": "^10.5.0",
     "cross-env": "^7.0.3",
     "electron": "^42.3.3",
-    "electron-builder": "^26.0.0",
+    "electron-builder": "^26.15.3",
     "jsdom": "^27.4.0",
     "png-to-ico": "^2.1.8",
     "postcss": "^8.5.10",
@@ -80,14 +81,5 @@
     "tar": "^7.5.7",
     "tree-kill": "^1.2.2",
     "yauzl": "^3.3.0"
-  },
-  "build": {
-    "extraMetadata": {
-      "env": {
-        "GITHUB_CLIENT_ID": {
-          "$fromFile": "electron-builder.env"
-        }
-      }
-    }
   }
 }
