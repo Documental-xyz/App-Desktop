@@ -190,6 +190,9 @@ describe('GithubReposHandlers', () => {
       expect(result.success).toBe(true);
       expect(result.repos).toHaveLength(150);
       expect(mockOctokitInstance.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(2);
+      // Natural end (partial last page): the repos are complete — no
+      // truncation flag (absent or false, back-compat with old consumers).
+      expect(result.truncated).toBeFalsy();
     });
 
     it('respects the 500 repo cap (mock 6 pages of 100)', async () => {
@@ -206,6 +209,37 @@ describe('GithubReposHandlers', () => {
       expect(result.repos).toHaveLength(500);
       // 5 pages × 100 = 500 → loop exits before requesting a 6th page
       expect(mockOctokitInstance.repos.listForAuthenticatedUser).toHaveBeenCalledTimes(5);
+    });
+
+    it('sets truncated:true when the 500 cap is hit with a full last page (5 full pages)', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValue({
+        data: makeRepos(1, 100),
+        headers: { 'x-oauth-scopes': 'user:email, repo, read:org' }
+      });
+
+      const result = await handlers.listUserRepos();
+
+      expect(result.success).toBe(true);
+      expect(result.repos).toHaveLength(500);
+      // Last page was full AND the cap was reached → there may be more repos
+      // we did not fetch; the payload must surface it as a notice flag.
+      expect(result.truncated).toBe(true);
+    });
+
+    it('omits the truncated flag on a natural end (150 repos over 2 pages)', async () => {
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.listForAuthenticatedUser
+        .mockResolvedValueOnce({ data: makeRepos(1, 100), headers: { 'x-oauth-scopes': 'user:email, repo, read:org' } })
+        .mockResolvedValueOnce({ data: makeRepos(101, 50), headers: { 'x-oauth-scopes': 'user:email, repo, read:org' } });
+
+      const result = await handlers.listUserRepos();
+
+      expect(result.success).toBe(true);
+      expect(result.repos).toHaveLength(150);
+      // Partial last page → the listing is complete; flag must be absent
+      // (payload stays {success, repos} for old consumers).
+      expect(result).not.toHaveProperty('truncated');
     });
 
     it('returns rate limit error on 403', async () => {

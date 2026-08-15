@@ -99,6 +99,7 @@ document.addEventListener('alpine:init', () => {
     personalFilter: false,
     showNonDocumentalConfirm: false,
     skippedOrgs: [],
+    truncated: false,
 
     async init() {
       // Epoch guard: rotating the token invalidates every pending
@@ -113,6 +114,7 @@ document.addEventListener('alpine:init', () => {
       this.scanning = true;
       this.error = null;
       this.skippedOrgs = [];
+      this.truncated = false;
       try {
         if (window.__i18nReady) await window.__i18nReady;
         if (!epoch.isCurrent(token)) return;
@@ -126,6 +128,7 @@ document.addEventListener('alpine:init', () => {
           }
           if (!epoch.isCurrent(token)) return;
           this.repos = result.repos || [];
+          this.truncated = !!result.truncated;
           if (this.repos.length === 0) return;
           await this._scanAndMarkDocumental(token);
         }, 120000);
@@ -248,6 +251,10 @@ document.addEventListener('alpine:init', () => {
 
     dismissSkippedOrgs() {
       this.skippedOrgs = [];
+    },
+
+    dismissTruncated() {
+      this.truncated = false;
     },
 
     /**
@@ -394,6 +401,14 @@ document.addEventListener('DOMContentLoaded', function() {
           <div x-show="skippedOrgs.length > 0" x-cloak class="mb-4 flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-dark px-4 py-2">
             <p class="text-sm text-muted-dark" x-text="__t('repo_select.notice_skipped_orgs', { orgs: skippedOrgs.join(', ') })"></p>
             <button @click="dismissSkippedOrgs()" class="flex-shrink-0 text-muted-dark hover:text-text-dark transition-colors duration-200" aria-label="Dismiss">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
+
+          <!-- Truncation notice: listing hit the 500-repo cap -->
+          <div x-show="truncated" x-cloak class="mb-4 flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-surface-dark px-4 py-2">
+            <p class="text-sm text-muted-dark" x-text="__t('repo_select.notice_truncated')"></p>
+            <button @click="dismissTruncated()" class="flex-shrink-0 text-muted-dark hover:text-text-dark transition-colors duration-200" aria-label="Dismiss">
               <span class="material-symbols-outlined">close</span>
             </button>
           </div>

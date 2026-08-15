@@ -46,6 +46,7 @@ class GithubReposHandlers {
     const allRepos = [];
     let page = 1;
     const perPage = 100;
+    let truncated = false;
 
     try {
       while (allRepos.length < MAX_REPOS) {
@@ -94,6 +95,14 @@ class GithubReposHandlers {
           break;
         }
 
+        // Full page received AND the cap is reached: older repos may exist
+        // beyond MAX_REPOS — flag the listing as truncated (a notice, not
+        // an error).
+        if (allRepos.length >= MAX_REPOS) {
+          truncated = true;
+          break;
+        }
+
         page++;
       }
     } catch (error) {
@@ -109,7 +118,11 @@ class GithubReposHandlers {
       return { success: false, error: error.message };
     }
 
-    return { success: true, repos: allRepos };
+    const payload = { success: true, repos: allRepos };
+    if (truncated) {
+      payload.truncated = true;
+    }
+    return payload;
   }
 
   /**

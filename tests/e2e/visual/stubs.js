@@ -117,6 +117,9 @@ const INIT_SCRIPT_TEMPLATE = `
   //   ?stubScanFail=1        Forces findDocumentalRepos to resolve with
   //                          { success: false, error: 'stub scan failure' }
   //                          — simulates a scan error (error-screen path).
+  //   ?stubTruncated=1       Adds truncated:true to the listUserRepos
+  //                          payload — simulates the MAX_REPOS=500 cap
+  //                          being hit (truncation-notice path).
   function stubParam(name, fallback) {
     var raw = null;
     try {
@@ -128,6 +131,7 @@ const INIT_SCRIPT_TEMPLATE = `
   var listDelayMs = stubParam('stubListDelayMs', 0);
   var scanDelayMs = stubParam('stubScanDelayMs', 0);
   var scanFail = stubParam('stubScanFail', 0);
+  var stubTruncated = stubParam('stubTruncated', 0);
   function sleep(ms) {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
@@ -276,6 +280,9 @@ const INIT_SCRIPT_TEMPLATE = `
     // repo browsing (repo-select init)
     listUserRepos: function () {
       return sleep(listDelayMs).then(function () {
+        if (stubTruncated) {
+          return { success: true, repos: REPOS, truncated: true };
+        }
         return { success: true, repos: REPOS };
       });
     },
