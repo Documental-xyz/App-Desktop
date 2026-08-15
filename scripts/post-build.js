@@ -86,83 +86,6 @@ class PostBuildProcessor {
     }
   }
 
-  verifyNodeBinaries(distPath) {
-    console.log('🟢 Verifying Node.js binaries...');
-    
-    // Determine platform and architecture
-    const isWindows = distPath.includes('win-unpacked');
-    const isLinux = distPath.includes('linux-unpacked') || distPath.includes('AppImage');
-    const isMacOS = distPath.includes('mac') || distPath.includes('darwin');
-    
-    let platform, arch, nodeExecutable, npmExecutable;
-    
-    if (isWindows) {
-      platform = 'win32';
-      arch = 'x64';
-      nodeExecutable = 'node.exe';
-      npmExecutable = 'npm.cmd';
-    } else if (isMacOS) {
-      platform = 'darwin';
-      arch = 'x64';
-      nodeExecutable = 'node';
-      npmExecutable = 'npm';
-    } else {
-      platform = 'linux';
-      arch = 'x64';
-      nodeExecutable = 'node';
-      npmExecutable = 'npm';
-    }
-    
-    // Check for Node.js binaries in resources
-    const resourcesPath = path.join(distPath, '..', '..', 'resources');
-    const nodePath = path.join(resourcesPath, platform, arch, 'bin', nodeExecutable);
-    const npmPath = path.join(resourcesPath, platform, arch, 'bin', npmExecutable);
-    const versionPath = path.join(resourcesPath, platform, arch, 'version.json');
-    
-    const checks = [
-      {
-        name: `Node.js binary (${nodeExecutable})`,
-        check: () => this.checkExecutable(nodePath)
-      },
-      {
-        name: `NPM binary (${npmExecutable})`,
-        check: () => this.checkExecutable(npmPath)
-      },
-      {
-        name: 'Node.js version file',
-        check: () => fs.existsSync(versionPath)
-      }
-    ];
-    
-    // Verify version file content if it exists
-    if (fs.existsSync(versionPath)) {
-      checks.push({
-        name: 'Node.js version content',
-        check: () => {
-          try {
-            const versionData = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
-            return versionData && versionData.version && versionData.platform === platform && versionData.arch === arch;
-          } catch {
-            return false;
-          }
-        }
-      });
-    }
-    
-    const results = checks.map(({ name, check }) => {
-      try {
-        const passed = check();
-        console.log(`   ${passed ? '✅' : '❌'} ${name}`);
-        return passed;
-      } catch (error) {
-        console.log(`   ❌ ${name} (Error: ${error.message})`);
-        return false;
-      }
-    });
-
-    return results.every(r => r);
-  }
-
   copyResources(distPath) {
     try {
       const sourceResourcesPath = path.join(this.projectRoot, 'resources');
@@ -223,10 +146,6 @@ class PostBuildProcessor {
         check: () => {
           return this.criticalModules.every(module => this.verifyModule(module, distPath));
         }
-      },
-      {
-        name: 'Node.js binaries present',
-        check: () => this.verifyNodeBinaries(distPath)
       }
     );
     

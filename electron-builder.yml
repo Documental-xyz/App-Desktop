@@ -31,7 +31,7 @@ asarUnpack:
   - node_modules/sqlite3/**/*
   - node_modules/keytar/**/*
 extraResources:
-  - "resources/**/*"
+  - "resources/config/**/*"
 linux:
   target:
     - target: AppImage
