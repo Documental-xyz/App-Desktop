@@ -8,6 +8,10 @@
  *   - assets/icon-mac.png                 1024x1024, full-bleed opaque, no rounded mask (macOS;
  *                                          electron-builder converts this PNG to ICNS at build time)
  *   - assets/icon.ico                     real multi-entry ICO (16/24/32/48/64/128/256)
+ *   - assets/icons/NxN.png                freedesktop hicolor set 16–512 (Linux multi-size desktop
+ *                                          icons; electron-builder 26.x ships a single-PNG
+ *                                          linux.icon as-is — multi-size hicolor requires a
+ *                                          directory of per-size PNGs named NxN.png)
  *   - renderer/assets/icon-favicon.png    64x64 favicon
  *
  * The recolored SVG only ever lives in memory — the source file on disk is
@@ -32,13 +36,15 @@ const CONFIG = {
   iconPng: path.join(__dirname, '../assets/icon.png'),
   iconIco: path.join(__dirname, '../assets/icon.ico'),
   iconMacPng: path.join(__dirname, '../assets/icon-mac.png'),
+  iconsDir: path.join(__dirname, '../assets/icons'),
   favicon: path.join(__dirname, '../renderer/assets/icon-favicon.png'),
 
   // Icon sizes
   sizes: {
     png: 1024,                          // High-res source for electron-builder (mac auto-converts to ICNS)
     favicon: 64,                        // For renderer/assets/icon-favicon.png
-    ico: [16, 24, 32, 48, 64, 128, 256] // Explicit multi-entry ICO sizes
+    ico: [16, 24, 32, 48, 64, 128, 256], // Explicit multi-entry ICO sizes
+    hicolor: [16, 24, 32, 48, 64, 128, 256, 512] // Freedesktop hicolor set (linux.icon directory)
   },
 
   // Background color (from SVG primary color #3CAEE9)
@@ -220,6 +226,40 @@ async function generateIcns(outputPath, size) {
 }
 
 /**
+ * Generate the freedesktop hicolor icon set (Linux).
+ * electron-builder 26.x's iconConverter ships a single-PNG `linux.icon`
+ * through as-is (ONE hicolor size); a DIRECTORY of per-size PNGs named
+ * `NxN.png` is installed into usr/share/icons/hicolor/NxN/apps/ for real
+ * multi-size desktop icons. Same rounded white-on-blue rendering as
+ * icon.png (design consistency).
+ *
+ * @param {string} dirPath - Output directory (assets/icons)
+ * @param {number[]} sizes - Hicolor sizes (e.g. [16, 24, 32, 48, 64, 128, 256, 512])
+ */
+async function generateHicolorSet(dirPath, sizes) {
+  try {
+    console.log(`Generating freedesktop hicolor set: ${dirPath} (${sizes.join(', ')})`);
+
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+      console.log(`Created hicolor directory: ${dirPath}`);
+    }
+
+    for (const size of sizes) {
+      const outputPath = path.join(dirPath, `${size}x${size}.png`);
+      const buffer = await renderIconBuffer(size, { rounded: true });
+      fs.writeFileSync(outputPath, buffer);
+      console.log(`✓ Created: ${path.basename(outputPath)}`);
+    }
+
+    console.log(`✓ Hicolor set complete: ${sizes.length} PNGs in ${path.basename(dirPath)}/`);
+  } catch (error) {
+    console.error(`✗ Failed to generate hicolor set:`, error.message);
+    throw error;
+  }
+}
+
+/**
  * Update favicon file (inherits the fixed design via the same pipeline).
  *
  * @param {string} faviconPath - Path to output favicon
@@ -271,6 +311,8 @@ async function main() {
     // Generate macOS full-bleed source PNG (electron-builder converts to ICNS at build time)
     await generateIcns(CONFIG.iconMacPng, CONFIG.sizes.png);
 
+    await generateHicolorSet(CONFIG.iconsDir, CONFIG.sizes.hicolor);
+
     // Update favicon (64x64 PNG)
     await updateFavicon(CONFIG.favicon, CONFIG.sizes.favicon);
 
@@ -279,6 +321,7 @@ async function main() {
     console.log(`  - ${CONFIG.iconPng} (${CONFIG.sizes.png}x${CONFIG.sizes.png}, rounded corners)`);
     console.log(`  - ${CONFIG.iconIco} (real multi-entry ICO: ${CONFIG.sizes.ico.join(', ')})`);
     console.log(`  - ${CONFIG.iconMacPng} (${CONFIG.sizes.png}x${CONFIG.sizes.png}, full-bleed, electron-builder auto-converts to ICNS)`);
+    console.log(`  - ${CONFIG.iconsDir}/{${CONFIG.sizes.hicolor.map((s) => `${s}x${s}`).join(',')}}.png (freedesktop hicolor set for linux.icon)`);
     console.log(`  - ${CONFIG.favicon} (${CONFIG.sizes.favicon}x${CONFIG.sizes.favicon})`);
 
   } catch (error) {

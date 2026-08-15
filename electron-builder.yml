@@ -46,7 +46,7 @@ linux:
       arch:
         - x64
         - arm64
-  icon: assets/icon.png
+  icon: assets/icons
   category: Development
   # desktopName is a package.json ROOT field (not under linux) in electron-builder 26.15.3;
   # syncDesktopName: true derives the .desktop filename + StartupWMClass from it.
