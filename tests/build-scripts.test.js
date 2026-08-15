@@ -78,32 +78,24 @@ describe('Build Scripts', () => {
 });
 
 describe('Config Unification', () => {
-  it('package.json should NOT have "files" in build key', () => {
-    expect(pkg.build).toBeDefined();
-    expect(pkg.build.files).toBeUndefined();
-  });
-
-  it('package.json should NOT have "asarUnpack" in build key', () => {
-    expect(pkg.build.asarUnpack).toBeUndefined();
-  });
-
-  it('package.json should NOT have "win" in build key', () => {
-    expect(pkg.build.win).toBeUndefined();
-  });
-
-  it('package.json should NOT have "linux" in build key', () => {
-    expect(pkg.build.linux).toBeUndefined();
-  });
-
-  it('package.json should have "extraMetadata" in build key', () => {
-    expect(pkg.build.extraMetadata).toBeDefined();
+  it('package.json should NOT have a "build" key (electron-builder.yml is the single config source)', () => {
+    // A package.json build field makes electron-builder SKIP electron-builder.yml
+    // entirely (config shadowing) — removed in the icon fix; keep it gone.
+    expect(pkg.build).toBeUndefined();
   });
 
   it('electron-builder.yml should exist and be parseable', () => {
     expect(ymlContent).toBeTruthy();
   });
 
-  it('electron-builder.yml should have asarUnpack', () => {
+  it('electron-builder.yml should carry extraMetadata (ported from the removed build field)', () => {
+    expect(ymlContent).toContain('extraMetadata');
+  });
+
+  it('electron-builder.yml should own packaging keys (files/win/linux/asarUnpack)', () => {
+    expect(ymlContent).toContain('files');
+    expect(ymlContent).toContain('win');
+    expect(ymlContent).toContain('linux');
     expect(ymlContent).toContain('asarUnpack');
   });
 
