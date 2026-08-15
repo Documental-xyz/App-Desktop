@@ -23,9 +23,10 @@
  *    ({success:true, data:[]}) so missing coverage is visible in console and
  *    in `window.__QA_STUB_UNCOVERED__`.
  *
- * Also loads real translations from src/locales/en.yaml (via transitive
- * js-yaml — no new dependency) so baseline screenshots render readable text
- * instead of raw i18n keys.
+ * Also loads real translations from src/locales/pt-BR.yaml — the user's
+ * locale, whose longer strings expose real-world wrapping — falling back to
+ * en.yaml then {} (via transitive js-yaml — no new dependency) so baseline
+ * screenshots render readable text instead of raw i18n keys.
  *
  * @author Documental Team
  * @since 1.0.0
@@ -41,20 +42,26 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const FIXTURE_MODES = ['short', 'long', 'selection'];
 
 /**
- * Best-effort loader for real English translations used by the stub's
- * getTranslationsSync/getTranslations. Falls back to {} (pages then render
- * raw i18n keys — deterministic, still valid for geometry).
+ * Best-effort loader for real translations used by the stub's
+ * getTranslationsSync/getTranslations. Loads the user-reported locale
+ * (pt-BR — longer strings expose real-world wrapping/overflow) with
+ * fallback to en.yaml, then {} (pages then render raw i18n keys —
+ * deterministic, still valid for geometry).
  *
  * @returns {object} Nested translation dictionary.
  */
 function loadTranslations() {
-  try {
-    const yaml = require('js-yaml');
-    const localePath = path.join(REPO_ROOT, 'src', 'locales', 'en.yaml');
-    return yaml.load(fs.readFileSync(localePath, 'utf8')) || {};
-  } catch (_e) {
-    return {};
+  const locales = ['pt-BR', 'en'];
+  for (const locale of locales) {
+    try {
+      const yaml = require('js-yaml');
+      const localePath = path.join(REPO_ROOT, 'src', 'locales', `${locale}.yaml`);
+      return yaml.load(fs.readFileSync(localePath, 'utf8')) || {};
+    } catch (_e) {
+      /* unreadable/missing locale — try the next fallback */
+    }
   }
+  return {};
 }
 
 /**

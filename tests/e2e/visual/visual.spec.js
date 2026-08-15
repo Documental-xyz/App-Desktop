@@ -169,6 +169,12 @@ async function runVisualCell({ page, screen, zoomPct, fixture, cellLabel, smoke 
     `[${cellLabel}] no horizontal page overflow: docScrollWidth=${overflow.docScrollWidth} vs docClientWidth=${overflow.docClientWidth}`
   ).toBe(true);
 
+  const verticalOverflow = await helpers.noVerticalPageOverflow(page);
+  expect.soft(
+    !verticalOverflow.hasOverflow,
+    `[${cellLabel}] page must not scroll vertically — .app-scroll is the only scrollbar: pageScrollHeight=${verticalOverflow.pageScrollHeight} vs clientHeight=${verticalOverflow.clientHeight} (uncompensated vh/min-height outside the shell?)`
+  ).toBe(true);
+
   if (screen.brandLogo) {
     const logo = await helpers.logoBoxConsistent(page, helpers.TARGET_LOGO_BOX_PX);
     expect.soft(logo.present, `[${cellLabel}] branding box must exist (.brand-logo-3x)`).toBe(true);

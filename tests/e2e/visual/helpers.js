@@ -7,7 +7,8 @@
  * presence check), console-error monitoring, app-readiness waits (Alpine +
  * body zoom + fonts), the real-path zoom driver (`sessionStorage` + reload),
  * and metric-based geometry assertion helpers (footer pinning, horizontal
- * overflow, scrollbar-iff-overflow, logo box consistency).
+ * overflow, vertical page overflow, scrollbar-iff-overflow, logo box
+ * consistency).
  *
  * Geometry checks are METRIC-based (getBoundingClientRect / scrollHeight vs
  * clientHeight ±1) — never visual inspection. Helpers return metric objects;
@@ -495,6 +496,29 @@ async function noHorizontalOverflow(page) {
 }
 
 /**
+ * noVerticalPageOverflow — metrics for "the page itself must not scroll
+ * vertically" (double-scrollbar regression guard): the document scroller
+ * (scrollingElement) must satisfy scrollHeight <= clientHeight + 1. Vertical
+ * scrolling belongs EXCLUSIVELY to the in-app `.app-scroll` scroller — an
+ * overflowing document means something outside the compensated shell has
+ * uncompensated vh/min-height geometry (e.g. body min-height: 100vh under
+ * zoom).
+ *
+ * @param {import('@playwright/test').Page} page - Playwright page.
+ * @returns {Promise<object>} Metrics incl. `hasOverflow` boolean.
+ */
+async function noVerticalPageOverflow(page) {
+  return page.evaluate(() => {
+    const doc = document.scrollingElement || document.documentElement;
+    return {
+      pageScrollHeight: doc.scrollHeight,
+      clientHeight: doc.clientHeight,
+      hasOverflow: doc.scrollHeight > doc.clientHeight + 1
+    };
+  });
+}
+
+/**
  * scrollbarIffOverflow — metric check that a scroller shows a scrollbar if
  * and only if its content overflows (scrollHeight vs clientHeight ±1).
  *
@@ -618,6 +642,7 @@ module.exports = {
   setZoom,
   footerFullWidthAndPinned,
   noHorizontalOverflow,
+  noVerticalPageOverflow,
   scrollbarIffOverflow,
   logoBoxConsistent,
   saveScreenshot
