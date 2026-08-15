@@ -291,6 +291,9 @@ repo_select:
   confirm_non_documental_title: "Are you sure you want to select a non-Documental repository?"
   confirm_non_documental_desc: "If you are not sure this repository is a Documental workspace, selecting it may cause errors when trying to create the workspace."
   no_documental_repos: "No Documental repositories found.\nTry disabling the filter or create a new repository."
+  error_timeout: "The repository scan is taking too long. Please try again."
+  notice_truncated: "Showing your 500 most recently updated repositories."
+  notice_skipped_orgs: "Some organizations could not be scanned: {orgs}"
 
 create:
   page_title: "Documental - Creating Workspace"

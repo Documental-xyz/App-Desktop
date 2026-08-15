@@ -299,6 +299,9 @@ repo_select:
   confirm_non_documental_title: "Tem certeza que deseja selecionar um repositório não identificado como Documental?"
   confirm_non_documental_desc: "Se não tiver certeza que esse repositório é um ambiente Documental, selecioná-lo poderá gerar erros ao tentar criar o ambiente de trabalho."
   no_documental_repos: "Nenhum repositório Documental encontrado.\nTente desabilitar o filtro ou criar um novo."
+  error_timeout: "A verificação de repositórios está demorando demais. Tente novamente."
+  notice_truncated: "Mostrando seus 500 repositórios atualizados mais recentemente."
+  notice_skipped_orgs: "Algumas organizações não puderam ser verificadas: {orgs}"
 
 create:
   page_title: "Documental - Criando Espaço de Trabalho"
