@@ -1,10 +1,18 @@
 "use strict";
 
 /**
- * Generate Electron build icons from optimized SVG logo.
- * Creates square PNG icons with rounded corners and solid background
- * for use with electron-builder.
- * 
+ * Generate Electron build icons from the monochrome SVG logo.
+ * Produces a WHITE logo (in-memory recolor of the #3CAEE9 source) on a
+ * solid #3CAEE9 background:
+ *   - assets/icon.png                     1024x1024, rounded corners (20%), transparent corners (Win/Linux)
+ *   - assets/icon-mac.png                 1024x1024, full-bleed opaque, no rounded mask (macOS;
+ *                                          electron-builder converts this PNG to ICNS at build time)
+ *   - assets/icon.ico                     real multi-entry ICO (16/24/32/48/64/128/256)
+ *   - renderer/assets/icon-favicon.png    64x64 favicon
+ *
+ * The recolored SVG only ever lives in memory — the source file on disk is
+ * never modified and no .icns file is ever written.
+ *
  * @author Documental Team
  * @since 1.0.0
  */
@@ -18,29 +26,34 @@ const pngToIco = require('png-to-ico');
 const CONFIG = {
   // Source SVG logo (optimized single-color version)
   sourceSvg: path.join(__dirname, '../renderer/assets/img/logo-documental.svg'),
-  
+
   // Output paths
   outputDir: path.join(__dirname, '../assets'),
   iconPng: path.join(__dirname, '../assets/icon.png'),
   iconIco: path.join(__dirname, '../assets/icon.ico'),
-  iconIcns: path.join(__dirname, '../assets/icon.icns'),
-  
+  iconMacPng: path.join(__dirname, '../assets/icon-mac.png'),
+  favicon: path.join(__dirname, '../renderer/assets/icon-favicon.png'),
+
   // Icon sizes
   sizes: {
-    png: 1024,     // High-res source for electron-builder (mac auto-converts to ICNS)
-    favicon: 64     // For renderer/assets/icon-favicon.png
+    png: 1024,                          // High-res source for electron-builder (mac auto-converts to ICNS)
+    favicon: 64,                        // For renderer/assets/icon-favicon.png
+    ico: [16, 24, 32, 48, 64, 128, 256] // Explicit multi-entry ICO sizes
   },
-  
+
   // Background color (from SVG primary color #3CAEE9)
   backgroundColor: '#3CAEE9',
-  
+
   // Rounded corner radius (20% of size)
   cornerRadius: 0.2
 };
 
+// Cached in-memory white-recolored SVG buffer (loaded once per run, never written to disk)
+let whiteSvgBuffer = null;
+
 /**
  * Create rounded rectangle mask for sharp.
- * 
+ *
  * @param {number} width - Rectangle width
  * @param {number} height - Rectangle height
  * @param {number} radius - Corner radius
@@ -53,47 +66,100 @@ function createRoundedRectMask(width, height, radius) {
             fill="white" stroke="white" stroke-width="0"/>
     </svg>
   `;
-  
+
   return Buffer.from(svg);
 }
 
 /**
- * Generate icon with rounded corners and background.
- * 
- * @param {string} inputPath - Path to source SVG
- * @param {string} outputPath - Path to output PNG
- * @param {number} size - Icon size (width/height)
- * @param {boolean} isFavicon - Whether this is a favicon (smaller)
- * @returns {Promise} - Sharp promise
+ * Load the source SVG and recolor it to WHITE, in memory only.
+ * The logo is monochrome #3CAEE9 (7 paths) — without this recolor the logo
+ * would be blue-on-blue and invisible. The assert guards against silent
+ * regressions if the source SVG format ever changes.
+ *
+ * @returns {Buffer} - SVG buffer with all #3CAEE9 fills replaced by #FFFFFF
+ * @throws {Error} if fewer than 7 `fill="#3CAEE9"` occurrences are found
  */
-async function generateIcon(inputPath, outputPath, size, isFavicon = false) {
-  try {
-    console.log(`Generating icon: ${path.basename(outputPath)} (${size}x${size})`);
-    
+function loadWhiteLogoSvgBuffer() {
+  const svgContent = fs.readFileSync(CONFIG.sourceSvg, 'utf8');
+
+  // Count occurrences BEFORE replacing (fail-hard on source format changes)
+  const count = svgContent.split('fill="#3CAEE9"').length - 1;
+  if (count < 7) {
+    throw new Error('SVG recolor failed — expected >=7 #3CAEE9 fills, found ' + count);
+  }
+
+  const whiteSvg = svgContent.replaceAll('fill="#3CAEE9"', 'fill="#FFFFFF"');
+  console.log(`✓ Logo recolored #3CAEE9 → #FFFFFF in memory (${count} paths, source file untouched)`);
+
+  // In-memory only: the recolored SVG must NEVER be written to disk
+  return Buffer.from(whiteSvg);
+}
+
+/**
+ * Render the icon at an exact size via the parametric composite pipeline.
+ *
+ * Pipeline (base image = white-recolored SVG rendered by sharp):
+ *   1. Render the white logo with `fit: 'contain'` on a transparent canvas.
+ *   2. Draw the #3CAEE9 background BENEATH the logo (`blend: 'dest-over'`).
+ *   3. If `rounded`, cut rounded corners with the mask LAST (`blend: 'dest-in'`)
+ *      so the corners stay transparent. (Mask-before-background would let the
+ *      `dest-over` background bleed back into the corners.)
+ *
+ * @param {number} size - Icon width/height in pixels
+ * @param {object} [options]
+ * @param {boolean} [options.rounded=true] - Apply the rounded-corner mask
+ * @returns {Promise<Buffer>} - PNG buffer at exactly `size`x`size`
+ */
+async function renderIconBuffer(size, { rounded = true } = {}) {
+  if (!whiteSvgBuffer) {
+    whiteSvgBuffer = loadWhiteLogoSvgBuffer();
+  }
+
+  // Solid opaque background rect (alpha 255 everywhere)
+  const bgBuffer = await sharp({
+    create: {
+      width: size,
+      height: size,
+      channels: 4,
+      background: CONFIG.backgroundColor
+    }
+  }).png().toBuffer();
+
+  const compositeOps = [
+    // Background drawn beneath the existing logo content
+    { input: bgBuffer, blend: 'dest-over' }
+  ];
+
+  if (rounded) {
     const radius = Math.round(size * CONFIG.cornerRadius);
-    
-    // Create rounded rectangle mask
-    const mask = await sharp(createRoundedRectMask(size, size, radius))
+    const maskBuffer = await sharp(createRoundedRectMask(size, size, radius))
       .png()
       .toBuffer();
-    
-    // Composite operations:
-    // 1. Load source SVG
-    // 2. Resize to target size
-    // 3. Add rounded corners via mask
-    // 4. Add background color
-    await sharp(inputPath)
-      .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .composite([
-        // Apply rounded corners mask
-        { input: mask, blend: 'dest-in' },
-        // Add background color
-        { input: { create: { width: size, height: size, channels: 4, background: CONFIG.backgroundColor } }, blend: 'over' }
-      ])
-      .toFile(outputPath);
-    
+    // Rounded-corner mask applied last keeps the corners transparent
+    compositeOps.push({ input: maskBuffer, blend: 'dest-in' });
+  }
+
+  return sharp(whiteSvgBuffer)
+    .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .composite(compositeOps)
+    .png()
+    .toBuffer();
+}
+
+/**
+ * Generate the Win/Linux icon (rounded corners, transparent corners).
+ *
+ * @param {string} outputPath - Path to output PNG
+ * @param {number} size - Icon size (width/height)
+ */
+async function generateIcon(outputPath, size) {
+  try {
+    console.log(`Generating icon: ${path.basename(outputPath)} (${size}x${size})`);
+
+    const buffer = await renderIconBuffer(size, { rounded: true });
+    fs.writeFileSync(outputPath, buffer);
+
     console.log(`✓ Created: ${path.basename(outputPath)}`);
-    
   } catch (error) {
     console.error(`✗ Failed to generate ${path.basename(outputPath)}:`, error.message);
     throw error;
@@ -101,22 +167,27 @@ async function generateIcon(inputPath, outputPath, size, isFavicon = false) {
 }
 
 /**
- * Generate ICO file (Windows) from PNG using png-to-ico.
- * Produces a real MS Windows icon resource (NOT a renamed PNG).
+ * Generate ICO file (Windows) using png-to-ico.
+ * Re-renders a white-on-blue rounded PNG at EACH exact size (crisper small
+ * sizes than a single downscale of the 1024 source) and produces a real
+ * multi-entry MS Windows icon resource (NOT a renamed PNG).
  *
- * @param {string} pngPath - Path to source PNG
  * @param {string} icoPath - Path to output ICO
- * @param {number} size - Icon size (unused; source PNG size is used)
+ * @param {number[]} sizes - ICO entry sizes (e.g. [16, 24, 32, 48, 64, 128, 256])
  */
-async function generateIco(pngPath, icoPath, size) {
+async function generateIco(icoPath, sizes) {
   try {
-    console.log(`Generating ICO: ${path.basename(icoPath)} (${size}x${size})`);
+    console.log(`Generating ICO: ${path.basename(icoPath)} (entries: ${sizes.join(', ')})`);
 
-    const pngBuffer = fs.readFileSync(pngPath);
-    const icoBuffer = await pngToIco(pngBuffer);
+    const pngBuffers = [];
+    for (const size of sizes) {
+      pngBuffers.push(await renderIconBuffer(size, { rounded: true }));
+    }
+
+    const icoBuffer = await pngToIco(pngBuffers);
     fs.writeFileSync(icoPath, icoBuffer);
 
-    console.log(`✓ Created: ${path.basename(icoPath)}`);
+    console.log(`✓ Created: ${path.basename(icoPath)} (${sizes.length} entries)`);
   } catch (error) {
     console.error(`✗ Failed to generate ${path.basename(icoPath)}:`, error.message);
     throw error;
@@ -124,53 +195,44 @@ async function generateIco(pngPath, icoPath, size) {
 }
 
 /**
- * Generate icon for macOS.
- * electron-builder accepts a 1024×1024 PNG and auto-converts it to ICNS
- * internally, so we resize the source PNG rather than producing a fake
- * ICNS file. The output is written as a PNG (.png extension) so that no
- * invalid ICNS data is ever created.
+ * Generate the macOS icon source PNG (full-bleed, opaque).
+ * Own composite — NOT a resize of icon.png: no rounded-corner mask, the
+ * #3CAEE9 background fills the whole 1024x1024 canvas (alpha 255 on every
+ * pixel) with the white logo centered via `fit: 'contain'`.
+ * electron-builder reads mac.icon as a PNG and generates the ICNS itself at
+ * build time, so we intentionally never write an .icns file here.
  *
- * @param {string} pngPath - Path to source PNG
- * @param {string} icnsPath - Path to output (kept for config compatibility; unused)
- * @param {number} size - Icon size
+ * @param {string} outputPath - Path to output PNG (assets/icon-mac.png)
+ * @param {number} size - Icon size (width/height)
  */
-async function generateIcns(pngPath, icnsPath, size) {
+async function generateIcns(outputPath, size) {
   try {
-    console.log(`Generating macOS icon source PNG (${size}x${size})`);
+    console.log(`Generating macOS icon source PNG (${size}x${size}, full-bleed)`);
 
-    // electron-builder reads mac.icon as a PNG and generates the ICNS itself,
-    // so we only need a high-resolution PNG. We intentionally do NOT write an
-    // .icns file (the previous implementation copied PNG bytes into a .icns
-    // path, producing an invalid file).
-    const macPngPath = path.join(path.dirname(pngPath), 'icon-mac.png');
-    await sharp(pngPath)
-      .resize(size, size)
-      .toFile(macPngPath);
+    const buffer = await renderIconBuffer(size, { rounded: false });
+    fs.writeFileSync(outputPath, buffer);
 
-    console.log(`✓ Created: ${path.basename(macPngPath)} (electron-builder auto-converts to ICNS)`);
+    console.log(`✓ Created: ${path.basename(outputPath)} (opaque full-bleed, electron-builder auto-converts to ICNS)`);
   } catch (error) {
     console.error(`✗ Failed to generate macOS icon source:`, error.message);
-    // Don't throw for ICNS as it's not critical for all platforms
+    throw error;
   }
 }
 
 /**
- * Update favicon file.
- * 
- * @param {string} pngPath - Path to source PNG
+ * Update favicon file (inherits the fixed design via the same pipeline).
+ *
  * @param {string} faviconPath - Path to output favicon
  * @param {number} size - Favicon size
  */
-async function updateFavicon(pngPath, faviconPath, size) {
+async function updateFavicon(faviconPath, size) {
   try {
     console.log(`Updating favicon: ${path.basename(faviconPath)} (${size}x${size})`);
-    
-    await sharp(pngPath)
-      .resize(size, size)
-      .toFile(faviconPath);
-    
+
+    const buffer = await renderIconBuffer(size, { rounded: true });
+    fs.writeFileSync(faviconPath, buffer);
+
     console.log(`✓ Updated: ${path.basename(faviconPath)}`);
-    
   } catch (error) {
     console.error(`✗ Failed to update favicon ${path.basename(faviconPath)}:`, error.message);
     throw error;
@@ -185,37 +247,40 @@ async function main() {
     console.log('🚀 Starting icon generation...');
     console.log(`Source SVG: ${CONFIG.sourceSvg}`);
     console.log(`Output directory: ${CONFIG.outputDir}`);
-    
+
     // Ensure output directory exists
     if (!fs.existsSync(CONFIG.outputDir)) {
       fs.mkdirSync(CONFIG.outputDir, { recursive: true });
       console.log(`Created output directory: ${CONFIG.outputDir}`);
     }
-    
+
     // Check if source SVG exists
     if (!fs.existsSync(CONFIG.sourceSvg)) {
       throw new Error(`Source SVG not found: ${CONFIG.sourceSvg}`);
     }
-    
-    // Generate main icon (512x512 PNG)
-    await generateIcon(CONFIG.sourceSvg, CONFIG.iconPng, CONFIG.sizes.png);
-    
-    // Generate ICO (Windows)
-    await generateIco(CONFIG.iconPng, CONFIG.iconIco, CONFIG.sizes.png);
-    
-    // Generate ICNS (macOS) - placeholder
-    await generateIcns(CONFIG.iconPng, CONFIG.iconIcns, CONFIG.sizes.png);
-    
+
+    // Load and recolor the logo to white ONCE (asserts >=7 fills, in-memory only)
+    whiteSvgBuffer = loadWhiteLogoSvgBuffer();
+
+    // Generate main icon (1024x1024 PNG, rounded corners — Win/Linux)
+    await generateIcon(CONFIG.iconPng, CONFIG.sizes.png);
+
+    // Generate ICO (Windows, multi-entry 16-256)
+    await generateIco(CONFIG.iconIco, CONFIG.sizes.ico);
+
+    // Generate macOS full-bleed source PNG (electron-builder converts to ICNS at build time)
+    await generateIcns(CONFIG.iconMacPng, CONFIG.sizes.png);
+
     // Update favicon (64x64 PNG)
-    await updateFavicon(CONFIG.iconPng, path.join(__dirname, '../renderer/assets/icon-favicon.png'), CONFIG.sizes.favicon);
-    
+    await updateFavicon(CONFIG.favicon, CONFIG.sizes.favicon);
+
     console.log('\n✅ Icon generation completed successfully!');
     console.log('\nGenerated files:');
-    console.log(`  - ${CONFIG.iconPng} (${CONFIG.sizes.png}x${CONFIG.sizes.png})`);
-    console.log(`  - ${CONFIG.iconIco} (real ICO format, ${CONFIG.sizes.png}x${CONFIG.sizes.png})`);
-    console.log(`  - assets/icon-mac.png (${CONFIG.sizes.png}x${CONFIG.sizes.png}, electron-builder auto-converts to ICNS)`);
-    console.log(`  - renderer/assets/icon-favicon.png (${CONFIG.sizes.favicon}x${CONFIG.sizes.favicon})`);
-    
+    console.log(`  - ${CONFIG.iconPng} (${CONFIG.sizes.png}x${CONFIG.sizes.png}, rounded corners)`);
+    console.log(`  - ${CONFIG.iconIco} (real multi-entry ICO: ${CONFIG.sizes.ico.join(', ')})`);
+    console.log(`  - ${CONFIG.iconMacPng} (${CONFIG.sizes.png}x${CONFIG.sizes.png}, full-bleed, electron-builder auto-converts to ICNS)`);
+    console.log(`  - ${CONFIG.favicon} (${CONFIG.sizes.favicon}x${CONFIG.sizes.favicon})`);
+
   } catch (error) {
     console.error('\n❌ Icon generation failed:', error.message);
     process.exit(1);

@@ -8,6 +8,8 @@ files:
   - "renderer/**/*"
   - "src/**/*"
   - "themes/**/*"
+  - "assets/icon.png"
+  - "assets/icon.ico"
   - "package.json"
   - "node_modules/**/*"
   - "!node_modules/.cache/**"
@@ -41,6 +43,7 @@ linux:
         - x64
         - arm64
   icon: assets/icon.png
+  desktopName: documental
   category: Development
   desktop:
     Name: Documental
@@ -58,6 +61,9 @@ win:
   icon: assets/icon.ico
   sign: false
   signDlls: false
+nsis:
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
 mac:
   target:
     - target: dmg
@@ -68,7 +74,7 @@ mac:
       arch:
         - x64
         - arm64
-  icon: assets/icon.png
+  icon: assets/icon-mac.png
   category: public.app-category.developer-tools
 snap:
   plugs:

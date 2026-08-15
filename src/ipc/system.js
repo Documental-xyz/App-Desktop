@@ -15,6 +15,7 @@ const fsPromises = fs.promises;
 const path = require('path');
 const os = require('os');
 const { PlatformService } = require('../main/services/platform/PlatformService.js');
+const { getAppIcon } = require('../main/platform/icons');
 
 /**
  * @type {import('child_process').ChildProcess[]} Currently active exec() child processes
@@ -175,7 +176,7 @@ class SystemHandlers {
         height: bounds.height,
         show: false,
         backgroundColor: WINDOW_BG_COLOR,
-        icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+        icon: getAppIcon(),
         webPreferences: {
           preload: path.resolve(__dirname, '..', '..', 'preload.js'),
           contextIsolation: true,
@@ -910,7 +911,7 @@ async verifyNodeInstallation() {
           y,
           show: false,
           backgroundColor: WINDOW_BG_COLOR,
-          icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+          icon: getAppIcon(),
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,

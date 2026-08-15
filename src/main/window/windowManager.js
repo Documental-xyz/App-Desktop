@@ -13,6 +13,7 @@ const WINDOW_BG_COLOR = '#111827';
 const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('../logging/logger.js');
+const { getAppIcon } = require('../platform/icons');
 
 /**
  * @typedef {Object} WindowConfig
@@ -75,7 +76,7 @@ class WindowManager {
       height: windowConfig.height || this.config.windowConfig.height,
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
-      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
+      icon: getAppIcon(),
       resizable: windowConfig.resizable !== false,
       maximizable: windowConfig.maximizable !== false,
       minimizable: windowConfig.minimizable !== false,
@@ -119,7 +120,7 @@ class WindowManager {
       height: this.config.windowConfig.height,
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
-      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
+      icon: getAppIcon(),
       webPreferences: this.config.windowConfig.webPreferences
     });
 
@@ -224,7 +225,7 @@ class WindowManager {
    */
   createCustomWindow(windowConfig = {}) {
     const config = {
-      icon: path.join(__dirname, '..', '..', '..', 'assets', 'icon.png'),
+      icon: getAppIcon(),
       ...this.config.windowConfig,
       ...windowConfig,
       webPreferences: {

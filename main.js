@@ -16,6 +16,9 @@ const { app, BrowserWindow } = require('electron');
 // directory resolves to ~/.config/Documental instead of ~/.config/Electron
 app.setName('Documental');
 
+// AUMID: must equal electron-builder.yml appId, and run before any window is created
+app.setAppUserModelId('com.documental.app');
+
 // Import modular components
 const { getLogger } = require('./src/main/logging/logger.js');
 const { appTracker } = require('./src/main/processes/documentalTracker.js');
