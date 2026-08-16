@@ -95,16 +95,21 @@ jobs:
 
       # Must run BEFORE any build:* script — electron-builder.yml extraMetadata uses
       # $fromFile: electron-builder.env, so the file itself must exist on disk.
+      # THEME/THEME_MODE are appended when configured as repository variables.
       - name: Generate electron-builder.env
         shell: bash
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
+          THEME: ${{ vars.THEME || secrets.THEME }}
+          THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
+          if [ -n "$THEME" ]; then printf 'THEME=%s\n' "$THEME" >> electron-builder.env; fi
+          if [ -n "$THEME_MODE" ]; then printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env; fi
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -162,12 +167,16 @@ jobs:
         shell: bash
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
+          THEME: ${{ vars.THEME || secrets.THEME }}
+          THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
+          if [ -n "$THEME" ]; then printf 'THEME=%s\n' "$THEME" >> electron-builder.env; fi
+          if [ -n "$THEME_MODE" ]; then printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env; fi
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')

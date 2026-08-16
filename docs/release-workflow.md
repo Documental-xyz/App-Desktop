@@ -35,7 +35,16 @@ Para conferir se já está configurado:
 gh secret list
 ```
 
-### 2.2 Workflow mergeado na `main` antes da tag
+### 2.2 Configurar as variáveis de tema (opcional)
+
+A aparência do app empacotado vem da configuração do repositório. Sem as variáveis abaixo, o app usa o tema padrão. No GitHub: **Settings → Secrets and variables → Actions → Variables**, crie:
+
+- `THEME` — nome do tema (ex.: `documental`)
+- `THEME_MODE` — modo do tema (ex.: `auto`)
+
+Quando configuradas, o workflow as injeta no `electron-builder.env` e o `generate-runtime-env.js` as embute no `runtime-env.json` — o mesmo mecanismo usado para o `GH_CLIENT_ID`. O workflow também aceita os mesmos nomes como Secrets (fallback), mas Variables é o lugar certo para configuração não sensível.
+
+### 2.3 Workflow mergeado na `main` antes da tag
 
 Um push de tag executa a versão do workflow presente **no commit da tag**, não a da branch `main`. Portanto: merge do workflow para a `main` ANTES de cortar qualquer tag de release real. Tags em commits de branch de trabalho rodam o workflow daquele commit, o que é aceitável justamente para as tags de smoke da seção 7.
 
