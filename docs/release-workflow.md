@@ -21,11 +21,13 @@ A autenticação com o GitHub usa apenas o `secrets.GITHUB_TOKEN` automático do
 
 ## 2. Pré-requisitos (one-time)
 
-### 2.1 Configurar o secret `GITHUB_CLIENT_ID`
+### 2.1 Configurar o secret `GH_CLIENT_ID`
 
 O build exige o client ID do GitHub Device Flow. Sem ele, o workflow falha logo no início com erro claro (o `generate-runtime-env.js` faz `exit 1` quando não encontra o ID).
 
-No GitHub: **Settings → Secrets and variables → Actions → New repository secret**, nome `GITHUB_CLIENT_ID`, valor = o client ID da aplicação OAuth (o mesmo usado no `.env` local).
+No GitHub: **Settings → Secrets and variables → Actions → New repository secret**, nome `GH_CLIENT_ID`, valor = o client ID da aplicação OAuth (o mesmo usado no `.env` local).
+
+OBS: o nome **não pode** ser `GITHUB_CLIENT_ID`. O GitHub rejeita secrets cujo nome comece com o prefixo `GITHUB_` — ele é reservado para a plataforma (ex.: o `GITHUB_TOKEN` automático do runner). O workflow lê `secrets.GH_CLIENT_ID` e injeta o valor como a variável `GITHUB_CLIENT_ID` no ambiente do build, que é o nome que o `generate-runtime-env.js` e o app esperam.
 
 Para conferir se já está configurado:
 
@@ -116,7 +118,7 @@ Use o dispatch para testar mudanças no workflow (caches, steps, runners) sem cr
 
 ## 7. Testes E2E / tag de smoke
 
-Procedimento reutilizável para validar o pipeline de ponta a ponta (workflow novo, mudança estrutural, runner alterado) sem poluir o repositório. Pré-requisitos: `gh` autenticado com acesso de push, workflow já presente na `main` (ou no commit que será tagado), secret `GITHUB_CLIENT_ID` configurado.
+Procedimento reutilizável para validar o pipeline de ponta a ponta (workflow novo, mudança estrutural, runner alterado) sem poluir o repositório. Pré-requisitos: `gh` autenticado com acesso de push, workflow já presente na `main` (ou no commit que será tagado), secret `GH_CLIENT_ID` configurado.
 
 ```
 # tag de teste com timestamp (nunca reutilize o mesmo nome)

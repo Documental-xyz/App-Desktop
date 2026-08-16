@@ -1,7 +1,7 @@
 # Release pipeline for Documental — push a tag "v*" (e.g. v1.2.3) to trigger.
 # Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap) and macOS
 # (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
-# Requires the GITHUB_CLIENT_ID secret (repo Settings → Secrets and variables → Actions);
+# Requires the GH_CLIENT_ID secret (repo Settings → Secrets and variables → Actions);
 # manual runs from the Actions tab are build-only (no publish, no version change).
 # Future code signing placeholders — never enable on unsigned builds (notarization fails hard):
 #   CSC_LINK / CSC_KEY_PASSWORD (Windows + macOS certificates)
@@ -98,10 +98,10 @@ jobs:
       - name: Generate electron-builder.env
         shell: bash
         env:
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
-            echo "::error::Secret GITHUB_CLIENT_ID is not configured in repo settings"
+            echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
@@ -161,10 +161,10 @@ jobs:
       - name: Generate electron-builder.env
         shell: bash
         env:
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
-            echo "::error::Secret GITHUB_CLIENT_ID is not configured in repo settings"
+            echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
