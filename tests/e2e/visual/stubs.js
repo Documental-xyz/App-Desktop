@@ -99,6 +99,7 @@ const INIT_SCRIPT_TEMPLATE = `
   } catch (e) { /* keep default */ }
   window.__QA_FIXTURE__ = fixture;
   window.__QA_STUB_UNCOVERED__ = [];
+  window.__QA_STUB_CALLS__ = { listUserRepos: 0, findDocumentalRepos: 0 };
 
   // --- Stub parametrization (configurable delay/failure for regression
   // --- specs, e.g. scan-regression.spec.js). Params are read from the page
@@ -117,9 +118,33 @@ const INIT_SCRIPT_TEMPLATE = `
   //   ?stubScanFail=1        Forces findDocumentalRepos to resolve with
   //                          { success: false, error: 'stub scan failure' }
   //                          — simulates a scan error (error-screen path).
+  //   ?stubListFailFirst=N   listUserRepos resolves with
+  //                          { success: false, error: 'stub transient list failure' }
+  //                          on its first N calls; every later call returns
+  //                          the normal success payload — simulates TRANSIENT
+  //                          repo-list failures (silent-retry path).
+  //                          WHY N=2 for list-retry specs: repo-select
+  //                          double-inits (Alpine auto-init + x-init="init()"),
+  //                          so every load issues two listUserRepos calls and
+  //                          the stale first run's failure is swallowed by the
+  //                          epoch guard — failing only call #1 never reaches
+  //                          the CURRENT run's retry loop.
+  //   ?stubScanFailFirst=N   findDocumentalRepos resolves with
+  //                          { success: false, error: 'stub transient scan failure' }
+  //                          on its first N calls; every later call returns
+  //                          the normal success payload — simulates a
+  //                          TRANSIENT scan failure (silent-retry path).
+  //                          The scan is single-flight (one call per data
+  //                          phase), so N=1 fails the current run's scan.
   //   ?stubTruncated=1       Adds truncated:true to the listUserRepos
   //                          payload — simulates the MAX_REPOS=500 cap
   //                          being hit (truncation-notice path).
+  //
+  // Every listUserRepos/findDocumentalRepos call is also counted in the
+  // read-only window.__QA_STUB_CALLS__ = { listUserRepos, findDocumentalRepos }
+  // counters so specs can PROVE a retry actually happened (vs. an
+  // incidental second load). Test-harness state only — never exposed from
+  // renderer/ production code.
   function stubParam(name, fallback) {
     var raw = null;
     try {
@@ -131,6 +156,8 @@ const INIT_SCRIPT_TEMPLATE = `
   var listDelayMs = stubParam('stubListDelayMs', 0);
   var scanDelayMs = stubParam('stubScanDelayMs', 0);
   var scanFail = stubParam('stubScanFail', 0);
+  var listFailFirst = stubParam('stubListFailFirst', 0);
+  var scanFailFirst = stubParam('stubScanFailFirst', 0);
   var stubTruncated = stubParam('stubTruncated', 0);
   function sleep(ms) {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
@@ -277,9 +304,16 @@ const INIT_SCRIPT_TEMPLATE = `
     getHomeDirectory: function () { return Promise.resolve('/home/qa'); },
     openDirectoryDialog: function () { return Promise.resolve('/home/qa/selected-project'); },
 
-    // repo browsing (repo-select init)
+    // repo browsing (repo-select init). Fail-first checks compare the
+    // call number captured AT CALL TIME (before the artificial delay):
+    // with the double-init both list calls are in flight before either
+    // resolves, so reading the live counter inside the .then would race.
     listUserRepos: function () {
+      var callNumber = ++window.__QA_STUB_CALLS__.listUserRepos;
       return sleep(listDelayMs).then(function () {
+        if (listFailFirst && callNumber <= listFailFirst) {
+          return { success: false, error: 'stub transient list failure' };
+        }
         if (stubTruncated) {
           return { success: true, repos: REPOS, truncated: true };
         }
@@ -287,9 +321,13 @@ const INIT_SCRIPT_TEMPLATE = `
       });
     },
     findDocumentalRepos: function () {
+      var callNumber = ++window.__QA_STUB_CALLS__.findDocumentalRepos;
       return sleep(scanDelayMs).then(function () {
         if (scanFail) {
           return { success: false, error: 'stub scan failure' };
+        }
+        if (scanFailFirst && callNumber <= scanFailFirst) {
+          return { success: false, error: 'stub transient scan failure' };
         }
         return { success: true, documentalRepos: DOCUMENTAL_REPOS };
       });

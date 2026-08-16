@@ -4,7 +4,7 @@
  * @fileoverview Regression locks for the repo-select scan loading race
  * (plan: repo-select-loading-fix, Task 8).
  *
- * Four committed specs, driven entirely through the stub-param URL
+ * Six committed specs, driven entirely through the stub-param URL
  * parametrization from tests/e2e/visual/stubs.js (Task 4) — NO test hooks
  * exist in renderer/ production code:
  *
@@ -29,6 +29,20 @@
  *    block) with its two buttons. The zero-Documental scan is forced by a
  *    second page.addInitScript wrapper installed AFTER the main stub
  *    (order preserved) — stubs.js itself is NOT modified.
+ * 5. Silent scan retry (?stubScanFailFirst=1, plan Task 11) — a TRANSIENT
+ *    first scan failure is retried in-process: the error screen must
+ *    NEVER become visible (polled every ~300ms while the list loads),
+ *    the list renders WITH badges, and the retry is proven real via
+ *    window.__QA_STUB_CALLS__.findDocumentalRepos >= 2.
+ * 6. Silent list retry (?stubListFailFirst=2) — same contract for a
+ *    transient listUserRepos failure. N=2 (not 1) because repo-select
+ *    double-inits (Alpine auto-init + x-init="init()"): every load makes
+ *    two listUserRepos calls and the stale first run's failure is
+ *    epoch-guard-swallowed, so failing only call #1 never reaches the
+ *    CURRENT run. Failing the first TWO calls makes the current run's
+ *    first attempt fail — only a REAL retry recovers, and
+ *    listUserRepos >= 3 is impossible without one (a retry-less page
+ *    caps at 2 calls).
  *
  * Run:
  *   npx playwright test -c tests/e2e/visual/playwright.config.js tests/e2e/visual
@@ -84,6 +98,36 @@ if (process.env.VITEST) {
     await page.goto(`${state.server.baseUrl}/repo-select.html?fixture=selection${extraQuery}`, {
       waitUntil: 'load'
     });
+  }
+
+  /**
+   * Proves the error screen NEVER becomes visible while the silent retry
+   * is in flight: samples the error block's visibility every ~300ms until
+   * the repo list renders, failing the instant the error screen flashes.
+   * Polling continuously (not only a final check) is the whole point — a
+   * transient error-screen flash between attempts would be caught here.
+   *
+   * @param {import('@playwright/test').Page} page - Playwright page.
+   * @returns {Promise<void>} Resolves once the list is visible and the
+   *   error block was never seen.
+   */
+  async function waitForListWithoutErrorScreen(page) {
+    const list = page.locator(LIST_SELECTOR);
+    const errorBlock = page.locator(ERROR_SELECTOR);
+    const deadline = Date.now() + 15_000;
+    while (!(await list.isVisible())) {
+      expect(
+        await errorBlock.isVisible(),
+        'error screen must NEVER become visible during the silent retry'
+      ).toBe(false);
+      if (Date.now() > deadline) break;
+      await page.waitForTimeout(300);
+    }
+    await expect(
+      list,
+      'repo list must render once the transient failure is retried'
+    ).toBeVisible({ timeout: 1_000 });
+    await expect(errorBlock, 'error screen must never render').toBeHidden();
   }
 
   // Serial mode: the four specs share timing invariants and the 16s spec
@@ -215,6 +259,52 @@ if (process.env.VITEST) {
         page.locator(BADGE_SELECTOR),
         'no badges expected when the scan finds zero Documental repos'
       ).toHaveCount(0);
+    });
+
+    test('transient first scan failure is retried silently without error screen', async ({ page }) => {
+      test.setTimeout(30_000);
+      await openRepoSelect(page, '&stubScanFailFirst=1');
+
+      await waitForListWithoutErrorScreen(page);
+
+      await expect(
+        page.locator(BADGE_SELECTOR).first(),
+        'Documental badges must be rendered after the silent retry'
+      ).toBeVisible();
+
+      const scanCalls = await page.evaluate(() => window.__QA_STUB_CALLS__.findDocumentalRepos);
+      expect(
+        scanCalls,
+        'the retry must be real: findDocumentalRepos called at least twice'
+      ).toBeGreaterThanOrEqual(2);
+
+      await helpers.saveScreenshot(page, helpers.EVIDENCE_DIR, 'task-11-scan-retry-silent.png');
+    });
+
+    test('transient first list failure is retried silently without error screen', async ({ page }) => {
+      test.setTimeout(30_000);
+      // stubListFailFirst=2, not 1: the double-init (Alpine auto-init +
+      // x-init="init()") issues two listUserRepos calls per load and the
+      // stale run's failure is epoch-guard-swallowed — failing only call #1
+      // would pass vacuously. Failing the first TWO calls forces the CURRENT
+      // run's first attempt to fail; only a real retry produces a third
+      // call, so listUserRepos >= 3 proves the retry happened.
+      await openRepoSelect(page, '&stubListFailFirst=2');
+
+      await waitForListWithoutErrorScreen(page);
+
+      await expect(
+        page.locator(BADGE_SELECTOR).first(),
+        'Documental badges must be rendered after the silent retry'
+      ).toBeVisible();
+
+      const listCalls = await page.evaluate(() => window.__QA_STUB_CALLS__.listUserRepos);
+      expect(
+        listCalls,
+        'the retry must be real: listUserRepos called at least 3 times (2 init calls + 1 retry)'
+      ).toBeGreaterThanOrEqual(3);
+
+      await helpers.saveScreenshot(page, helpers.EVIDENCE_DIR, 'task-11-list-retry-silent.png');
     });
   });
 }

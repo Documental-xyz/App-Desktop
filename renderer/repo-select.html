@@ -85,6 +85,15 @@
 <script src="./i18n.js"></script>
 <script src="script.js" defer></script>
 <script>
+// Silent data-phase retry (plan repo-select-loading-fix, Task 11): a
+// transient failure of ANY data stage (repo list or Documental scan) is
+// retried in-process WITHOUT setting this.error — the loading/scanning
+// spinners keep spinning and the user never notices. Only when ALL
+// attempts fail (or the error is terminal — re-authentication required)
+// does init()'s catch render the error screen as before.
+const DATA_PHASE_ATTEMPTS = 3;
+const DATA_PHASE_RETRY_DELAY_MS = 750;
+
 // Register Alpine component before alpine.min.js loads
 document.addEventListener('alpine:init', () => {
   Alpine.data('repoSelect', () => ({
@@ -118,20 +127,14 @@ document.addEventListener('alpine:init', () => {
       try {
         if (window.__i18nReady) await window.__i18nReady;
         if (!epoch.isCurrent(token)) return;
-        // Whole-init safety timeout: loading/scanning persist until the repo
-        // list AND the Documental scan fully complete, or this fires and the
-        // error state below renders. fn rejections propagate to this catch.
-        const outcome = await window.ScanSafety.runWithSafetyTimeout(async () => {
-          const result = await window.electronAPI.listUserRepos();
-          if (!result.success) {
-            throw new Error(result.error || __t('repo_select.error_generic') || 'Failed to load repositories');
-          }
-          if (!epoch.isCurrent(token)) return;
-          this.repos = result.repos || [];
-          this.truncated = !!result.truncated;
-          if (this.repos.length === 0) return;
-          await this._scanAndMarkDocumental(token);
-        }, 120000);
+        // Whole-init safety timeout: loading/scanning persist until the
+        // repo list AND the Documental scan fully complete, or this fires
+        // and the error state below renders. fn rejections propagate to
+        // this catch. The timeout wraps ALL silent retry attempts.
+        const outcome = await window.ScanSafety.runWithSafetyTimeout(
+          () => this._fetchAndScanReposWithRetry(token),
+          120000
+        );
         if (!epoch.isCurrent(token)) return;
         if (outcome.status === 'timeout') {
           this.error = __t('repo_select.error_timeout') || 'The repository scan is taking too long. Please try again.';
@@ -255,6 +258,56 @@ document.addEventListener('alpine:init', () => {
 
     dismissTruncated() {
       this.truncated = false;
+    },
+
+    /**
+     * One full data-phase attempt: fetch the user's repo list and, when
+     * non-empty, run the Documental scan. Every silent retry restarts the
+     * WHOLE phase (list + scan). Epoch-guarded at each await continuation;
+     * throws on failure so the retry loop — or, after the final attempt,
+     * init()'s catch — handles the error.
+     * @param {Object} token Epoch token captured by the caller's init().
+     */
+    async _fetchAndScanRepos(token) {
+      const result = await window.electronAPI.listUserRepos();
+      if (!result.success) {
+        throw new Error(result.error || __t('repo_select.error_generic') || 'Failed to load repositories');
+      }
+      if (!this._scanEpoch.isCurrent(token)) return;
+      this.repos = result.repos || [];
+      this.truncated = !!result.truncated;
+      if (this.repos.length === 0) return;
+      await this._scanAndMarkDocumental(token);
+    },
+
+    /**
+     * Silent in-process retry of the whole data phase. A transient
+     * failure of ANY stage is retried up to DATA_PHASE_ATTEMPTS total
+     * attempts WITHOUT setting this.error — the loading/scanning flags
+     * stay true, so the spinners keep spinning and the user never
+     * notices the retry. Terminal errors (re-authentication required)
+     * are never retried. The final failure re-throws so init()'s catch
+     * renders the error screen exactly as before. Epoch-guarded at the
+     * top of each attempt and after every await continuation — a stale
+     * loop (a newer init() started) returns silently.
+     * @param {Object} token Epoch token captured by the caller's init().
+     */
+    async _fetchAndScanReposWithRetry(token) {
+      const epoch = this._scanEpoch;
+      for (let attempt = 1; attempt <= DATA_PHASE_ATTEMPTS; attempt++) {
+        if (!epoch.isCurrent(token)) return;
+        try {
+          await this._fetchAndScanRepos(token);
+          if (!epoch.isCurrent(token)) return;
+          return;
+        } catch (err) {
+          if (!epoch.isCurrent(token)) return;
+          const terminal = /re-authenticate|reauth/i.test(String(err && err.message));
+          if (attempt >= DATA_PHASE_ATTEMPTS || terminal) throw err;
+          await new Promise(resolve => setTimeout(resolve, DATA_PHASE_RETRY_DELAY_MS));
+          if (!epoch.isCurrent(token)) return;
+        }
+      }
     },
 
     /**
