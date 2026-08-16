@@ -85,14 +85,17 @@
 <script src="./i18n.js"></script>
 <script src="script.js" defer></script>
 <script>
-// Silent data-phase retry (plan repo-select-loading-fix, Task 11): a
-// transient failure of ANY data stage (repo list or Documental scan) is
-// retried in-process WITHOUT setting this.error — the loading/scanning
-// spinners keep spinning and the user never notices. Only when ALL
-// attempts fail (or the error is terminal — re-authentication required)
-// does init()'s catch render the error screen as before.
-const DATA_PHASE_ATTEMPTS = 3;
-const DATA_PHASE_RETRY_DELAY_MS = 750;
+// Silent data-phase retry (plan repo-select-loading-fix, Task 11 + Task 13
+// Phase B): a transient failure of ANY data stage (repo list or Documental
+// scan) is retried in-process WITHOUT setting this.error — the
+// loading/scanning spinners keep spinning and the user never notices. Only
+// when ALL attempts fail (or the error is terminal — re-authentication
+// required) does init()'s catch render the error screen as before.
+// 4 attempts with exponential backoff [750, 2000, 4000]ms → ~6.75s silent
+// window (mirrors the main-process loader pattern), sized for slow Windows
+// Credential Manager / DBus keyring warmups on cold start.
+const DATA_PHASE_ATTEMPTS = 4;
+const DATA_PHASE_RETRY_DELAY_MS = [750, 2000, 4000];
 
 // Register Alpine component before alpine.min.js loads
 document.addEventListener('alpine:init', () => {
@@ -304,7 +307,7 @@ document.addEventListener('alpine:init', () => {
           if (!epoch.isCurrent(token)) return;
           const terminal = /re-authenticate|reauth/i.test(String(err && err.message));
           if (attempt >= DATA_PHASE_ATTEMPTS || terminal) throw err;
-          await new Promise(resolve => setTimeout(resolve, DATA_PHASE_RETRY_DELAY_MS));
+          await new Promise(resolve => setTimeout(resolve, DATA_PHASE_RETRY_DELAY_MS[attempt - 1]));
           if (!epoch.isCurrent(token)) return;
         }
       }
