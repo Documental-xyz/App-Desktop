@@ -190,6 +190,10 @@ class GithubReposHandlers {
   /**
    * Finds all repositories containing a documental.json marker file.
    * Uses GitHub Code Search API for efficiency (1-N calls instead of N calls).
+   * Owners whose code search SUCCEEDS with 0 items are re-verified via
+   * getContent probing (restricted to their repos) because the legacy
+   * code-search index can return empty results for accounts that DO have
+   * matching repos (task-12 live battery).
    * @returns {Promise<{success: boolean, documentalRepos?: string[], skippedOrgs?: string[], fallback?: boolean, error?: string}>}
    */
   async findDocumentalRepos() {
@@ -220,13 +224,23 @@ class GithubReposHandlers {
     try {
       const { data: user } = await octokit.rest.users.getAuthenticated();
 
+      // Task 13 (badge lottery): a 2xx search with ZERO items is NOT
+      // trusted — GitHub's legacy code-search index intermittently
+      // returns empty results for accounts that DO have matching repos
+      // (live battery task-12: identical cold starts alternate 0 vs 24
+      // badges). Owners whose search SUCCEEDED with 0 items are
+      // re-verified via getContent below.
+      let userSearchEmpty = false;
+
       // Personal repos: search by filename qualifier. Note: space (not +) between qualifiers
       // because octokit encodes '+' as %2B; literal space becomes '+' in the URL query.
       try {
         const userSearch = await octokit.rest.search.code({
           q: `filename:documental.json user:${user.login}`
         });
-        for (const item of userSearch.data.items) {
+        const userItems = userSearch.data.items || [];
+        userSearchEmpty = userItems.length === 0;
+        for (const item of userItems) {
           documentalRepos.add(item.repository.full_name);
         }
       } catch (error) {
@@ -237,7 +251,9 @@ class GithubReposHandlers {
             const userSearchAlt = await octokit.rest.search.code({
               q: `documental filename:documental.json user:${user.login}`
             });
-            for (const item of userSearchAlt.data.items) {
+            const userItemsAlt = userSearchAlt.data.items || [];
+            userSearchEmpty = userItemsAlt.length === 0;
+            for (const item of userItemsAlt) {
               documentalRepos.add(item.repository.full_name);
             }
           } catch (innerError) {
@@ -251,12 +267,17 @@ class GithubReposHandlers {
 
       // Org repos: enumerate orgs and search each sequentially (rate limit = 10/min).
       const { data: orgs } = await octokit.rest.orgs.listForAuthenticatedUser();
+      const orgsSearchEmpty = new Set();
       for (const org of orgs) {
         try {
           const orgSearch = await octokit.rest.search.code({
             q: `filename:documental.json org:${org.login}`
           });
-          for (const item of orgSearch.data.items) {
+          const orgItems = orgSearch.data.items || [];
+          if (orgItems.length === 0) {
+            orgsSearchEmpty.add(org.login);
+          }
+          for (const item of orgItems) {
             documentalRepos.add(item.repository.full_name);
           }
         } catch (error) {
@@ -272,7 +293,11 @@ class GithubReposHandlers {
               const orgSearchAlt = await octokit.rest.search.code({
                 q: `documental filename:documental.json org:${org.login}`
               });
-              for (const item of orgSearchAlt.data.items) {
+              const orgItemsAlt = orgSearchAlt.data.items || [];
+              if (orgItemsAlt.length === 0) {
+                orgsSearchEmpty.add(org.login);
+              }
+              for (const item of orgItemsAlt) {
                 documentalRepos.add(item.repository.full_name);
               }
             } catch (innerError) {
@@ -292,7 +317,62 @@ class GithubReposHandlers {
         }
       }
 
-      return { success: true, documentalRepos: Array.from(documentalRepos), skippedOrgs };
+      // Task 13: verify owners whose search SUCCEEDED with 0 items by
+      // probing their repos via getContent (restricted to those owners —
+      // owners with ≥1 match are trusted; 5xx-skipped orgs are already
+      // surfaced via the skippedOrgs notice and are NOT re-verified here).
+      const emptyOwners = [];
+      if (userSearchEmpty) {
+        emptyOwners.push(user.login);
+      }
+      for (const org of orgs) {
+        if (orgsSearchEmpty.has(org.login)) {
+          emptyOwners.push(org.login);
+        }
+      }
+
+      let verificationRan = false;
+      if (emptyOwners.length > 0) {
+        this.logger.warn(
+          `Code search returned 0 items for [${emptyOwners.join(', ')}] — verifying via getContent (legacy index can miss repos)`
+        );
+        try {
+          const allRepos = await this._enumerateAllRepos(octokit);
+          if (allRepos.length > 0) {
+            const ownerPrefixes = emptyOwners.map((owner) => `${owner}/`);
+            const ownerSubset = allRepos.filter((repo) =>
+              ownerPrefixes.some((prefix) => repo.full_name && repo.full_name.startsWith(prefix))
+            );
+            if (ownerSubset.length > 0) {
+              const verification = await this._probeReposForDocumental(octokit, ownerSubset);
+              if (!verification.ok) {
+                // Same rejection table as the fallback: an INCONCLUSIVE
+                // probe (401/403/5xx/network) fails the scan atomically —
+                // returning the unverified empty result would silently
+                // untag repos (the exact lottery this fixes).
+                return { success: false, error: verification.error };
+              }
+              for (const fullName of verification.found) {
+                documentalRepos.add(fullName);
+              }
+              verificationRan = true;
+            }
+          }
+        } catch (verificationError) {
+          if (verificationError.status === 403) {
+            return { success: false, error: 'GitHub API rate limit exceeded. Try again later.' };
+          }
+          this.logger.error('Documental empty-result verification failed:', verificationError);
+          return { success: false, error: verificationError.message };
+        }
+      }
+
+      const payload = { success: true, documentalRepos: Array.from(documentalRepos), skippedOrgs };
+      if (verificationRan) {
+        // Informational: the renderer does not branch on this.
+        payload.fallback = true;
+      }
+      return payload;
     } catch (error) {
       if (error.status === 403) {
         this.logger.warn('GitHub rate limit hit during code search; attempting getContent fallback');
@@ -305,76 +385,12 @@ class GithubReposHandlers {
 
       // Fallback: enumerate repos via listForAuthenticatedUser and probe documental.json via getContent.
       try {
-        const allRepos = [];
-        let page = 1;
-        const perPage = 100;
-        while (allRepos.length < MAX_REPOS) {
-          const response = await octokit.repos.listForAuthenticatedUser({
-            per_page: perPage,
-            page,
-            sort: 'updated',
-            affiliation: 'owner,collaborator,organization_member'
-          });
-          if (!response.data || response.data.length === 0) {
-            break;
-          }
-          allRepos.push(...response.data);
-          if (response.data.length < perPage) {
-            break;
-          }
-          page++;
+        const allRepos = await this._enumerateAllRepos(octokit);
+        const fallback = await this._probeReposForDocumental(octokit, allRepos);
+        if (!fallback.ok) {
+          return { success: false, error: fallback.error };
         }
-
-        const fallbackRepos = new Set();
-        // Chunk in groups of 10 to limit concurrency.
-        const chunkSize = 10;
-        for (let i = 0; i < allRepos.length; i += chunkSize) {
-          const chunk = allRepos.slice(i, i + chunkSize);
-          const results = await Promise.allSettled(
-            chunk.map((repo) =>
-              octokit.repos.getContent({
-                owner: repo.owner.login,
-                repo: repo.name,
-                path: 'documental.json'
-              })
-            )
-          );
-          for (let idx = 0; idx < results.length; idx++) {
-            const result = results[idx];
-            if (result.status === 'fulfilled') {
-              fallbackRepos.add(chunk[idx].full_name);
-              continue;
-            }
-            const reason = result.reason;
-            if (reason && reason.status === 404) {
-              // documental.json not present → repo is not Documental (silent).
-              continue;
-            }
-            // 401/403/5xx/no-status (network): the probe is INCONCLUSIVE, not
-            // negative. Fail the whole scan atomically — returning a partial
-            // set would silently untag repos we could not verify.
-            if (reason && reason.status === 401) {
-              return {
-                success: false,
-                error: 'Token expired. Please re-authenticate.'
-              };
-            }
-            if (reason && reason.status === 403) {
-              return {
-                success: false,
-                error: 'GitHub API rate limit exceeded. Try again later.'
-              };
-            }
-            const statusLabel = (reason && reason.status) || 'no status';
-            const detail = (reason && reason.message) || 'network error';
-            return {
-              success: false,
-              error: `Documental scan failed while probing repositories (${statusLabel}): ${detail}`
-            };
-          }
-        }
-
-        return { success: true, documentalRepos: Array.from(fallbackRepos), fallback: true, skippedOrgs };
+        return { success: true, documentalRepos: fallback.found, fallback: true, skippedOrgs };
       } catch (fallbackError) {
         if (fallbackError.status === 403) {
           return { success: false, error: 'GitHub API rate limit exceeded. Try again later.' };
@@ -383,6 +399,91 @@ class GithubReposHandlers {
         return { success: false, error: fallbackError.message };
       }
     }
+  }
+
+  /**
+   * Enumerates the authenticated user's repos with pagination, capped at
+   * MAX_REPOS (same parameters as listUserRepos). Shared by the getContent
+   * fallback and the empty-search verification path.
+   * @param {object} octokit - Authenticated Octokit instance.
+   * @returns {Promise<Array<object>>} Raw repo objects (owner.login, name, full_name).
+   */
+  async _enumerateAllRepos(octokit) {
+    const allRepos = [];
+    let page = 1;
+    const perPage = 100;
+    while (allRepos.length < MAX_REPOS) {
+      const response = await octokit.repos.listForAuthenticatedUser({
+        per_page: perPage,
+        page,
+        sort: 'updated',
+        affiliation: 'owner,collaborator,organization_member'
+      });
+      if (!response.data || response.data.length === 0) {
+        break;
+      }
+      allRepos.push(...response.data);
+      if (response.data.length < perPage) {
+        break;
+      }
+      page++;
+    }
+    return allRepos;
+  }
+
+  /**
+   * Probes a set of repos for a documental.json marker via getContent,
+   * chunked in groups of 10 to limit concurrency. Shared rejection table:
+   * 404 → repo is not Documental (silent); 401/403/5xx/no-status → the
+   * probe is INCONCLUSIVE and the scan must fail atomically (returning a
+   * partial set would silently untag repos we could not verify).
+   * @param {object} octokit - Authenticated Octokit instance.
+   * @param {Array<object>} repos - Raw repo objects to probe.
+   * @returns {Promise<{ok: true, found: string[]}|{ok: false, error: string}>}
+   *   `found` holds the full_names of verified Documental repos; `error`
+   *   carries the exact atomic-failure string on inconclusive probes.
+   */
+  async _probeReposForDocumental(octokit, repos) {
+    const found = [];
+    // Chunk in groups of 10 to limit concurrency.
+    const chunkSize = 10;
+    for (let i = 0; i < repos.length; i += chunkSize) {
+      const chunk = repos.slice(i, i + chunkSize);
+      const results = await Promise.allSettled(
+        chunk.map((repo) =>
+          octokit.repos.getContent({
+            owner: repo.owner.login,
+            repo: repo.name,
+            path: 'documental.json'
+          })
+        )
+      );
+      for (let idx = 0; idx < results.length; idx++) {
+        const result = results[idx];
+        if (result.status === 'fulfilled') {
+          found.push(chunk[idx].full_name);
+          continue;
+        }
+        const reason = result.reason;
+        if (reason && reason.status === 404) {
+          // documental.json not present → repo is not Documental (silent).
+          continue;
+        }
+        if (reason && reason.status === 401) {
+          return { ok: false, error: 'Token expired. Please re-authenticate.' };
+        }
+        if (reason && reason.status === 403) {
+          return { ok: false, error: 'GitHub API rate limit exceeded. Try again later.' };
+        }
+        const statusLabel = (reason && reason.status) || 'no status';
+        const detail = (reason && reason.message) || 'network error';
+        return {
+          ok: false,
+          error: `Documental scan failed while probing repositories (${statusLabel}): ${detail}`
+        };
+      }
+    }
+    return { ok: true, found };
   }
 
   registerHandlers() {

@@ -672,6 +672,156 @@ describe('GithubReposHandlers', () => {
         expect(mockOctokitInstance.repos.getContent).not.toHaveBeenCalled();
       });
     });
+    // ── Empty code-search verification (Task 13 badge-lottery fix) ───────
+    // GitHub's legacy code-search index INTERMITTENTLY returns 2xx with
+    // ZERO items for accounts that DO have matching repos (live battery
+    // task-12: identical cold starts alternate 0 vs 24 badges). A 0-item
+    // search "success" is therefore UNTRUSTED: every owner whose search
+    // SUCCEEDED with 0 items AND who has ≥1 repo in the user's repo list
+    // is verified via getContent probing restricted to that owner's repos
+    // (same chunking + rejection table as the fallback). Owners with ≥1
+    // search match are TRUSTED (index coverage demonstrated).
+
+    describe('empty code-search verification (badge lottery fix)', () => {
+      afterEach(() => resetOctokitMocks());
+
+      it('user search 2xx with 0 items + user has repos → getContent verifies, found repo returned, fallback:true', async () => {
+        tokenMock.mockResolvedValue('fake-token');
+        mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+          data: { login: 'testuser' }
+        });
+        // THE lottery: the search SUCCEEDS (2xx) but the legacy index
+        // returns zero items for an account that truly has matches.
+        mockOctokitInstance.rest.search.code.mockResolvedValue({ data: { items: [] } });
+        mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({ data: [] });
+        mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+          data: [
+            makeFallbackRepo(1, 'has-doc', 'testuser'),
+            makeFallbackRepo(2, 'no-doc', 'testuser')
+          ]
+        });
+        mockOctokitInstance.repos.getContent
+          .mockResolvedValueOnce({ data: { path: 'documental.json' } })
+          .mockRejectedValueOnce(make404());
+
+        const result = await handlers.findDocumentalRepos();
+
+        expect(result.success).toBe(true);
+        expect(result.fallback).toBe(true);
+        expect(result.documentalRepos).toEqual(['testuser/has-doc']);
+        expect(result.skippedOrgs).toEqual([]);
+      });
+
+      it('user search 0 items + all probes 404 → VERIFIED negative: success:true with empty documentalRepos', async () => {
+        tokenMock.mockResolvedValue('fake-token');
+        mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+          data: { login: 'testuser' }
+        });
+        mockOctokitInstance.rest.search.code.mockResolvedValue({ data: { items: [] } });
+        mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({ data: [] });
+        mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+          data: [makeFallbackRepo(1, 'no-doc-1', 'testuser'), makeFallbackRepo(2, 'no-doc-2', 'testuser')]
+        });
+        mockOctokitInstance.repos.getContent.mockRejectedValue(make404());
+
+        const result = await handlers.findDocumentalRepos();
+
+        expect(result.success).toBe(true);
+        expect(result.documentalRepos).toEqual([]);
+        // Verification actually ran (informational flag — renderer does
+        // not branch on it).
+        expect(result.fallback).toBe(true);
+      });
+
+      it('user search returns ≥1 item → TRUST: no enumeration, no getContent probes', async () => {
+        tokenMock.mockResolvedValue('fake-token');
+        mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+          data: { login: 'testuser' }
+        });
+        mockOctokitInstance.rest.search.code.mockResolvedValue({
+          data: { items: [{ repository: { full_name: 'testuser/repo-a' } }] }
+        });
+        mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({ data: [] });
+
+        const result = await handlers.findDocumentalRepos();
+
+        expect(result.success).toBe(true);
+        expect(result.documentalRepos).toEqual(['testuser/repo-a']);
+        expect(result.fallback).toBeUndefined();
+        // Index coverage demonstrated for the user — their repos are not
+        // re-probed via getContent.
+        expect(mockOctokitInstance.repos.listForAuthenticatedUser).not.toHaveBeenCalled();
+        expect(mockOctokitInstance.repos.getContent).not.toHaveBeenCalled();
+      });
+
+      it("org search 0 items + org has repos → only that org's repos are probed (user trusted)", async () => {
+        tokenMock.mockResolvedValue('fake-token');
+        mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+          data: { login: 'testuser' }
+        });
+        // Personal search finds a match → the USER is trusted. Org search
+        // succeeds with 0 items → the ORG must be verified by probing.
+        mockOctokitInstance.rest.search.code
+          .mockResolvedValueOnce({ data: { items: [{ repository: { full_name: 'testuser/personal' } }] } })
+          .mockResolvedValueOnce({ data: { items: [] } });
+        mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({
+          data: [{ login: 'my-org' }]
+        });
+        mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+          data: [
+            makeFallbackRepo(1, 'personal-repo', 'testuser'),
+            makeFallbackRepo(2, 'org-doc', 'my-org'),
+            makeFallbackRepo(3, 'org-nodoc', 'my-org')
+          ]
+        });
+        mockOctokitInstance.repos.getContent.mockImplementation(({ owner, repo }) => {
+          if (owner === 'my-org' && repo === 'org-doc') {
+            return Promise.resolve({ data: { path: 'documental.json' } });
+          }
+          return Promise.reject(make404());
+        });
+
+        const result = await handlers.findDocumentalRepos();
+
+        expect(result.success).toBe(true);
+        expect(result.fallback).toBe(true);
+        expect(result.documentalRepos).toEqual(
+          expect.arrayContaining(['testuser/personal', 'my-org/org-doc'])
+        );
+        // The user's repo (no search match of its own, but user HAS a
+        // search match → trusted owner) must NOT have been probed.
+        expect(result.documentalRepos).not.toContain('testuser/personal-repo');
+        expect(mockOctokitInstance.repos.getContent).toHaveBeenCalledTimes(2);
+        const probedOwners = mockOctokitInstance.repos.getContent.mock.calls.map(([args]) => args.owner);
+        expect(probedOwners).toEqual(['my-org', 'my-org']);
+      });
+
+      it('verification probe 403 → atomic {success:false} rate-limit error (existing table)', async () => {
+        tokenMock.mockResolvedValue('fake-token');
+        mockOctokitInstance.rest.users.getAuthenticated.mockResolvedValue({
+          data: { login: 'testuser' }
+        });
+        mockOctokitInstance.rest.search.code.mockResolvedValue({ data: { items: [] } });
+        mockOctokitInstance.rest.orgs.listForAuthenticatedUser.mockResolvedValue({ data: [] });
+        mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+          data: [
+            makeFallbackRepo(1, 'has-doc', 'testuser'),
+            makeFallbackRepo(2, 'probe-blocked', 'testuser')
+          ]
+        });
+        mockOctokitInstance.repos.getContent
+          .mockResolvedValueOnce({ data: { path: 'documental.json' } })
+          .mockRejectedValueOnce(make403());
+
+        const result = await handlers.findDocumentalRepos();
+
+        // Atomic: the partial verified set is discarded, never returned.
+        expect(result).toEqual({
+          success: false,
+          error: 'GitHub API rate limit exceeded. Try again later.'
+        });
+      });
+    });
   });
 
   // ── github:find-documental-repos registration ───────────────────────────
