@@ -159,6 +159,16 @@ async function initializeServices() {
     // the first user-visible github:* request already finds a warm keyring.
     await secureTokenService.getToken().catch(() => null);
 
+    // Warm up the ESM-only @octokit/rest module: the process's first
+    // dynamic import() (cold Electron main, first repo-select visit) can
+    // transiently fail at the loader stage before any GitHub API request
+    // is made. Kicking off the shared cached loader — retry included —
+    // here means the first user-visible github:* request finds the module
+    // already imported. Fire-and-forget: boot never blocks or crashes on
+    // its failure (the loader itself clears its cache on terminal failure,
+    // so a later request retries).
+    require('./src/ipc/githubRepos.js').warmUpOctokit().catch(() => null);
+
     logger.info('✅ All core services initialized successfully');
     isInitialized = true;
 

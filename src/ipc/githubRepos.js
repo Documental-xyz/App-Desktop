@@ -9,8 +9,70 @@
 const { ipcMain } = require('electron');
 const { secureTokenService } = require('../services/secureTokenService.js');
 const { GITHUB_CONFIG } = require('../config/github-config.js');
+const { getLogger } = require('../main/logging/logger.js');
 
 const MAX_REPOS = 500;
+
+// Cold-start @octokit/rest loading policy: the ESM-only module's first
+// dynamic import() in Electron main can transiently fail at the loader
+// stage (zero GitHub API requests made), which used to surface as a
+// one-time 'Failed to initialize GitHub client' that self-healed on the
+// user's retry — Node does not cache rejected dynamic imports. The
+// shared loader below turns that into an in-process retry, caches the
+// successful module for the process lifetime, and clears the cache on
+// terminal failure so a later Try Again can still succeed.
+const OCTOKIT_IMPORT_ATTEMPTS = 3;
+const OCTOKIT_IMPORT_RETRY_DELAYS_MS = [250, 750];
+
+const loaderLogger = getLogger('GithubReposLoader');
+
+/**
+ * Cached promise resolving to the (ESM) @octokit/rest module.
+ * @type {Promise<{Octokit: any}> | null}
+ */
+let _octokitModulePromise = null;
+
+/**
+ * Load the @octokit/rest module with transient-failure retry, sharing one
+ * in-flight/resolved promise across every caller for the process lifetime.
+ * A terminal failure (all attempts exhausted) rejects and clears the cache
+ * so the next call starts a fresh import cycle.
+ *
+ * Deliberately NOT `async`: an async function would wrap the cached promise
+ * in a new one per call, breaking the shared-promise identity that lets
+ * concurrent callers join the exact in-flight import.
+ *
+ * @returns {Promise<{Octokit: any}>} The octokit module namespace.
+ */
+function _loadOctokit() {
+  if (_octokitModulePromise) {
+    return _octokitModulePromise;
+  }
+  const promise = (async () => {
+    for (let attempt = 1; attempt <= OCTOKIT_IMPORT_ATTEMPTS; attempt++) {
+      try {
+        return await import('@octokit/rest');
+      } catch (error) {
+        if (attempt === OCTOKIT_IMPORT_ATTEMPTS) {
+          throw error;
+        }
+        loaderLogger.warn(
+          `⚠️ @octokit/rest import failed (attempt ${attempt}/${OCTOKIT_IMPORT_ATTEMPTS}), retrying: ${error.message}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, OCTOKIT_IMPORT_RETRY_DELAYS_MS[attempt - 1]));
+      }
+    }
+  })();
+  _octokitModulePromise = promise;
+  // Identity-guarded clear on rejection: never clobbers a newer promise
+  // started by a concurrent caller, so a retry cannot be wiped out.
+  promise.catch(() => {
+    if (_octokitModulePromise === promise) {
+      _octokitModulePromise = null;
+    }
+  });
+  return promise;
+}
 
 class GithubReposHandlers {
   constructor({ logger }) {
@@ -36,7 +98,7 @@ class GithubReposHandlers {
 
     let octokit;
     try {
-      const { Octokit } = await import('@octokit/rest');
+      const { Octokit } = await _loadOctokit();
       octokit = new Octokit({ auth: token });
     } catch (error) {
       this.logger.error('Error initializing Octokit for repo listing:', error);
@@ -145,7 +207,7 @@ class GithubReposHandlers {
 
     let octokit;
     try {
-      const { Octokit } = await import('@octokit/rest');
+      const { Octokit } = await _loadOctokit();
       octokit = new Octokit({ auth: token });
     } catch (error) {
       this.logger.error('Error initializing Octokit for documental repo search:', error);
@@ -358,7 +420,7 @@ class GithubReposHandlers {
       try {
         const token = await secureTokenService.getToken();
         if (!token) return { success: false, error: 'Not authenticated' };
-        const { Octokit } = await import('@octokit/rest');
+        const { Octokit } = await _loadOctokit();
         const octokit = new Octokit({ auth: token });
         const { data: user } = await octokit.rest.users.getAuthenticated();
         const { data: orgs } = await octokit.rest.orgs.listForAuthenticatedUser();
@@ -378,4 +440,4 @@ class GithubReposHandlers {
   }
 }
 
-module.exports = { GithubReposHandlers };
+module.exports = { GithubReposHandlers, warmUpOctokit: _loadOctokit };

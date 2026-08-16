@@ -727,4 +727,130 @@ describe('GithubReposHandlers', () => {
       expect(handlers._documentalScanInFlight).toBeNull();
     });
   });
+
+  // ── octokit module loader (cold-start cache + retry) ────────────────────
+  // Root cause of the "first repo-select visit fails with ZERO GitHub API
+  // requests" incident: the cold dynamic import('@octokit/rest') (ESM-only
+  // v22, first load in Electron main) can transiently fail at the loader
+  // stage. Node does NOT cache rejected dynamic imports, which is why the
+  // user's retry self-healed. These tests pin the shared cached loader:
+  // (1) transient failure retried in-process, (2) terminal failure NOT
+  // cached forever, (3) success cached at module level — never re-imported.
+  //
+  // Seam: vi.doMock with a STATEFUL factory (verified: a throwing factory is
+  // re-invoked on every import() that follows a rejection, so retries are
+  // observable) + vi.resetModules() for a fresh module-level cache.
+  // NOTE: vitest caches a *successfully* mocked module, so factory-run
+  // counts cannot prove OUR cache — the cache test uses promise identity
+  // on the exported loader instead.
+
+  describe('octokit module loader (cold-start cache + retry)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      // Restore the standard '@octokit/rest' mock and reset the registry so
+      // any later test re-imports the source with default mock behavior and
+      // a pristine module-level loader cache.
+      vi.doMock('@octokit/rest', () => ({ Octokit: vi.fn(MockOctokitImpl) }));
+      vi.resetModules();
+    });
+
+    it('transient import failure: retries once and listUserRepos still succeeds', async () => {
+      vi.useFakeTimers();
+      // The loader logs through its own module-level logger (the shared
+      // appLogger singleton), not the handler's injected logger.
+      const { appLogger } = require('../../src/main/logging/logger.js');
+      const loaderWarnSpy = vi.spyOn(appLogger, 'warn');
+      let importAttempts = 0;
+      vi.doMock('@octokit/rest', () => {
+        importAttempts++;
+        if (importAttempts === 1) throw new Error('cold-start loader glitch');
+        return { Octokit: vi.fn(MockOctokitImpl) };
+      });
+      vi.resetModules();
+      const mod = await import('../../src/ipc/githubRepos.js');
+      const freshHandlers = new mod.GithubReposHandlers({ logger: mockLogger });
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValueOnce({
+        data: [],
+        headers: {}
+      });
+
+      const pending = freshHandlers.listUserRepos();
+      await vi.advanceTimersByTimeAsync(250 + 50); // flush first retry backoff
+      const result = await pending;
+
+      expect(result.success).toBe(true);
+      expect(result.repos).toEqual([]);
+      // First attempt rejected, retry succeeded — exactly the in-process
+      // healing the user previously only got by clicking Try Again.
+      expect(importAttempts).toBe(2);
+      // The retry leaves a warning trace for future incident diagnosis.
+      expect(loaderWarnSpy).toHaveBeenCalledWith(expect.stringContaining('attempt 1/3'));
+    });
+
+    it('terminal import failure maps to the exact error string and is NOT cached (Try Again heals)', async () => {
+      vi.useFakeTimers();
+      let importAttempts = 0;
+      vi.doMock('@octokit/rest', () => {
+        importAttempts++;
+        throw new Error('loader permanently broken');
+      });
+      vi.resetModules();
+      const mod = await import('../../src/ipc/githubRepos.js');
+      const freshHandlers = new mod.GithubReposHandlers({ logger: mockLogger });
+      tokenMock.mockResolvedValue('fake-token');
+
+      const first = freshHandlers.listUserRepos();
+      await vi.advanceTimersByTimeAsync(250 + 750 + 50); // flush both backoffs
+      const result = await first;
+
+      // Error string is the frozen handler contract — unchanged.
+      expect(result).toEqual({ success: false, error: 'Failed to initialize GitHub client' });
+      // The loader exhausted all 3 attempts before giving up.
+      expect(importAttempts).toBe(3);
+      // Terminal failure leaves an error trace.
+      expect(mockLogger.error).toHaveBeenCalled();
+
+      // Cache-clear contract: the rejected result is NOT cached forever —
+      // the user's next Try Again starts a fresh import cycle.
+      const second = freshHandlers.listUserRepos();
+      await vi.advanceTimersByTimeAsync(250 + 750 + 50);
+      const result2 = await second;
+
+      expect(result2).toEqual({ success: false, error: 'Failed to initialize GitHub client' });
+      expect(importAttempts).toBe(6); // 3 more attempts → failure was not sticky
+    });
+
+    it('caches the successful import at module level — later calls never re-import', async () => {
+      let importAttempts = 0;
+      vi.doMock('@octokit/rest', () => {
+        importAttempts++;
+        return { Octokit: vi.fn(MockOctokitImpl) };
+      });
+      vi.resetModules();
+      const mod = await import('../../src/ipc/githubRepos.js');
+      tokenMock.mockResolvedValue('fake-token');
+      mockOctokitInstance.repos.listForAuthenticatedUser.mockResolvedValue({
+        data: [],
+        headers: {}
+      });
+
+      // Concurrent loads share ONE in-flight import promise...
+      const p1 = mod.warmUpOctokit();
+      const p2 = mod.warmUpOctokit();
+      expect(p2).toBe(p1);
+      const loaded = await p1;
+
+      // ...and after success the SAME resolved promise is reused (no re-import).
+      const p3 = mod.warmUpOctokit();
+      expect(p3).toBe(p1);
+      await expect(p3).resolves.toBe(loaded);
+
+      // Two full handler calls still only ever imported the module once.
+      const freshHandlers = new mod.GithubReposHandlers({ logger: mockLogger });
+      await freshHandlers.listUserRepos();
+      await freshHandlers.listUserRepos();
+      expect(importAttempts).toBe(1);
+    });
+  });
 });
