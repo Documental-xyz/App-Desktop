@@ -1,0 +1,183 @@
+# Release pipeline for Documental — push a tag "v*" (e.g. v1.2.3) to trigger.
+# Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap) and macOS
+# (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
+# Requires the GITHUB_CLIENT_ID secret (repo Settings → Secrets and variables → Actions);
+# manual runs from the Actions tab are build-only (no publish, no version change).
+# Future code signing placeholders — never enable on unsigned builds (notarization fails hard):
+#   CSC_LINK / CSC_KEY_PASSWORD (Windows + macOS certificates)
+#   APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER / APPLE_TEAM_ID (macOS notarization)
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare draft release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pre-create the draft release idempotently. This eliminates the duplicate-draft
+      # race in electron-builder 26.15.3 (issue #10026): every publisher leg below
+      # finds the existing draft instead of racing to create one.
+      - name: Ensure draft release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            || gh release create "$TAG" --draft --title "$TAG" --notes "Documental $TAG" --repo "$GITHUB_REPOSITORY"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: prepare
+    if: always() && !failure() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build_cmd: npm run build:win -- $PUBLISH
+          - os: ubuntu-latest
+            build_cmd: npm run build:linux -- AppImage deb rpm $PUBLISH
+          - os: macos-latest
+            build_cmd: npm run build:macos -- $PUBLISH
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-eb-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Must run BEFORE any build:* script — electron-builder.yml extraMetadata uses
+      # $fromFile: electron-builder.env, so the file itself must exist on disk.
+      - name: Generate electron-builder.env
+        shell: bash
+        env:
+          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+        run: |
+          if [ -z "$GITHUB_CLIENT_ID" ]; then
+            echo "::error::Secret GITHUB_CLIENT_ID is not configured in repo settings"
+            exit 1
+          fi
+          printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm pkg set version="${GITHUB_REF_NAME#v}"
+
+      - name: Build and publish
+        shell: bash
+        run: ${{ matrix.build_cmd }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  snap:
+    name: Build snap (best-effort)
+    needs: prepare
+    if: always() && !failure() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      - name: Cache electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-eb-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate electron-builder.env
+        shell: bash
+        env:
+          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
+        run: |
+          if [ -z "$GITHUB_CLIENT_ID" ]; then
+            echo "::error::Secret GITHUB_CLIENT_ID is not configured in repo settings"
+            exit 1
+          fi
+          printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
+
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: npm pkg set version="${GITHUB_REF_NAME#v}"
+
+      # The snap publisher override in the command below is MANDATORY:
+      # snap's default publisher is the Snap Store, not GitHub Releases.
+      - name: Build and publish snap
+        shell: bash
+        run: npm run build:linux:snap -- -c.snap.publish=github $PUBLISH
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
