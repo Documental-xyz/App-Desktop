@@ -1,7 +1,8 @@
 # Release pipeline for Documental — push a tag "v*" (e.g. v1.2.3) to trigger.
 # Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap) and macOS
 # (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
-# Requires the GH_CLIENT_ID secret (repo Settings → Secrets and variables → Actions);
+# Requires the GH_CLIENT_ID secret and the THEME/THEME_MODE values (repo Settings → Secrets and variables → Actions);
+# theme values are required and verified against the packaged runtime env after each build.
 # manual runs from the Actions tab are build-only (no publish, no version change).
 # Future code signing placeholders — never enable on unsigned builds (notarization fails hard):
 #   CSC_LINK / CSC_KEY_PASSWORD (Windows + macOS certificates)
@@ -64,6 +65,8 @@ jobs:
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      THEME: ${{ vars.THEME || secrets.THEME }}
+      THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -95,21 +98,24 @@ jobs:
 
       # Must run BEFORE any build:* script — electron-builder.yml extraMetadata uses
       # $fromFile: electron-builder.env, so the file itself must exist on disk.
-      # THEME/THEME_MODE are appended when configured as repository variables.
+      # THEME/THEME_MODE are required (job env) and verified post-build.
       - name: Generate electron-builder.env
         shell: bash
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
-          THEME: ${{ vars.THEME || secrets.THEME }}
-          THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
-          if [ -n "$THEME" ]; then printf 'THEME=%s\n' "$THEME" >> electron-builder.env; fi
-          if [ -n "$THEME_MODE" ]; then printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env; fi
+          if [ -z "$THEME" ] || [ -z "$THEME_MODE" ]; then
+            echo "::error::THEME and THEME_MODE must be configured (repo Variables or Secrets). THEME='$THEME' THEME_MODE='$THEME_MODE'"
+            exit 1
+          fi
+          printf 'THEME=%s\n' "$THEME" >> electron-builder.env
+          printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env
+          echo "Theme configured: THEME=$THEME THEME_MODE=$THEME_MODE"
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -122,6 +128,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify theme in runtime env
+        shell: bash
+        run: |
+          ACTUAL_THEME=$(node -p "require('./resources/config/runtime-env.json').THEME || ''")
+          ACTUAL_MODE=$(node -p "require('./resources/config/runtime-env.json').THEME_MODE || ''")
+          echo "Packaged runtime env: THEME=$ACTUAL_THEME THEME_MODE=$ACTUAL_MODE (expected THEME=$THEME THEME_MODE=$THEME_MODE)"
+          if [ "$ACTUAL_THEME" != "$THEME" ] || [ "$ACTUAL_MODE" != "$THEME_MODE" ]; then
+            echo "::error::Theme did not reach the packaged runtime-env.json (got THEME='$ACTUAL_THEME' THEME_MODE='$ACTUAL_MODE')"
+            exit 1
+          fi
+
   snap:
     name: Build snap (best-effort)
     needs: prepare
@@ -131,6 +148,8 @@ jobs:
     continue-on-error: true
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
+      THEME: ${{ vars.THEME || secrets.THEME }}
+      THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -167,16 +186,19 @@ jobs:
         shell: bash
         env:
           GITHUB_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
-          THEME: ${{ vars.THEME || secrets.THEME }}
-          THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
         run: |
           if [ -z "$GITHUB_CLIENT_ID" ]; then
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
-          if [ -n "$THEME" ]; then printf 'THEME=%s\n' "$THEME" >> electron-builder.env; fi
-          if [ -n "$THEME_MODE" ]; then printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env; fi
+          if [ -z "$THEME" ] || [ -z "$THEME_MODE" ]; then
+            echo "::error::THEME and THEME_MODE must be configured (repo Variables or Secrets). THEME='$THEME' THEME_MODE='$THEME_MODE'"
+            exit 1
+          fi
+          printf 'THEME=%s\n' "$THEME" >> electron-builder.env
+          printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env
+          echo "Theme configured: THEME=$THEME THEME_MODE=$THEME_MODE"
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -190,3 +212,14 @@ jobs:
         run: npm run build:linux:snap -- -c.snap.publish=github $PUBLISH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify theme in runtime env
+        shell: bash
+        run: |
+          ACTUAL_THEME=$(node -p "require('./resources/config/runtime-env.json').THEME || ''")
+          ACTUAL_MODE=$(node -p "require('./resources/config/runtime-env.json').THEME_MODE || ''")
+          echo "Packaged runtime env: THEME=$ACTUAL_THEME THEME_MODE=$ACTUAL_MODE (expected THEME=$THEME THEME_MODE=$THEME_MODE)"
+          if [ "$ACTUAL_THEME" != "$THEME" ] || [ "$ACTUAL_MODE" != "$THEME_MODE" ]; then
+            echo "::error::Theme did not reach the packaged runtime-env.json (got THEME='$ACTUAL_THEME' THEME_MODE='$ACTUAL_MODE')"
+            exit 1
+          fi

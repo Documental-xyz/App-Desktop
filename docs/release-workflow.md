@@ -35,14 +35,16 @@ Para conferir se já está configurado:
 gh secret list
 ```
 
-### 2.2 Configurar as variáveis de tema (opcional)
+### 2.2 Configurar os valores de tema (obrigatório)
 
-A aparência do app empacotado vem da configuração do repositório. Sem as variáveis abaixo, o app usa o tema padrão. No GitHub: **Settings → Secrets and variables → Actions → Variables**, crie:
+A aparência do app empacotado vem da configuração do repositório. Os valores `THEME` e `THEME_MODE` são **obrigatórios**: sem eles o build falha logo no passo de geração do `electron-builder.env`, com erro claro. No GitHub: **Settings → Secrets and variables → Actions**, crie (como **Variables** ou **Secrets**):
 
 - `THEME` — nome do tema (ex.: `documental`)
-- `THEME_MODE` — modo do tema (ex.: `auto`)
+- `THEME_MODE` — modo do tema (ex.: `dark`)
 
-Quando configuradas, o workflow as injeta no `electron-builder.env` e o `generate-runtime-env.js` as embute no `runtime-env.json` — o mesmo mecanismo usado para o `GH_CLIENT_ID`. O workflow também aceita os mesmos nomes como Secrets (fallback), mas Variables é o lugar certo para configuração não sensível.
+O workflow lê `vars.THEME || secrets.THEME` (e o mesmo para `THEME_MODE`): se o valor existir como repository variable, ele vence; caso contrário, o valor vem do secret. Hoje o repositório usa **Secrets** para ambos — funciona igual. Variables é o lugar certo para configuração não sensível; Secrets, para valores que você prefere não expor.
+
+O mecanismo é o mesmo do `GH_CLIENT_ID`: o workflow injeta os valores no `electron-builder.env`, o `generate-runtime-env.js` os embute no `runtime-env.json` e o app os lê em runtime. Depois de cada build, um passo de verificação lê o `runtime-env.json` empacotado e confere se os valores chegaram exatamente como configurados — se não, o job falha com erro. Um build com tema errado nunca chega silenciosamente ao release.
 
 ### 2.3 Workflow mergeado na `main` antes da tag
 
