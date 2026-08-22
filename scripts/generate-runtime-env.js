@@ -60,6 +60,9 @@ function main() {
     runtimeConfig.THEME_MODE = themeMode;
   }
 
+  const gitProvider = (process.env.GIT_PROVIDER || '').trim();
+  runtimeConfig.GIT_PROVIDER = gitProvider || 'isomorphic-git';
+
   const outputPath = path.join(outputDir, 'runtime-env.json');
   fs.writeFileSync(outputPath, JSON.stringify(runtimeConfig, null, 2), 'utf8');
   console.log(`✅ Runtime environment file created at ${outputPath}`);
