@@ -13,6 +13,7 @@ const path = require('path');
 const { rimraf } = require('rimraf');
 const { PlatformService } = require('../main/services/platform/PlatformService');
 const { EmbeddedRuntimeService } = require('../main/services/embeddedRuntimeService');
+const { EmbeddedFallbackService } = require('../main/services/embeddedFallbackService');
 const nodeShimManager = require('../main/services/nodeShimManager');
 
 const fsp = fs.promises;
@@ -60,6 +61,7 @@ class ProcessManager {
     /** @type {Function|undefined} Optional injection for tests — defaults to killProcessTree from require */
     this._killProcessTree = killProcessTree;
     this.embeddedRuntimeService = new EmbeddedRuntimeService();
+    this.fallbackService = new EmbeddedFallbackService({ logger, nodeDetectionService });
     /** @type {Promise<string>|null} Cached ensureShims() result (per app session) */
     this._shimsDirPromise = null;
     this.processesFile = this.platformService.joinPath(this.platformService.getHomeDirectory(), '.documental-processes.json');
@@ -205,6 +207,11 @@ class ProcessManager {
    * @returns {Promise<{command: string, args: string[], env: Object}>} Spawn descriptor
    */
   async resolveEmbeddedExecutable(command, baseEnv) {
+    if (process.env.DOCUMENTAL_DISABLE_EMBEDDED === '1') {
+      // Test-only hook: force embedded failure so QA can exercise the fallback
+      throw new Error('Embedded runtime disabled via DOCUMENTAL_DISABLE_EMBEDDED (test hook)');
+    }
+
     const svc = this.embeddedRuntimeService;
     const descriptor = command === 'node'
       ? svc.getNodeExecutable()
@@ -233,31 +240,74 @@ class ProcessManager {
   }
 
   /**
-   * Execute a command in a directory
-   * @param {string} command - Command to execute
-   * @param {Array<string>} args - Command arguments
+   * Resolve a node-family command to a spawn descriptor, falling back to the
+   * managed runtime (reuse → download once per session, progress forwarded)
+   * when embedded resolution fails. Only spawn/resolution failures trigger
+   * the fallback — non-zero exits of a working runtime never do.
+   * @param {'node'|'npm'|'npx'} command - Command name
+   * @param {Object} baseEnv - Base environment
+   * @param {string} processId - Process ID (for logging)
+   * @param {Object} [options] - Resolution options
+   * @param {boolean} [options.forceManaged=false] - Skip the embedded runtime
+   * @returns {Promise<{command: string, args: string[], env: Object, runtime: 'embedded'|'managed'}>} Spawn descriptor
+   */
+  async resolveRuntimeExecutable(command, baseEnv, processId, { forceManaged = false } = {}) {
+    if (!forceManaged) {
+      try {
+        const embedded = await this.resolveEmbeddedExecutable(command, baseEnv);
+        this.logger.info(`📦 Using embedded ${command} for process ${processId}`);
+        return { ...embedded, runtime: 'embedded' };
+      } catch (error) {
+        if (!this.nodeDetectionService) {
+          throw error;
+        }
+        this.logger.warn(`⚠️ Embedded ${command} unavailable (${error.message}); falling back to managed runtime`);
+      }
+    }
+    const managed = await this.resolveManagedExecutable(command, baseEnv);
+    this.logger.info(`📦 Using managed ${command} for process ${processId}`);
+    return { ...managed, runtime: 'managed' };
+  }
+
+  /**
+   * Resolve a node-family command to the managed runtime under
+   * userData/node-runtime, ensuring it is installed first.
+   * @param {'node'|'npm'|'npx'} command - Command name
+   * @param {Object} baseEnv - Base environment
+   * @returns {Promise<{command: string, args: string[], env: Object}>} Spawn descriptor
+   */
+  async resolveManagedExecutable(command, baseEnv) {
+    await this.fallbackService.ensureManagedRuntime();
+    const runtimeManager = this.nodeDetectionService.runtimeManager;
+    const commandPath = command === 'node'
+      ? runtimeManager.getNodeExecutablePath()
+      : command === 'npm'
+        ? runtimeManager.getNpmExecutablePath()
+        : runtimeManager.getNpxExecutablePath();
+    return {
+      command: commandPath,
+      args: [],
+      env: this.nodeDetectionService.getManagedRuntimeEnv(baseEnv)
+    };
+  }
+
+  /**
+   * Spawn a command, track it, and stream stdout/stderr to sendOutput.
+   * Rejects with an isStartupError-tagged Error when the process never
+   * spawned (used by executeCommand to trigger the managed fallback).
+   * @param {string} actualCommand - Executable path
+   * @param {string[]} prefixArgs - Runtime prefix arguments (e.g. npm-cli.js)
+   * @param {string[]} args - User command arguments
+   * @param {Object} env - Child environment
    * @param {string} cwd - Working directory
    * @param {string} processId - Process ID for tracking
    * @param {Function} sendOutput - Output callback
+   * @param {boolean} viaEmbeddedRuntime - Spawn through spawnNodeChild (env scrub)
    * @returns {Promise<void>}
    */
-  executeCommand(command, args, cwd, processId, sendOutput) {
+  runTrackedCommand(actualCommand, prefixArgs, args, env, cwd, processId, sendOutput, viaEmbeddedRuntime) {
     return new Promise(async (resolve, reject) => {
-      let actualCommand = command;
-      let actualArgs = args;
-      let env = { ...process.env };
-      const isNodeFamily = command === 'node' || command === 'npm' || command === 'npx';
-
-      // Route node-family commands through the embedded runtime
-      if (isNodeFamily) {
-        const embedded = await this.resolveEmbeddedExecutable(command, env);
-        this.logger.info(`📦 Using embedded ${command} for process ${processId}`);
-        actualCommand = embedded.command;
-        actualArgs = [...embedded.args, ...args];
-        env = embedded.env;
-      }
-
-
+      const actualArgs = [...prefixArgs, ...args];
       this.logger.info(`🚀 Executing: ${actualCommand} ${actualArgs.join(' ')} in ${cwd}`);
 
       try {
@@ -270,11 +320,14 @@ class ProcessManager {
           killSignal: 'SIGTERM',
           cleanup: true
         };
-        const subprocess = isNodeFamily
+        const subprocess = viaEmbeddedRuntime
           ? this.embeddedRuntimeService.spawnNodeChild(actualCommand, actualArgs, spawnOptions)
           : execa(actualCommand, actualArgs, spawnOptions);
-        
+
         activeProcesses[processId] = subprocess;
+
+        let spawned = false;
+        subprocess.once('spawn', () => { spawned = true; });
 
         // Handle stdout
         subprocess.stdout?.on('data', (data) => {
@@ -289,6 +342,10 @@ class ProcessManager {
         // Handle process completion
         subprocess.on('exit', (code, signal) => {
           delete activeProcesses[processId];
+          if (!spawned) {
+            reject(Object.assign(new Error('Command failed to spawn'), { isStartupError: true }));
+            return;
+          }
           if (code === 0) {
             resolve();
           } else if (signal) {
@@ -301,6 +358,10 @@ class ProcessManager {
         // Handle process errors
         subprocess.on('error', (err) => {
           delete activeProcesses[processId];
+          if (!spawned) {
+            reject(Object.assign(new Error(`Failed to start command: ${err.message}`), { isStartupError: true }));
+            return;
+          }
           reject(`Failed to start command: ${err.message}`);
         });
 
@@ -309,6 +370,42 @@ class ProcessManager {
         reject(`Failed to execute command: ${error.message}`);
       }
     });
+  }
+
+  /**
+   * Execute a command in a directory
+   * @param {string} command - Command to execute
+   * @param {Array<string>} args - Command arguments
+   * @param {string} cwd - Working directory
+   * @param {string} processId - Process ID for tracking
+   * @param {Function} sendOutput - Output callback
+   * @returns {Promise<void>}
+   */
+  async executeCommand(command, args, cwd, processId, sendOutput) {
+    const isNodeFamily = command === 'node' || command === 'npm' || command === 'npx';
+    const baseEnv = { ...process.env };
+
+    if (!isNodeFamily) {
+      return this.runTrackedCommand(command, [], args, baseEnv, cwd, processId, sendOutput, false);
+    }
+
+    const descriptor = await this.resolveRuntimeExecutable(command, baseEnv, processId);
+
+    try {
+      return await this.runTrackedCommand(
+        descriptor.command, descriptor.args, args, descriptor.env, cwd, processId, sendOutput,
+        descriptor.runtime === 'embedded'
+      );
+    } catch (error) {
+      // Startup failure of the embedded runtime (process never spawned) is
+      // the only failure class that triggers the managed fallback here.
+      if (descriptor.runtime !== 'embedded' || !error.isStartupError) {
+        throw error;
+      }
+      this.logger.warn(`⚠️ Embedded ${command} failed to start (${error.message}); retrying with managed runtime`);
+      const managed = await this.resolveRuntimeExecutable(command, baseEnv, processId, { forceManaged: true });
+      return this.runTrackedCommand(managed.command, managed.args, args, managed.env, cwd, processId, sendOutput, false);
+    }
   }
 
   /**
@@ -378,16 +475,12 @@ class ProcessManager {
       // Create a custom spawn to handle the dev server process
       const { spawn } = require('child_process');
       
-      // Resolve npm via the embedded runtime (same path as executeCommand)
-      let actualNpmPath = 'npm';
-      let npmArgs = ['run', 'dev'];
+      // Resolve npm via the embedded runtime, with managed-runtime fallback
       let env = { ...process.env };
-
-      const embedded = await this.resolveEmbeddedExecutable('npm', env);
-      this.logger.info(`📦 Using embedded npm for dev server ${projectId}`);
-      actualNpmPath = embedded.command;
-      npmArgs = [...embedded.args, 'run', 'dev'];
-      env = embedded.env;
+      const runtime = await this.resolveRuntimeExecutable('npm', env, `dev-${projectId}`);
+      const actualNpmPath = runtime.command;
+      const npmArgs = [...runtime.args, 'run', 'dev'];
+      env = runtime.env;
 
 
       this.logger.info(`🚀 Starting dev server: ${actualNpmPath} run dev in ${repoDirPath}`);
