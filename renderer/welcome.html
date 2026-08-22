@@ -325,14 +325,14 @@
                 <div x-show="currentStep === 3" x-transition:enter="transition ease-out duration-500" x-transition:enter-start="opacity-0 transform scale-95" x-transition:enter-end="opacity-100 transform scale-100" class="text-center fade-in">
                     <div class="mb-10">
                         <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-surface-dark mb-6">
-                            <span class="material-symbols-outlined text-4xl text-primary">cloud_download</span>
+                            <span class="material-symbols-outlined text-4xl" :class="embeddedReady() ? 'text-success' : 'text-primary'" x-text="embeddedReady() ? 'check_circle' : 'cloud_download'"></span>
                         </div>
-                        <h1 class="text-4xl font-black text-text-dark mb-4" x-text="$store.i18n.t('welcome.download_nodejs_title')"></h1>
-                        <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed whitespace-pre-line" x-text="$store.i18n.t('welcome.download_nodejs_subtitle')">
+                        <h1 class="text-4xl font-black text-text-dark mb-4" x-text="embeddedReady() ? $store.i18n.t('welcome.embedded_ready_title') : $store.i18n.t('welcome.download_nodejs_title')"></h1>
+                        <p class="text-xl text-muted-dark max-w-2xl mx-auto leading-relaxed whitespace-pre-line" x-text="embeddedReady() ? $store.i18n.t('welcome.embedded_ready_subtitle') : $store.i18n.t('welcome.download_nodejs_subtitle')">
                         </p>
                     </div>
 
-                    <div class="bg-surface-dark rounded-lg p-6 max-w-2xl mx-auto mb-6 text-left">
+                    <div x-show="!embeddedReady()" class="bg-surface-dark rounded-lg p-6 max-w-2xl mx-auto mb-6 text-left">
                         <div class="flex items-start gap-4">
                             <span class="material-symbols-outlined text-primary text-3xl">verified_user</span>
                             <div>
@@ -357,30 +357,30 @@
                         </div>
                     </div>
 
-                    <template x-if="nodeDetectionResult && nodeDetectionResult.runtime && nodeDetectionResult.runtime.installed && nodeDetectionResult.runtime.isValid">
+                    <template x-if="runtimePronto()">
                         <div class="bg-surface-card border border-border-subtle rounded-lg p-6 max-w-xl mx-auto mb-4 text-left">
                             <div class="flex items-center gap-3 mb-3">
                                 <span class="material-symbols-outlined text-success text-xl">check_circle</span>
-                                <p class="font-medium text-success" x-text="$store.i18n.t('welcome.node_installed')"></p>
+                                <p class="font-medium text-success" x-text="embeddedReady() ? $store.i18n.t('welcome.embedded_node_ready') : $store.i18n.t('welcome.node_installed')"></p>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                     <p class="text-xs uppercase text-muted-dark">Node.js</p>
-                                    <p class="font-mono text-lg text-text-dark" x-text="`v${nodeDetectionResult.runtime.version}`"></p>
+                                    <p class="font-mono text-lg text-text-dark" x-text="`v${runtimeDisplay().version}`"></p>
                                 </div>
                                 <div>
                                     <p class="text-xs uppercase text-muted-dark">npm</p>
-                                    <p class="font-mono text-lg text-text-dark" x-text="nodeDetectionResult.runtime.npmVersion || $store.i18n.t('common.loading')"></p>
+                                    <p class="font-mono text-lg text-text-dark" x-text="runtimeDisplay().npmVersion || $store.i18n.t('common.loading')"></p>
                                 </div>
                                 <div class="md:col-span-2">
                                     <p class="text-xs uppercase text-muted-dark">Path</p>
-                                    <p class="text-sm text-muted-dark" x-text="nodeDetectionResult.runtime.nodePath"></p>
+                                    <p class="text-sm text-muted-dark" x-text="runtimeDisplay().nodePath"></p>
                                 </div>
                             </div>
                         </div>
                     </template>
 
-                    <template x-if="nodeDetectionResult && (!nodeDetectionResult.runtime || !nodeDetectionResult.runtime.installed || !nodeDetectionResult.runtime.isValid)">
+                    <template x-if="nodeDetectionResult && shouldInstallRuntime()">
                         <div class="bg-yellow-900/20 border border-yellow-700 rounded-lg p-6 max-w-xl mx-auto mb-4 text-left">
                             <div class="flex items-center gap-3">
                                 <span class="material-symbols-outlined text-yellow-500 text-xl">info</span>
@@ -507,7 +507,8 @@
                                 <span x-text="installingNode ? $store.i18n.t('welcome.installing') : $store.i18n.t('welcome.download_install_nodejs')"></span>
                             </button>
 
-                            <button @click="detectNode()" 
+                            <button @click="detectNode()"
+                                    x-show="!embeddedReady()"
                                     :disabled="isDetectingNode"
                                     class="bg-surface-secondary hover:bg-surface-dark text-white font-semibold py-2 px-6 rounded-lg transition-colors duration-200 disabled:opacity-60 disabled:cursor-not-allowed">
                                 <span x-text="$store.i18n.t('welcome.verify_again')"></span>
@@ -700,12 +701,35 @@
                     }
                 },
 
+                embeddedReady() {
+                    return this.nodeDetectionResult?.recommendation === 'embedded_ready';
+                },
+
                 runtimePronto() {
+                    if (this.embeddedReady()) return true;
                     const runtime = this.nodeDetectionResult?.runtime;
                     return !!(runtime && runtime.installed && runtime.isValid);
                 },
 
+                runtimeDisplay() {
+                    const embedded = this.nodeDetectionResult?.embedded;
+                    if (this.embeddedReady() && embedded) {
+                        return {
+                            version: embedded.version,
+                            npmVersion: embedded.npmVersion,
+                            nodePath: embedded.nodePath
+                        };
+                    }
+                    const runtime = this.nodeDetectionResult?.runtime || {};
+                    return {
+                        version: runtime.version,
+                        npmVersion: runtime.npmVersion,
+                        nodePath: runtime.nodePath
+                    };
+                },
+
                 shouldInstallRuntime() {
+                    if (this.embeddedReady()) return false;
                     const runtime = this.nodeDetectionResult?.runtime;
                     return !runtime || !runtime.installed || !runtime.isValid;
                 },
