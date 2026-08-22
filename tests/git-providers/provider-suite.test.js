@@ -301,24 +301,16 @@ function describeGitProvider(name, factory) {
         .toEqual([1, 0, 1]);
     });
 
-    it('statusMatrix: staged deletion (remove) clears the stage (workdir divergence documented)', async () => {
+    it('statusMatrix: staged deletion (remove) clears the stage, workdir file PRESERVED', async () => {
       const dir = await matrixFixtureRepo();
       await provider.remove(dir, 'tracked.txt');
       const row = rowFor(await provider.statusMatrix(dir), 'tracked.txt');
-      // COMMON contract: the deletion is staged (stage column 0).
-      expect(row[2]).toBe(0);
-      // DOCUMENTED DIVERGENCE (reported in the notepad issues.md — NOT
-      // fixed in src/ per task guardrails): iso-git's remove is
-      // index-only (workdir file kept → workdir column 1, T17 'rm
-      // --cached' row [1,1,0]); DugiteProvider maps remove to
-      // `git rm -f` (workdir file deleted → [1,0,0]).
-      if (name === 'isomorphic-git') {
-        expect(fs.existsSync(path.join(dir, 'tracked.txt'))).toBe(true);
-        expect(row).toEqual([1, 1, 0]);
-      } else {
-        expect(fs.existsSync(path.join(dir, 'tracked.txt'))).toBe(false);
-        expect(row).toEqual([1, 0, 0]);
-      }
+      // UNIFIED contract (post 7afc290): remove is index-only
+      // (`git rm --cached -f` parity with iso-git 1.38.4) — the workdir
+      // file survives and the row is the 'rm --cached' shape [1,1,0]
+      // in BOTH providers.
+      expect(fs.existsSync(path.join(dir, 'tracked.txt'))).toBe(true);
+      expect(row).toEqual([1, 1, 0]);
     });
 
     it('merge conflict throws GitError(conflict); CLI-conflicted repo reads [1,2,3] in statusMatrix', async () => {

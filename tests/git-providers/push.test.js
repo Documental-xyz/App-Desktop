@@ -296,19 +296,6 @@ describe('retry parity — gitOperations._pushWithRetry over dugite', () => {
   it('non-fast-forward through the REAL dugite provider throws immediately (no retry)', async () => {
     const ops = new GitOperations({ logger: null, databaseManager: null });
     const dugite = new DugiteProvider();
-    // ADAPTER (JUSTIFIED — see notepad issues.md): the wrapper sends its
-    // legacy iso-git opts shape ({url, ref, remoteRef, onAuth}); the iso
-    // provider passes `ref` through natively, but DugiteProvider.push
-    // only reads the contract key `branch` — and a bare `remoteRef`
-    // maps to a DELETE refspec (`:refs/heads/<x>`) in git CLI. Mapping
-    // ref→branch here keeps the wrapper's retry/classification logic
-    // (the actual subject) running over the REAL dugite provider while
-    // the provider-side translation bug is reported, not worked around
-    // in src/.
-    ops.git = {
-      push: (dir, opts) => dugite.push(dir, { ...opts, branch: opts.ref ?? opts.branch }),
-    };
-
     const remote = await createHttpRemote(base);
     try {
       const dir = path.join(base, 'work');
@@ -317,7 +304,9 @@ describe('retry parity — gitOperations._pushWithRetry over dugite', () => {
       await dugite.add(dir, 'w.txt');
       await dugite.commit(dir, 'w');
 
-      // Wrapper publishes current branch → remoteRef ('preview' flow).
+      // Wrapper publishes current branch → remoteRef ('preview' flow);
+      // `ref` is a native alias of `branch` in DugiteProvider.push
+      // (post 7afc290) — no adapter needed anymore.
       await ops._pushWithRetry(dir, remote.url, null, 'main', 'preview', () => {});
       expect(await remoteBranches(remote.bare)).toContain('preview');
 
