@@ -607,40 +607,172 @@ class DugiteProvider {
   }
 
   /**
-   * Get the working-tree state matrix. Returns rows
-   * `[filepath, head, workdir, stage]` in the isomorphic-git format
-   * (0=absent, 1=present/identical to HEAD, 2=present but modified),
-   * mapped from `git status --porcelain=v2 -z`:
+   * Get the working-tree state matrix — REAL parity with isomorphic-git's
+   * statusMatrix (T17). Rows `[filepath, head, workdir, stage]`.
    *
-   *   - `1 <XY> ...` entries: X is index-vs-HEAD, Y is workdir-vs-index
-   *     (' ' = unmodified). head = 0 iff X==='A' (added); stage = 0 iff
-   *     X==='D' (staged deletion), 1 iff X===' ', else 2; workdir = 0
-   *     iff Y==='D', = stage value iff Y===' ', else 2.
-   *   - `2` (rename) entries: same mapping, path = destination.
-   *   - `u` (unmerged) entries: the same XY mapping applied char-wise —
-   *     APPROXIMATION of iso-git's conflict rows (documented limitation;
-   *     fine-grained parity is T17's scope).
-   *   - `?` (untracked) → `[path, 0, 2, 0]` (iso-git's documented
-   *     untracked row).
-   *   - `!` (ignored) → skipped (iso-git excludes ignored files).
+   * iso-git builds rows from the OIDs of the three trees (HEAD, WORKDIR,
+   * STAGE) via `entry = [undefined, headOid, workdirOid, stageOid];
+   * entry.map(v => entry.indexOf(v))` — so a value is the rank of the
+   * first equal OID in the triple: 0 = absent, 1/2 = distinct present
+   * OIDs, and 3 can occur (e.g. staged add + workdir-deleted →
+   * `[file,0,0,3]`; modify/modify conflict → `[file,1,2,3]`). This
+   * implementation reconstructs the same triple from git plumbing:
    *
-   * LIMITATION (documented): porcelain v2 lists only CHANGED files —
-   * rows where head===workdir===stage===1 are absent. iso-git includes
-   * them; callers filter those out anyway (git.js checks row[1]!==row[2]
-   * etc.). `filter` callbacks are not supported. Fine parity is T17.
+   *   - head:   `git ls-tree -r -z HEAD`   (unborn HEAD → empty tree,
+   *     mirroring iso-git's getHeadTree returning [] on NotFoundError)
+   *   - stage: `git ls-files -s -z`        (first entry per path = the
+   *     LOWEST stage — iso-git's GitIndex._addEntry keeps the first
+   *     index entry per path, and index entries are sorted by stage,
+   *     so conflicted paths report the stage-1/base OID)
+   *   - workdir: `git status --porcelain=v2 -z -uall --no-renames`
+   *     tells presence/cleanliness (`-uall` because porcelain's default
+   *     collapses untracked directories while iso-git lists each file;
+   *     `--no-renames` because iso-git has no rename detection — a
+   *     rename is delete+add there). Clean-vs-index files reuse the
+   *     stage OID (iso-git's stat-cache shortcut); files with workdir
+   *     changes get their real blob OID via `git hash-object` (batched);
+   *     paths absent from both HEAD and index reuse iso-git's '42'
+   *     placeholder (any OID works — only equality matters).
+   *
+   * Ignored files are skipped (iso-git's default `ignored: false`).
+   * `filter`/`filepaths` opts are not supported (callers don't use them).
    *
    * @param {string} path - Local repository directory
    * @param {Record<string, unknown>} [opts] - Ignored (no cache/filter equivalent)
    * @returns {Promise<Array<[string, number, number, number]>>}
    */
   async statusMatrix(path, _opts = {}) {
-    const stdout = await this._run(
+    // ls-tree on an unborn HEAD exits 128 ("Not a valid object name") —
+    // that is the empty-tree case, not an error. Everything else throws.
+    const headPromise = this._run(
       'statusMatrix',
-      ['status', '--porcelain=v2', '-z'],
+      ['ls-tree', '-r', '-z', 'HEAD'],
       path,
       { repoPath: path }
-    );
-    return parsePorcelainV2(stdout);
+    ).catch((err) => {
+      const msg = `${err?.stderr || ''}\n${err?.message || ''}`;
+      if (/Not a valid object name|unknown revision|ambiguous argument/i.test(msg)) {
+        return '';
+      }
+      throw err;
+    });
+    const [headOut, indexOut, statusOut] = await Promise.all([
+      headPromise,
+      this._run('statusMatrix', ['ls-files', '-s', '-z'], path, { repoPath: path }),
+      this._run(
+        'statusMatrix',
+        ['status', '--porcelain=v2', '-z', '-uall', '--no-renames'],
+        path,
+        { repoPath: path }
+      ),
+    ]);
+
+    // path → HEAD blob OID ('<mode> <type> <oid>\t<path>')
+    const headMap = new Map();
+    for (const entry of String(headOut || '').split('\0')) {
+      if (!entry) continue;
+      const [meta, filepath] = entry.split('\t');
+      const oid = meta.split(' ')[2];
+      if (oid && filepath) headMap.set(filepath, oid);
+    }
+
+    // path → index OID, FIRST entry per path wins ('<mode> <oid> <stage>\t<path>').
+    // ls-files output is sorted (path, then stage) → first = lowest stage.
+    const indexMap = new Map();
+    for (const entry of String(indexOut || '').split('\0')) {
+      if (!entry) continue;
+      const [meta, filepath] = entry.split('\t');
+      if (!indexMap.has(filepath)) {
+        indexMap.set(filepath, meta.split(' ')[1]);
+      }
+    }
+
+    // path → porcelain workdir facts
+    const statusMap = parsePorcelainV2Workdir(statusOut);
+
+    // Union of all paths across the three trees.
+    const allPaths = new Set([
+      ...headMap.keys(),
+      ...indexMap.keys(),
+      ...statusMap.keys(),
+    ]);
+
+    // paths whose workdir content must be hashed (modified/conflicted)
+    const toHash = [];
+    /** @type {Map<string, string|undefined>} filepath → workdir OID */
+    const workdirOids = new Map();
+
+    for (const filepath of allPaths) {
+      const info = statusMap.get(filepath);
+      if (info && info.absentFromWorkdir) {
+        workdirOids.set(filepath, undefined);
+        continue;
+      }
+      if (!info && !indexMap.has(filepath)) {
+        // Not in status, not in index → not in the workdir. (A HEAD-only
+        // path whose staged deletion+workdir deletion happened between
+        // the two plumbing calls — porcelain would list it otherwise.)
+        workdirOids.set(filepath, undefined);
+        continue;
+      }
+      const headOid = headMap.get(filepath);
+      const stageOid = indexMap.get(filepath);
+      if (headOid === undefined && stageOid === undefined) {
+        // iso-git placeholder ('42') — any OID works, only equality matters.
+        workdirOids.set(filepath, '42');
+        continue;
+      }
+      if (info && info.cleanVsIndex) {
+        // workdir content matches the index → stat-cache shortcut
+        workdirOids.set(filepath, stageOid);
+        continue;
+      }
+      // Modified (or conflicted — iso-git hashes: conflicted stage
+      // entries carry zeroed stats so compareStats never hits) → real OID.
+      toHash.push(filepath);
+    }
+
+    // Batch hash: `git hash-object -- p1 p2 ...` (no -w: compute only,
+    // object is not written). Output lines map 1:1 to the arg order.
+    if (toHash.length > 0) {
+      const CHUNK = 200;
+      for (let i = 0; i < toHash.length; i += CHUNK) {
+        const chunk = toHash.slice(i, i + CHUNK);
+        const stdout = await this._run(
+          'statusMatrix',
+          ['hash-object', '--', ...chunk],
+          path,
+          { repoPath: path }
+        );
+        const oids = String(stdout || '').split('\n').filter(Boolean);
+        if (oids.length !== chunk.length) {
+          throw new GitError({
+            operation: 'statusMatrix',
+            provider: PROVIDER_NAME,
+            exitCode: 1,
+            stderr: `hash-object returned ${oids.length} oids for ${chunk.length} paths`,
+          });
+        }
+        chunk.forEach((p, j) => workdirOids.set(p, oids[j]));
+      }
+    }
+
+    // iso-git row construction: [filepath, ...entry.indexOf ranks]
+    /** @type {Array<[string, number, number, number]>} */
+    const rows = [];
+    for (const filepath of allPaths) {
+      const entry = [
+        undefined,
+        headMap.get(filepath),
+        workdirOids.get(filepath),
+        indexMap.get(filepath),
+      ];
+      const result = entry.map((value) => entry.indexOf(value));
+      result.shift();
+      rows.push([filepath, ...result]);
+    }
+    rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return rows;
   }
 
   /**
@@ -1073,25 +1205,37 @@ function parseTimezoneOffset(offset) {
 }
 
 /**
- * Parse `git status --porcelain=v2 -z` output into isomorphic-git
- * statusMatrix rows [filepath, head, workdir, stage]. See the
- * statusMatrix JSDoc for the exact mapping and documented limitations.
+ * Extract per-path workdir facts from `git status --porcelain=v2 -z
+ * -uall --no-renames` output:
+ *
+ *   - `1 <XY>`: Y==='D' → deleted from workdir; Y unmodified ('.'/' ')
+ *     → workdir clean vs index; otherwise workdir differs from index.
+ *   - `2 <XY>` (rename dest): same Y logic; the NUL + origPath token
+ *     that follows a `2` record is consumed here (origPath only matters
+ *     for rename detection, which --no-renames disables).
+ *   - `u <XY>`: unmerged. `mW` (field 7) is the workdir mode — '0'
+ *     means no workdir file (e.g. DD/DU conflicts). Otherwise the
+ *     workdir holds conflict content that must be hashed.
+ *   - `?`: untracked (present, no index counterpart).
+ *   - `!`: ignored — not listed without --ignored, skipped anyway.
  *
  * @param {string} stdout - Raw porcelain v2 NUL-separated output
- * @returns {Array<[string, number, number, number]>}
+ * @returns {Map<string, {absentFromWorkdir: boolean, cleanVsIndex: boolean}>}
  * @private
  */
-function parsePorcelainV2(stdout) {
+function parsePorcelainV2Workdir(stdout) {
   const tokens = String(stdout || '').split('\0');
-  /** @type {Array<[string, number, number, number]>} */
-  const rows = [];
+  /** @type {Map<string, {absentFromWorkdir: boolean, cleanVsIndex: boolean}>} */
+  const facts = new Map();
+  const set = (filepath, absentFromWorkdir, cleanVsIndex) =>
+    facts.set(filepath, { absentFromWorkdir, cleanVsIndex });
   for (let i = 0; i < tokens.length; i++) {
     const entry = tokens[i];
     if (!entry || entry.startsWith('#')) {
       continue;
     }
     if (entry.startsWith('? ')) {
-      rows.push([entry.slice(2), 0, 2, 0]);
+      set(entry.slice(2), false, false);
       continue;
     }
     if (entry.startsWith('! ')) {
@@ -1099,34 +1243,19 @@ function parsePorcelainV2(stdout) {
     }
     const fields = entry.split(' ');
     const kind = fields[0];
-    let xy = null;
-    let filepath = null;
+    const y = fields[1] ? fields[1][1] : '';
+    const unmod = (c) => c === ' ' || c === '.';
     if (kind === '1') {
-      xy = fields[1];
-      filepath = fields.slice(8).join(' ');
+      set(fields.slice(8).join(' '), y === 'D', unmod(y));
     } else if (kind === '2') {
-      xy = fields[1];
       // `2` records are followed by a NUL + origPath token — consume it.
-      filepath = fields.slice(9).join(' ');
+      set(fields.slice(9).join(' '), y === 'D', unmod(y));
       i++;
     } else if (kind === 'u') {
-      xy = fields[1];
-      filepath = fields.slice(10).join(' ');
+      set(fields.slice(10).join(' '), fields[6] === '0', false);
     }
-    if (!xy || !filepath) {
-      continue;
-    }
-    // porcelain v2 marks an unmodified side with '.' (or ' ')
-    const unmod = (c) => c === ' ' || c === '.';
-    const x = xy[0];
-    const y = xy[1];
-    const head = x === 'A' ? 0 : 1;
-    const stage = x === 'D' ? 0 : (unmod(x) ? 1 : 2);
-    const workdir = y === 'D' ? 0 : (unmod(y) ? stage : 2);
-    rows.push([filepath, head, workdir, stage]);
   }
-  rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return rows;
+  return facts;
 }
 
 /**
