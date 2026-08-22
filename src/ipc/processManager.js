@@ -12,6 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const { rimraf } = require('rimraf');
 const { PlatformService } = require('../main/services/platform/PlatformService');
+const { EmbeddedRuntimeService } = require('../main/services/embeddedRuntimeService');
+const nodeShimManager = require('../main/services/nodeShimManager');
 
 const fsp = fs.promises;
 
@@ -57,6 +59,9 @@ class ProcessManager {
     this.platformService = new PlatformService({ logger });
     /** @type {Function|undefined} Optional injection for tests — defaults to killProcessTree from require */
     this._killProcessTree = killProcessTree;
+    this.embeddedRuntimeService = new EmbeddedRuntimeService();
+    /** @type {Promise<string>|null} Cached ensureShims() result (per app session) */
+    this._shimsDirPromise = null;
     this.processesFile = this.platformService.joinPath(this.platformService.getHomeDirectory(), '.documental-processes.json');
     (async () => {
       await this.loadDocumentalProcesses();
@@ -191,6 +196,43 @@ class ProcessManager {
   }
 
   /**
+   * Resolve a node-family command (node/npm/npx) to the embedded runtime
+   * and build a child env with the shims dir prepended to PATH (so npm
+   * lifecycle scripts find `node`). Throws if the embedded CLI cannot be
+   * resolved — callers let the error propagate (fallback is Task 8).
+   * @param {'node'|'npm'|'npx'} command - Command name
+   * @param {Object} baseEnv - Base environment (usually a copy of process.env)
+   * @returns {Promise<{command: string, args: string[], env: Object}>} Spawn descriptor
+   */
+  async resolveEmbeddedExecutable(command, baseEnv) {
+    const svc = this.embeddedRuntimeService;
+    const descriptor = command === 'node'
+      ? svc.getNodeExecutable()
+      : command === 'npm'
+        ? svc.getNpmExecutable()
+        : svc.getNpxExecutable();
+
+    let shimsDir = null;
+    try {
+      if (!this._shimsDirPromise) {
+        this._shimsDirPromise = nodeShimManager.ensureShims();
+      }
+      shimsDir = await this._shimsDirPromise;
+    } catch (error) {
+      // Shims only affect `node` PATH lookups in lifecycle scripts; the
+      // spawn itself uses absolute paths, so continue without them.
+      this._shimsDirPromise = null;
+      this.logger.warn(`⚠️ Could not ensure node shims: ${error.message}`);
+    }
+
+    const env = { ...baseEnv };
+    if (shimsDir) {
+      env.PATH = shimsDir + path.delimiter + (env.PATH || '');
+    }
+    return { command: descriptor.command, args: descriptor.args, env };
+  }
+
+  /**
    * Execute a command in a directory
    * @param {string} command - Command to execute
    * @param {Array<string>} args - Command arguments
@@ -202,37 +244,24 @@ class ProcessManager {
   executeCommand(command, args, cwd, processId, sendOutput) {
     return new Promise(async (resolve, reject) => {
       let actualCommand = command;
+      let actualArgs = args;
       let env = { ...process.env };
+      const isNodeFamily = command === 'node' || command === 'npm' || command === 'npx';
 
-      // Prefer managed Node.js runtime when available
-      if (command === 'node' || command === 'npm' || command === 'npx') {
-        try {
-          const detection = await this.nodeDetectionService.detectNodeInstallation();
-          const runtime = detection.runtime;
-
-          if (runtime?.installed && runtime.isValid) {
-            this.logger.info(`📦 Using managed ${command} for process ${processId}`);
-
-            if (command === 'node' && runtime.nodePath) {
-              actualCommand = runtime.nodePath;
-            } else if (command === 'npm') {
-              actualCommand = runtime.npmPath || await this.nodeDetectionService.getPreferredNpmExecutable();
-            } else if (command === 'npx') {
-              actualCommand = runtime.npxPath || await this.nodeDetectionService.getPreferredNpxExecutable();
-            }
-
-            env = this.nodeDetectionService.getManagedRuntimeEnv(env);
-          }
-        } catch (error) {
-          this.logger.warn(`⚠️ Could not activate managed Node.js for ${command}, falling back to system: ${error.message}`);
-        }
+      // Route node-family commands through the embedded runtime
+      if (isNodeFamily) {
+        const embedded = await this.resolveEmbeddedExecutable(command, env);
+        this.logger.info(`📦 Using embedded ${command} for process ${processId}`);
+        actualCommand = embedded.command;
+        actualArgs = [...embedded.args, ...args];
+        env = embedded.env;
       }
 
 
-      this.logger.info(`🚀 Executing: ${actualCommand} ${args.join(' ')} in ${cwd}`);
+      this.logger.info(`🚀 Executing: ${actualCommand} ${actualArgs.join(' ')} in ${cwd}`);
 
       try {
-        const subprocess = execa(actualCommand, args, {
+        const spawnOptions = {
           cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -240,7 +269,10 @@ class ProcessManager {
           forceKillAfterDelay: 1500,
           killSignal: 'SIGTERM',
           cleanup: true
-        });
+        };
+        const subprocess = isNodeFamily
+          ? this.embeddedRuntimeService.spawnNodeChild(actualCommand, actualArgs, spawnOptions)
+          : execa(actualCommand, actualArgs, spawnOptions);
         
         activeProcesses[processId] = subprocess;
 
@@ -346,23 +378,16 @@ class ProcessManager {
       // Create a custom spawn to handle the dev server process
       const { spawn } = require('child_process');
       
-      // Get the proper npm path using the same logic as executeCommand
+      // Resolve npm via the embedded runtime (same path as executeCommand)
       let actualNpmPath = 'npm';
+      let npmArgs = ['run', 'dev'];
       let env = { ...process.env };
 
-      // Prefer managed runtime for dev server as well
-      try {
-        const detection = await this.nodeDetectionService.detectNodeInstallation();
-        const runtime = detection.runtime;
-        
-        if (runtime?.installed && runtime.isValid) {
-          this.logger.info(`📦 Using managed npm for dev server ${projectId}`);
-          actualNpmPath = runtime.npmPath || await this.nodeDetectionService.getPreferredNpmExecutable();
-          env = this.nodeDetectionService.getManagedRuntimeEnv(env);
-        }
-      } catch (error) {
-        this.logger.warn(`⚠️ Could not activate managed Node.js for dev server, falling back to system: ${error.message}`);
-      }
+      const embedded = await this.resolveEmbeddedExecutable('npm', env);
+      this.logger.info(`📦 Using embedded npm for dev server ${projectId}`);
+      actualNpmPath = embedded.command;
+      npmArgs = [...embedded.args, 'run', 'dev'];
+      env = embedded.env;
 
 
       this.logger.info(`🚀 Starting dev server: ${actualNpmPath} run dev in ${repoDirPath}`);
@@ -370,7 +395,7 @@ class ProcessManager {
       let spawnFailedEarly = false;
 
       try {
-        devProcess = execa(actualNpmPath, ['run', 'dev'], {
+        devProcess = this.embeddedRuntimeService.spawnNodeChild(actualNpmPath, npmArgs, {
           cwd: repoDirPath,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],

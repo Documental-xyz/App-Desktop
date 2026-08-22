@@ -1,5 +1,5 @@
 /**
- * @fileoverview Managed Node.js detection and installation service
+ * @fileoverview Node.js runtime detection service (embedded-first precedence)
  * @author Documental Team
  * @since 1.0.0
  */
@@ -8,9 +8,12 @@
 
 const { spawn } = require('child_process');
 const { NodeRuntimeManager } = require('./nodeRuntimeManager.js');
+const { EmbeddedRuntimeService } = require('./embeddedRuntimeService.js');
 
 /**
- * Handles discovery and installation of the managed Node.js runtime
+ * Handles discovery of Node.js runtimes with embedded-first precedence:
+ * (1) embedded Electron runtime → (2) managed runtime under userData/node-runtime
+ * (legacy users, preferred fallback) → (3) system node (informational only).
  */
 class NodeDetectionService {
   /**
@@ -21,24 +24,31 @@ class NodeDetectionService {
   constructor({ logger }) {
     this.logger = logger;
     this.runtimeManager = new NodeRuntimeManager({ logger });
+    this.embeddedRuntime = new EmbeddedRuntimeService();
+    // Gates managed/system runtimes only — the embedded runtime always satisfies app needs
     this.MIN_REQUIRED_MAJOR = 20;
   }
 
   /**
-   * Detect current runtime state and system Node availability
+   * Detect current runtime state (embedded, managed and system Node availability)
    * @returns {Promise<Object>} Detection payload
    */
   async detectNodeInstallation() {
-    this.logger.info('🔍 Verificando estado do Node.js gerenciado...');
+    this.logger.info('🔍 Verificando runtimes Node.js (embedded → gerenciado → sistema)...');
 
     try {
+      const embedded = this.getEmbeddedRuntimeInfo();
       const runtimeInfo = await this.runtimeManager.getRuntimeInfo();
       const systemNode = await this.checkSystemNode();
-      const recommendation = runtimeInfo.installed && runtimeInfo.isValid
-        ? 'managed_ready'
-        : 'install_required';
+
+      const recommendation = embedded.available
+        ? 'embedded_ready'
+        : runtimeInfo.installed && runtimeInfo.isValid
+          ? 'managed_ready'
+          : 'install_required';
 
       return {
+        embedded,
         runtime: this.normalizeRuntimeInfo(runtimeInfo),
         systemNode,
         recommendation
@@ -46,6 +56,7 @@ class NodeDetectionService {
     } catch (error) {
       this.logger.error('❌ Falha ao detectar Node.js:', error);
       return {
+        embedded: this.getEmbeddedRuntimeInfo(),
         runtime: this.normalizeRuntimeInfo(),
         systemNode: null,
         recommendation: 'error',
@@ -55,7 +66,67 @@ class NodeDetectionService {
   }
 
   /**
-   * Normalize runtime data for renderer consumption
+   * Collect embedded runtime info from the running process (no spawn needed)
+   * @returns {Object} Embedded runtime payload
+   */
+  getEmbeddedRuntimeInfo() {
+    const parsed = this.runtimeManager.parseVersion(process.versions.node || '');
+    const nodeAvailable = parsed.major > 0;
+
+    let npmPath = null;
+    let npxPath = null;
+    try {
+      npmPath = this.getEmbeddedToolPath('npm');
+    } catch (error) {
+      this.logger.warn('⚠️ npm empacotado não encontrado:', error.message);
+    }
+    try {
+      npxPath = this.getEmbeddedToolPath('npx');
+    } catch {
+      // npx is optional; npm alone still makes the embedded runtime usable
+    }
+
+    return {
+      available: nodeAvailable && Boolean(npmPath),
+      nodeAvailable,
+      npmAvailable: Boolean(npmPath),
+      version: parsed.clean,
+      npmVersion: this.getEmbeddedNpmVersion(),
+      nodePath: process.execPath,
+      npmPath,
+      npxPath,
+      major: parsed.major,
+      minor: parsed.minor,
+      patch: parsed.patch
+    };
+  }
+
+  /**
+   * Resolve a bundled tool path via the embedded runtime service (honors CUSTOM_NPM_PATH)
+   * @param {'npm'|'npx'} tool - Tool name
+   * @returns {string} Path to the tool entrypoint (CLI script or executable)
+   */
+  getEmbeddedToolPath(tool) {
+    const descriptor = tool === 'npm'
+      ? this.embeddedRuntime.getNpmExecutable()
+      : this.embeddedRuntime.getNpxExecutable();
+    return descriptor.args.length ? descriptor.args[0] : descriptor.command;
+  }
+
+  /**
+   * Best-effort bundled npm version lookup
+   * @returns {string|null} npm version or null
+   */
+  getEmbeddedNpmVersion() {
+    try {
+      return require('npm/package.json').version;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Normalize managed runtime data for renderer consumption
    * @param {import('./nodeRuntimeManager.js').RuntimeInfo} [runtimeInfo]
    * @returns {Object} Normalized runtime payload
    */
@@ -68,6 +139,7 @@ class NodeDetectionService {
         npmVersion: null,
         nodePath: null,
         npmPath: null,
+        npxPath: null,
         major: 0,
         minor: 0,
         patch: 0
@@ -89,7 +161,7 @@ class NodeDetectionService {
   }
 
   /**
-   * Install or update the managed Node runtime
+   * Install or update the managed Node runtime (on-demand fallback, Task 8)
    * @param {Object} [options] - Installation options
    * @param {boolean} [options.force=false] - Force reinstall
    * @param {Function} [options.onProgress] - Progress callback
@@ -101,43 +173,31 @@ class NodeDetectionService {
   }
 
   /**
-   * Get preferred Node executable (managed runtime)
+   * Get preferred Node executable (embedded Electron runtime)
    * @returns {Promise<string>} Executable path
    */
   async getPreferredNodeExecutable() {
-    const runtimeInfo = await this.runtimeManager.getRuntimeInfo();
-    if (!runtimeInfo.installed || !runtimeInfo.isValid || !runtimeInfo.nodePath) {
-      throw new Error('Node.js gerenciado não instalado. Conclua a etapa de download.');
-    }
-    return runtimeInfo.nodePath;
+    return this.embeddedRuntime.getNodeExecutable().command;
   }
 
   /**
-   * Get preferred npm executable (managed runtime)
-   * @returns {Promise<string>} npm path
+   * Get preferred npm executable (bundled npm via embedded runtime; honors CUSTOM_NPM_PATH)
+   * @returns {Promise<string>} npm entrypoint path
    */
   async getPreferredNpmExecutable() {
-    const runtimeInfo = await this.runtimeManager.getRuntimeInfo();
-    if (!runtimeInfo.installed || !runtimeInfo.isValid || !runtimeInfo.npmPath) {
-      throw new Error('npm gerenciado não está disponível. Reinstale o Node.js.');
-    }
-    return runtimeInfo.npmPath;
+    return this.getEmbeddedToolPath('npm');
   }
 
   /**
-   * Get preferred npx executable (managed runtime)
-   * @returns {Promise<string>} npx path
+   * Get preferred npx executable (bundled npx via embedded runtime; honors CUSTOM_NPM_PATH)
+   * @returns {Promise<string>} npx entrypoint path
    */
   async getPreferredNpxExecutable() {
-    const runtimeInfo = await this.runtimeManager.getRuntimeInfo();
-    if (!runtimeInfo.installed || !runtimeInfo.isValid) {
-      throw new Error('npx não está disponível. Reinstale o Node.js gerenciado.');
-    }
-    return this.runtimeManager.getNpxExecutablePath();
+    return this.getEmbeddedToolPath('npx');
   }
 
   /**
-   * Environment additions required when running managed Node/npm
+   * Environment additions required when running the managed Node/npm fallback
    * @param {NodeJS.ProcessEnv} [baseEnv=process.env] - Base environment
    * @returns {NodeJS.ProcessEnv} Environment variables
    */
@@ -146,7 +206,7 @@ class NodeDetectionService {
   }
 
   /**
-   * Discover system Node.js installation (if available)
+   * Discover system Node.js installation (informational only)
    * @returns {Promise<Object|null>} System node description
    */
   async checkSystemNode() {
