@@ -271,22 +271,33 @@ class DugiteProvider {
    * local branch to a differently-named remote branch — the temp-branch
    * publish flow) → `refs/heads/<branch>:refs/heads/<remoteRef>`.
    *
+   * `ref` is accepted as an alias of `branch` — `_pushWithRetry`
+   * (gitOperations.js) sends `ref` (iso-git's key) and the contract
+   * must not silently drop it. A refspec starting with `:` is a DELETE
+   * in the git CLI, so `remoteRef` without a branch resolves the
+   * current branch first (iso-git semantics: push HEAD to remoteRef);
+   * `HEAD` is used as the source when no branch is checked out.
+   *
    * @param {string} repoPath - Local repository directory
    * @param {import('../GitTypes').PushOptions & Record<string, unknown>} [opts]
    * @returns {Promise<void>}
    */
   async push(repoPath, opts = {}) {
     const {
-      auth, signal, remote = 'origin', branch, remoteRef, force = false,
+      auth, signal, remote = 'origin', branch, ref, remoteRef, force = false,
     } = opts;
+    const src = branch ?? ref;
     let refspec = null;
-    if (branch && remoteRef) {
-      refspec = `refs/heads/${branch}:refs/heads/${remoteRef}`;
-    } else if (branch) {
-      refspec = `refs/heads/${branch}`;
+    if (src && remoteRef) {
+      refspec = `refs/heads/${src}:refs/heads/${remoteRef}`;
+    } else if (src) {
+      refspec = `refs/heads/${src}`;
     } else if (remoteRef) {
-      // Mirror iso-git: remoteRef alone targets the current branch.
-      refspec = `:refs/heads/${remoteRef}`;
+      // Never `:refs/heads/<remoteRef>` — that is branch DELETION in
+      // the git CLI. iso-git pushes the current branch instead.
+      const current = await this._currentBranchName(repoPath);
+      const source = current ? `refs/heads/${current}` : 'HEAD';
+      refspec = `${source}:refs/heads/${remoteRef}`;
     }
     const args = ['push'];
     if (force) {
@@ -358,9 +369,10 @@ class DugiteProvider {
   }
 
   /**
-   * Remove file(s) from the index AND the working directory. iso-git's
-   * `remove` stages the deletion and deletes the workdir file; the CLI
-   * equivalent is `git rm -f` (`-f` because staged-but-modified files
+   * Remove file(s) from the index, KEEPING the working-directory copy —
+   * iso-git 1.38.4 `remove` is index-only (empirically [1,1,0] in the
+   * status matrix; the dual-provider suite pins that contract). CLI:
+   * `git rm --cached -f --` (`-f` because staged-but-modified files
    * would otherwise be rejected — iso-git has no such guard).
    *
    * @param {string} path - Local repository directory
@@ -370,7 +382,12 @@ class DugiteProvider {
    */
   async remove(path, files, _opts = {}) {
     const list = Array.isArray(files) ? files : [files];
-    await this._run('remove', ['rm', '-f', '--', ...list], path, { repoPath: path });
+    await this._run(
+      'remove',
+      ['rm', '--cached', '-f', '--', ...list],
+      path,
+      { repoPath: path }
+    );
   }
 
   /**
