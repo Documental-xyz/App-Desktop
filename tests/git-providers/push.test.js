@@ -40,6 +40,7 @@ import {
   advanceRemoteHead,
   remoteHead,
   remoteBranches,
+  gitSetup,
   initLocalRepo,
   providersUnderTest,
   providerFactory,
@@ -268,6 +269,74 @@ function describePushProvider(name, factory) {
         await closeHole();
       }
     }, 60_000);
+
+    // ─── Regression specs: post 7afc290 (dugite remoteRef semantics) ─────────
+
+    /** oid of a named branch on the bare remote */
+    async function remoteBranchOid(bare, ref) {
+      return (await gitSetup(['rev-parse', `refs/heads/${ref}`], bare)).stdout.trim();
+    }
+
+    it('regression 7afc290: push {remoteRef, ref} creates the alias branch WITHOUT deleting the source', async () => {
+      const { server, bare, dir } = await clonedWorkspace();
+      try {
+        fs.writeFileSync(path.join(dir, 'alias.txt'), 'alias\n');
+        await provider.add(dir, 'alias.txt');
+        const oid = await provider.commit(dir, 'alias source commit');
+        await provider.push(dir, { branch: 'main' });
+
+        // Publish flow: main → preview. The source branch must survive.
+        await provider.push(dir, { remoteRef: 'preview', ref: 'main' });
+
+        const branches = await remoteBranches(bare);
+        expect(branches).toContain('preview');
+        expect(branches).toContain('main');
+        expect(await remoteBranchOid(bare, 'preview')).toBe(oid);
+        expect(await remoteBranchOid(bare, 'main')).toBe(oid);
+      } finally {
+        await new Promise((r) => server.close(r));
+      }
+    });
+
+    it('regression 7afc290: push {remoteRef} alone pushes the CURRENT branch to the target ref', async () => {
+      const { server, bare, dir } = await clonedWorkspace();
+      try {
+        fs.writeFileSync(path.join(dir, 'pub.txt'), 'publish\n');
+        await provider.add(dir, 'pub.txt');
+        const oid = await provider.commit(dir, 'publish current branch');
+
+        // No explicit ref/branch: the push source falls back to the
+        // checked-out branch (main).
+        await provider.push(dir, { remoteRef: 'publish-tmp' });
+
+        expect(await remoteBranches(bare)).toContain('publish-tmp');
+        expect(await remoteBranchOid(bare, 'publish-tmp')).toBe(oid);
+      } finally {
+        await new Promise((r) => server.close(r));
+      }
+    });
+
+    it('regression 7afc290: plain {branch} push against an existing remote main fast-forwards and does NOT delete it', async () => {
+      const { server, bare, dir } = await clonedWorkspace();
+      try {
+        fs.writeFileSync(path.join(dir, 'p.txt'), 'p\n');
+        await provider.add(dir, 'p.txt');
+        await provider.commit(dir, 'p');
+        await provider.push(dir, { branch: 'main' });
+
+        // Remote already has main: a second plain branch push must
+        // fast-forward it, never delete the ref.
+        fs.writeFileSync(path.join(dir, 'q.txt'), 'q\n');
+        await provider.add(dir, 'q.txt');
+        const oid = await provider.commit(dir, 'q');
+        await provider.push(dir, { branch: 'main' });
+
+        expect(await remoteBranches(bare)).toContain('main');
+        expect(await remoteBranchOid(bare, 'main')).toBe(oid);
+      } finally {
+        await new Promise((r) => server.close(r));
+      }
+    });
   });
 }
 
