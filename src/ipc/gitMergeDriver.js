@@ -1,5 +1,6 @@
 /**
- * @fileoverview Custom merge driver implementing -X theirs strategy for isomorphic-git
+ * @fileoverview Custom merge driver implementing -X theirs strategy.
+ * Used as the `mergeDriver` option of the provider merge operation.
  * @author Documental Team
  * @since 1.0.0
  */
@@ -44,39 +45,33 @@ function theirsMergeDriver({ branches, contents, path }) {
  * Fallback para arquivos binários em conflito.
  * Lê o blob do lado theirs (publicador) e grava no working tree + index.
  *
- * Sequência (verificada via docs isomorphic-git v1.38.4):
- *   1. readBlob(oid=theirsOid, filepath) → bytes do blob no commit theirs
+ * Sequência:
+ *   1. gitService.readBlob(dir, theirsOid, { filepath }) → bytes do blob no commit theirs
  *   2. fs.writeFileSync(dir/filepath)    → materializa no working tree
  *      (necessário porque git.add exige o arquivo no working tree)
- *   3. git.add(filepath)                → hasheia, armazena no object store,
+ *   3. gitService.add(dir, filepath)     → hasheia, armazena no object store,
  *                                          e atualiza o index
  *
  * Nota: writeBlob NÃO atualiza working tree nem index, por isso não é usado aqui.
  *       git.add faz tudo (hash + store + index) a partir do arquivo no working tree.
  *
- * @param {object} gitMod - instância isomorphic-git (require('isomorphic-git'))
- * @param {object} fsMod - filesystem module (Node fs ou fsClient do isomorphic)
+ * @param {import('../git/GitService.js').GitService} gitService - GitService facade
  * @param {string} dir - diretório do repositório (working tree root)
  * @param {string} filepath - caminho do arquivo relativo ao repo
  * @param {string} theirsOid - SHA do commit/tree/blob theirs de onde extrair o blob
  * @returns {Promise<void>}
  * @throws {Error} se theirsOid ou filepath não existirem, ou falha de I/O
  */
-async function resolveBinaryTheirs(gitMod, fsMod, dir, filepath, theirsOid) {
+async function resolveBinaryTheirs(gitService, dir, filepath, theirsOid) {
   // 1. Lê o blob do lado theirs
-  const { blob } = await gitMod.readBlob({
-    fs: fsMod,
-    dir,
-    oid: theirsOid,
-    filepath,
-  });
+  const { blob } = await gitService.readBlob(dir, theirsOid, { filepath });
 
   // 2. Escreve no working tree (git.add exige arquivo presente no working dir)
   const fullPath = path.join(dir, filepath);
-  fsMod.writeFileSync(fullPath, Buffer.from(blob));
+  fs.writeFileSync(fullPath, Buffer.from(blob));
 
   // 3. Adiciona ao index (hash + object store + index em um passo)
-  await gitMod.add({ fs: fsMod, dir, filepath });
+  await gitService.add(dir, filepath);
 }
 
 module.exports = { theirsMergeDriver, resolveBinaryTheirs };

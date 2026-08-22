@@ -42,11 +42,11 @@ const {
 })();
 
 // Resilient import: GitSafety wrapper for destructive ops (backup + recover).
-const { GitSafety: _GitSafetyClass } = (() => {
+const { GitSafety: _GitSafetyClass, createObjectStyleOps: _createObjectStyleOps } = (() => {
   try {
     return require('./gitSafety.js');
   } catch (_e) {
-    return { GitSafety: null };
+    return { GitSafety: null, createObjectStyleOps: null };
   }
 })();
 
@@ -143,6 +143,20 @@ class GitHandlers {
       this._gitModuleCache = await import('isomorphic-git');
     }
     return this._gitModuleCache;
+  }
+
+  /**
+   * Memoized object-style ops adapter over the GitService facade, consumed
+   * by the legacy GitSafety object-style helpers (createObjectStyleOps).
+   * @returns {object|null} adapter, or null when gitSafety.js failed to load
+   */
+  _safetyOps() {
+    if (!this._safetyOpsCache) {
+      this._safetyOpsCache = _createObjectStyleOps
+        ? _createObjectStyleOps(this.git)
+        : null;
+    }
+    return this._safetyOpsCache;
   }
 
   async _getHttp() {
@@ -1252,7 +1266,7 @@ class GitHandlers {
                     : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
                   for (const filepath of conflictFiles) {
                     try {
-                      await resolveBinaryTheirs(await this._getGit(), require('fs'), projectPath, filepath, localSha);
+                      await resolveBinaryTheirs(this.git, projectPath, filepath, localSha);
                     } catch (resolveErr) {
                       this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
                     }
@@ -1325,7 +1339,7 @@ class GitHandlers {
         try {
           if (this.gitSafety) {
             const result = await this.gitSafety._safeResetOrCheckout(
-              await this._getGit(), require('fs'), projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
+              this._safetyOps(), require('fs'), projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
             );
             backupBranch = result.backupBranch;
           } else {
@@ -1340,7 +1354,7 @@ class GitHandlers {
       this._gitCache = {};
 
       if (backupBranch && this.gitSafety) {
-        await this.gitSafety.cleanupBackupBranch(await this._getGit(), require('fs'), projectPath, backupBranch);
+        await this.gitSafety.cleanupBackupBranch(this._safetyOps(), require('fs'), projectPath, backupBranch);
         backupBranch = null;
       }
 
@@ -1365,21 +1379,20 @@ class GitHandlers {
     } finally {
       if (tempBranchCreated) {
         try {
-          const gitMod2 = await this._getGit();
           this._gitCache = {};
-          try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch }); }
+          try { await this.git.checkout(projectPath, targetBranch); }
           catch (_e) {
-            try { await gitMod2.checkout({ fs, dir: projectPath, ref: targetBranch, force: true }); }
+            try { await this.git.checkout(projectPath, targetBranch, { force: true }); }
             catch (_e2) { /* ignore */ }
           }
           try {
             if (this.gitSafety) {
-              await this.gitSafety._safeResetOrCheckout(gitMod2, fs, projectPath, `origin/${targetBranch}`);
+              await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${targetBranch}`);
             } else {
               await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
             }
           } catch (_e2) { /* origin ref may not exist */ }
-          try { await gitMod2.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e3) { /* ignore */ }
+          try { await this.git.deleteBranch(projectPath, tempBranch); } catch (_e3) { /* ignore */ }
         } catch (_e) { /* best effort */ }
       }
       this._gitCache = {};
@@ -1432,7 +1445,6 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
     try {
-      const gitMod = await this._getGit(); // legacy object-style module for GitSafety helpers (T12/T13)
       const signal = this.getAbortSignal();
 
       const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
@@ -1494,7 +1506,7 @@ class GitHandlers {
 
       this.sendOutput(`🔄 Atualizando para origin/${BRANCH_PREVIEW}...`);
       if (this.gitSafety) {
-        await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`);
+        await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`);
       } else {
         await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
       }
@@ -1588,7 +1600,6 @@ class GitHandlers {
     let originalBranch = null;
     let backupBranch = null;
     try {
-      const gitMod = await this._getGit(); // legacy object-style module for GitSafety/gitMergeDriver helpers (T12/T13)
       const signal = this.getAbortSignal();
       const auth = { username: token, password: 'x-oauth-basic' };
 
@@ -1710,7 +1721,7 @@ class GitHandlers {
                 : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
               for (const filepath of conflictFiles) {
                 try {
-                  await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
+                  await resolveBinaryTheirs(this.git, projectPath, filepath, localSha);
                 } catch (resolveErr) {
                   this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
                 }
@@ -1742,14 +1753,14 @@ class GitHandlers {
           if (this.gitSafety) {
             try {
               const result = await this.gitSafety._safeResetOrCheckout(
-                gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`, { author }
+                this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`, { author }
               );
               backupBranch = result.backupBranch;
             } catch (_safeErr) { /* best-effort */ }
           }
 
           if (backupBranch && this.gitSafety) {
-            await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+            await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
             backupBranch = null;
           }
 
@@ -1782,7 +1793,6 @@ class GitHandlers {
       return { success: false, error: error.message };
     } finally {
       try {
-        const gitMod = await this._getGit();
         if (tempBranchCreated) {
           try {
             const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
@@ -1795,7 +1805,7 @@ class GitHandlers {
           try { await this.git.checkout(projectPath, BRANCH_PREVIEW); } catch (_e) { /* ignore */ }
         }
         if (backupBranch && this.gitSafety) {
-          await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+          await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
         }
       } catch (_e) { /* best-effort cleanup */ }
       this.releaseGitLock();
@@ -1883,7 +1893,6 @@ class GitHandlers {
     }
     let backupBranch = null;
     try {
-      const gitMod = await this._getGit(); // legacy object-style module for GitSafety/gitMergeDriver helpers (T12/T13)
       const signal = this.getAbortSignal();
       const auth = { username: token, password: 'x-oauth-basic' };
 
@@ -1909,7 +1918,7 @@ class GitHandlers {
         `checkout ${BRANCH_MAIN}`,
       );
       if (this.gitSafety) {
-        const result = await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_MAIN}`);
+        const result = await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_MAIN}`);
         backupBranch = result.backupBranch;
       } else {
         await this._hardResetBranch(projectPath, `origin/${BRANCH_MAIN}`);
@@ -1948,7 +1957,7 @@ class GitHandlers {
             : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
           for (const filepath of conflictFiles) {
             try {
-              await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, theirsOid);
+              await resolveBinaryTheirs(this.git, projectPath, filepath, theirsOid);
             } catch (resolveErr) {
               this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
             }
@@ -1962,7 +1971,7 @@ class GitHandlers {
           // isomorphic-git has no `merge --abort`; reset via the safety helper.
           try {
             if (this.gitSafety) {
-              await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_MAIN}`);
+              await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_MAIN}`);
             }
           } catch (_resetErr) { /* best effort */ }
           throw mergeErr;
@@ -2007,7 +2016,7 @@ class GitHandlers {
       this.sendOutput(`✅ ${BRANCH_PREVIEW} promovido para ${BRANCH_MAIN}`);
 
       if (backupBranch && this.gitSafety) {
-        await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
         backupBranch = null;
       }
 
@@ -2033,9 +2042,8 @@ class GitHandlers {
       return { success: false, error: error.message };
     } finally {
       try {
-        const gitMod = await this._getGit();
         if (this.gitSafety) {
-          await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`);
+          await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`);
         } else {
           await this.git.checkout(projectPath, BRANCH_PREVIEW);
           await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
@@ -2043,8 +2051,7 @@ class GitHandlers {
       } catch (_e) { /* best effort */ }
       if (backupBranch && this.gitSafety) {
         try {
-          const gitMod = await this._getGit();
-          await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+          await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
         } catch (_e) { /* ignore */ }
       }
       this.releaseGitLock();
@@ -2280,10 +2287,9 @@ class GitHandlers {
     ipcMain.handle('git:backup-list', async (event, projectId) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
-        const gitMod = await this._getGit();
         const fs = require('fs');
         const backups = this.gitSafety
-          ? await this.gitSafety.listBackups(gitMod, fs, projectPath)
+          ? await this.gitSafety.listBackups(this._safetyOps(), fs, projectPath)
           : [];
         return { success: true, backups };
       } catch (error) {
@@ -2295,12 +2301,11 @@ class GitHandlers {
     ipcMain.handle('git:backup-restore', async (event, projectId, backupBranch) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
-        const gitMod = await this._getGit();
         const fs = require('fs');
         if (!this.gitSafety) {
           throw new Error('GitSafety unavailable');
         }
-        await this.gitSafety.restoreBackup(gitMod, fs, projectPath, backupBranch);
+        await this.gitSafety.restoreBackup(this._safetyOps(), fs, projectPath, backupBranch);
         return { success: true };
       } catch (error) {
         this.logger.error('Error in git:backup-restore:', error);
@@ -2311,12 +2316,11 @@ class GitHandlers {
     ipcMain.handle('git:backup-delete', async (event, projectId, backupBranch) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
-        const gitMod = await this._getGit();
         const fs = require('fs');
         if (!this.gitSafety) {
           throw new Error('GitSafety unavailable');
         }
-        await this.gitSafety.deleteBackup(gitMod, fs, projectPath, backupBranch);
+        await this.gitSafety.deleteBackup(this._safetyOps(), fs, projectPath, backupBranch);
         return { success: true };
       } catch (error) {
         this.logger.error('Error in git:backup-delete:', error);

@@ -31,6 +31,44 @@ const {
   LOCK_HEARTBEAT_STALE_MS,
 } = require('./gitFlowTypes.js');
 
+/**
+ * Build an object-style git-ops interface (the historical isomorphic-git
+ * module call convention: `op({ fs, dir, ... })`) on top of a GitService
+ * facade. GitSafety methods accept whatever implements this interface —
+ * unit tests inject spies directly; the app injects the adapter returned
+ * here so all operations flow through the provider facade.
+ *
+ * @param {import('../git/GitService.js').GitService} gitService - facade instance
+ * @returns {object} object-style ops (currentBranch/resolveRef/statusMatrix/
+ *   writeRef/checkout/branch/add/remove/commit/deleteBranch/listBranches/readCommit)
+ */
+function createObjectStyleOps(gitService) {
+  return {
+    currentBranch: ({ dir }) => gitService.currentBranch(dir),
+    resolveRef: ({ dir, ref }) => gitService.resolveRef(dir, ref),
+    statusMatrix: ({ dir }) => gitService.statusMatrix(dir),
+    writeRef: ({ dir, ref, value, force }) =>
+      gitService.writeRef(dir, ref, value, force !== undefined ? { force } : undefined),
+    checkout: ({ dir, ref, force }) =>
+      gitService.checkout(dir, ref, force !== undefined ? { force } : undefined),
+    branch: ({ dir, ref, object, checkout, force }) =>
+      gitService.branch(
+        dir,
+        ref,
+        object !== undefined || checkout !== undefined || force !== undefined
+          ? { ...(object !== undefined ? { object } : {}), ...(checkout !== undefined ? { checkout } : {}), ...(force !== undefined ? { force } : {}) }
+          : undefined
+      ),
+    add: ({ dir, filepath }) => gitService.add(dir, filepath),
+    remove: ({ dir, filepath }) => gitService.remove(dir, filepath),
+    commit: ({ dir, message, author }) =>
+      gitService.commit(dir, message, author !== undefined ? { author } : undefined),
+    deleteBranch: ({ dir, ref }) => gitService.deleteBranch(dir, ref),
+    listBranches: ({ dir }) => gitService.listBranches(dir),
+    readCommit: ({ dir, oid }) => gitService.readCommit(dir, oid),
+  };
+}
+
 // Regex to parse the trailing timestamp from an auto-generated backup name.
 // Backup names are of the form:  backup/<branch>-<shortSha>-<timestamp>
 // We capture the final dash-separated numeric group as the timestamp.
@@ -64,7 +102,7 @@ class GitSafety {
    * reset/checkout runs. If backup creation fails, the operation is
    * aborted to protect user data.
    *
-   * @param {object} gitMod - isomorphic-git module
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client accepted by isomorphic-git
    * @param {string} projectPath - absolute path to the repository
    * @param {string} targetRef - ref to reset to (e.g. `'origin/preview'`)
@@ -269,7 +307,7 @@ class GitSafety {
    * Best-effort delete of a backup branch. Called by the caller on operation
    * SUCCESS. Never throws — logs failures only.
    *
-   * @param {object} gitMod - isomorphic-git module
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client
    * @param {string} projectPath - absolute repo path
    * @param {string} backupBranch - backup branch ref to delete
@@ -286,7 +324,7 @@ class GitSafety {
   /**
    * List all backup branches in the repository.
    *
-   * @param {object} gitMod - isomorphic-git module
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client
    * @param {string} projectPath - absolute repo path
    * @returns {Promise<BackupInfo[]>}
@@ -338,7 +376,7 @@ class GitSafety {
    * Restore user state from a backup branch. Creates a fresh backup of the
    * CURRENT state first, so restore is non-destructive.
    *
-   * @param {object} gitMod - isomorphic-git module
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client
    * @param {string} projectPath - absolute repo path
    * @param {string} backupBranch - backup branch to restore from
@@ -375,7 +413,7 @@ class GitSafety {
   /**
    * User-initiated backup deletion (from UI).
    *
-   * @param {object} gitMod - isomorphic-git module
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client
    * @param {string} projectPath - absolute repo path
    * @param {string} backupBranch - backup branch to delete
@@ -443,4 +481,4 @@ class GitSafety {
   }
 }
 
-module.exports = { GitSafety, BACKUP_BRANCH_PREFIX };
+module.exports = { GitSafety, BACKUP_BRANCH_PREFIX, createObjectStyleOps };
