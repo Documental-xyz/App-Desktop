@@ -34,9 +34,6 @@ asarUnpack:
 # npm bundled deps: electron-builder hoists these from npm/node_modules into
 # top-level node_modules inside the asar; unpack so ELECTRON_RUN_AS_NODE children
 # spawned outside asar-fs can resolve them.
-# npm bundled deps: electron-builder hoists these from npm/node_modules into
-# top-level node_modules inside the asar; unpack so ELECTRON_RUN_AS_NODE children
-# spawned outside asar-fs can resolve them.
   - node_modules/@gar/promise-retry/**
   - node_modules/@isaacs/fs-minipass/**
   - node_modules/@isaacs/string-locale-compare/**
