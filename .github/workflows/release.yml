@@ -3,6 +3,8 @@
 # (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
 # Requires the GH_CLIENT_ID secret and the THEME/THEME_MODE values (repo Settings → Secrets and variables → Actions);
 # theme values are required and verified against the packaged runtime env after each build.
+# Git providers: scoped vitest suites run per provider before packaging, and
+# `npm run verify:bundled-git` checks the dugite binaries inside dist/ after each build.
 # manual runs from the Actions tab are build-only (no publish, no version change).
 # Future code signing placeholders — never enable on unsigned builds (notarization fails hard):
 #   CSC_LINK / CSC_KEY_PASSWORD (Windows + macOS certificates)
@@ -65,6 +67,7 @@ jobs:
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      DUGITE_CACHE_DIR: ${{ runner.temp }}/dugite-cache
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
@@ -93,8 +96,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-eb-
 
+      - name: Cache dugite binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DUGITE_CACHE_DIR }}
+          key: ${{ runner.os }}-dugite-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-dugite-
+
       - name: Install dependencies
         run: npm ci
+
+      # Scoped test suites per git provider — NEVER the full `npm test` here:
+      # it includes quarantined KNOWN-FAILURES that are unrelated to packaging.
+      - name: Test (isomorphic-git)
+        run: npx vitest run tests/ipc tests/git-providers tests/git-layer-boundary.test.js tests/build-scripts.test.js
+        env:
+          GIT_PROVIDER: isomorphic-git
+
+      - name: Test (dugite)
+        run: npx vitest run tests/git-providers
+        env:
+          GIT_PROVIDER: dugite
 
       # Must run BEFORE any build:* script — electron-builder.yml extraMetadata uses
       # $fromFile: electron-builder.env, so the file itself must exist on disk.
@@ -128,6 +151,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Runs AFTER the build step: publishing happens inside the electron-builder
+      # command above (--publish always), so this cannot gate the upload — instead
+      # it fails the job loudly so a draft with a broken bundled Git is never
+      # promoted for review. Default dist/ output matches electron-builder.
+      - name: Verify bundled Git
+        run: npm run verify:bundled-git
+
       - name: Verify theme in runtime env
         shell: bash
         run: |
@@ -148,6 +178,7 @@ jobs:
     continue-on-error: true
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
+      DUGITE_CACHE_DIR: ${{ runner.temp }}/dugite-cache
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
@@ -178,6 +209,17 @@ jobs:
           key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-eb-
+
+      # Dugite cache only — scoped tests are intentionally skipped here:
+      # the job is best-effort (continue-on-error), so test failures would be
+      # silently absorbed anyway; the matrix build job is the test gate.
+      - name: Cache dugite binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DUGITE_CACHE_DIR }}
+          key: ${{ runner.os }}-dugite-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-dugite-
 
       - name: Install dependencies
         run: npm ci
@@ -212,6 +254,11 @@ jobs:
         run: npm run build:linux:snap -- -c.snap.publish=github $PUBLISH
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Best-effort too (absorbed by continue-on-error), but still worth failing
+      # visibly when the snap's bundled Git is broken.
+      - name: Verify bundled Git
+        run: npm run verify:bundled-git
 
       - name: Verify theme in runtime env
         shell: bash

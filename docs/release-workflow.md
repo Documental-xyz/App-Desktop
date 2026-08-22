@@ -15,6 +15,7 @@ O workflow é disparado por push de tag `v*` (ex.: `v1.2.0`) e executa:
    - `windows-latest`: instalador NSIS + executável portable (`npm run build:win`)
    - `ubuntu-latest`: AppImage + deb + rpm (`npm run build:linux -- AppImage deb rpm`)
    - `macos-latest`: dmg + zip, apenas x64 (`npm run build:macos`)
+   - Antes do empacotamento, cada leg roda suítes de teste **escopadas** por provider Git (seção 10) e, depois do build, o passo `verify:bundled-git` valida o Git embutido no `dist/`.
 3. **Job `snap`** (best-effort, isolado): empacota o `.snap` com `continue-on-error: true`. Snap é historicamente instável em CI; se o job falhar, o release segue sem esse artefato.
 
 A autenticação com o GitHub usa apenas o `secrets.GITHUB_TOKEN` automático do runner (nenhum PAT). A versão dos instaladores não vem do `package.json`: ela deriva da tag (seção 3).
@@ -184,6 +185,27 @@ Cuidado: NUNCA defina as variáveis `APPLE_*` em build não assinado. A notariza
   ```
 - **Tags de prerelease podem perder o snap**: tags como `v1.2.3-rc.1` podem ser rejeitadas pelas regras de formato de versão do snapcraft. O job snap falha e a falha é absorvida pelo `continue-on-error`; os demais artefatos saem normalmente.
 - **macOS apenas x64**: dmg e zip são gerados somente para x64. Macs Apple Silicon executam o app via Rosetta.
+
+## 10. Providers Git no pipeline (testes escopados, cache do dugite e verificação do Git embutido)
+
+O app suporta dois providers Git (`isomorphic-git` e `dugite`). O release pipeline os cobre em três pontos:
+
+### Testes escopados por provider (antes do build)
+
+Logo após o `npm ci` e antes de qualquer comando `build:*`, cada leg da matrix roda **duas** suítes escopadas:
+
+- **Test (isomorphic-git)**: `GIT_PROVIDER=isomorphic-git npx vitest run tests/ipc tests/git-providers tests/git-layer-boundary.test.js tests/build-scripts.test.js`
+- **Test (dugite)**: `GIT_PROVIDER=dugite npx vitest run tests/git-providers`
+
+Deliberadamente **não** se roda o `npm test` completo: a suíte cheia inclui os casos quarentenados em `KNOWN-FAILURES`, que não dizem respeito ao empacotamento e falhariam o release sem trazer sinal útil.
+
+### Cache do dugite (`DUGITE_CACHE_DIR`)
+
+O postinstall do dugite baixa binários Git por sistema operacional. Os jobs definem `DUGITE_CACHE_DIR=${{ runner.temp }}/dugite-cache` e um passo `actions/cache@v4` (chave `${runner.os}-dugite-<hash do lockfile>`) persiste essa pasta entre runs, evitando o download em cada build. O cache é usado nos jobs da matrix e no job snap.
+
+### `verify:bundled-git` (depois do build)
+
+Após o passo de build de cada job, `npm run verify:bundled-git` procura o diretório `*-unpacked` no `dist/` e valida que os binários Git embutidos existem e que a versão bate com o `embedded-git.json`. **Decisão de posicionamento**: o publish acontece *dentro* do comando do electron-builder (`--publish always` no próprio `build:win`/`build:linux`/`build:macos`), não num passo separado — portanto o verify roda logo após esse passo e antes da verificação de tema. Ele não impede o upload (que já ocorreu), mas falha o job de forma visível: um rascunho com Git embutido quebrado nunca chega silenciosamente à revisão. O job snap também roda o verify; lá a falha é absorvida pelo `continue-on-error`, como todo o job.
 
 ## Resumo
 
