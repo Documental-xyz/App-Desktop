@@ -33,7 +33,8 @@
     "validate:extensions": "node project/scripts/validate-extensions.mjs",
     "validate:es2022": "node project/scripts/validate-es2022.mjs",
     "validate:jsdoc": "node project/scripts/validate-jsdoc.mjs",
-    "validate:hybrid": "node project/scripts/validate-hybrid.mjs"
+    "validate:hybrid": "node project/scripts/validate-hybrid.mjs",
+    "test:providers": "vitest run tests/git-providers/"
   },
   "keywords": [
     "documentation",
