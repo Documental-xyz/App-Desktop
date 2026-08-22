@@ -9,9 +9,34 @@
 const { ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const git = require('isomorphic-git');
-const http = require('isomorphic-git/http/node');
+const { GitService } = require('../git/GitService.js');
+const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { secureTokenService } = require('../services/secureTokenService.js');
+
+// GitService with module-source loaders acquired in this file's scope
+// (T11 pattern — mock-visible under vitest). The loader promise is memoized
+// because concurrent dynamic imports of a mocked module race in vitest.
+let _gitService = null;
+let _gitModulePromise = null;
+let _httpModulePromise = null;
+
+function getGitService() {
+  if (!_gitService) {
+    if (!_gitModulePromise) {
+      _gitModulePromise = import('isomorphic-git');
+    }
+    if (!_httpModulePromise) {
+      _httpModulePromise = import('isomorphic-git/http/node');
+    }
+    _gitService = new GitService({
+      provider: createGitProvider({
+        loadGit: () => _gitModulePromise,
+        loadHttp: () => _httpModulePromise,
+      }),
+    });
+  }
+  return _gitService;
+}
 
 /**
  * @typedef {Object} ProjectDetails
@@ -63,11 +88,7 @@ async function gitClone(url, dir, options = {}) {
     const token = await getGitHubToken();
     const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
     
-    await git.clone({
-      fs,
-      http,
-      dir,
-      url,
+    await getGitService().clone(url, dir, {
       auth,
       ...options,
       singleBranch: true,
@@ -266,12 +287,8 @@ class ProjectHandlers {
       if (fs.existsSync(gitPath)) {
         isGitRepo = true;
         try {
-          // Get remote URL using isomorphic-git
-          remoteUrl = await git.getConfig({
-            fs,
-            dir: folderPath,
-            path: 'remote.origin.url'
-          });
+          // Get remote URL via the git facade
+          remoteUrl = await getGitService().getConfig(folderPath, 'remote.origin.url');
         } catch (error) {
           this.logger.debug('Could not get git remote URL:', error.message);
         }

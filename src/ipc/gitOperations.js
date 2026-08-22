@@ -6,14 +6,34 @@
 
 'use strict';
 
-const git = require('isomorphic-git');
-const http = require('isomorphic-git/http/node');
 const fs = require('fs');
 const path = require('path');
+const { GitService } = require('../git/GitService.js');
+const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { secureTokenService } = require('../services/secureTokenService.js');
 
 // Dynamic import for ESM module - will be loaded when needed
 let Octokit = null;
+
+// Module-source loaders for the provider (T11 pattern): iso-git is acquired
+// via dynamic import() in this file's scope and injected into the provider,
+// so vitest mocks stay visible where tests rely on them.
+let _gitModulePromise = null;
+let _httpModulePromise = null;
+
+// Prefer the CJS module.exports (`.default`) when populated so spies installed
+// on the isomorphic-git module object stay visible; vi.mock factory
+// namespaces use an empty `default` and are returned as-is.
+function _unwrapModule(ns) {
+  try {
+    if (ns && ns.default && Object.keys(ns.default).length > 0) {
+      return ns.default;
+    }
+  } catch (_e) {
+    // mock namespace without a `default` export
+  }
+  return ns;
+}
 
 /**
  * Git Operations Class
@@ -28,9 +48,31 @@ class GitOperations {
   constructor({ logger, databaseManager }) {
     this.logger = logger;
     this.databaseManager = databaseManager;
+    this.git = new GitService({
+      provider: createGitProvider({
+        loadGit: () => this._getGit(),
+        loadHttp: () => this._getHttp(),
+      }),
+    });
     this._gitCache = {};
     this._userInfoCache = null;
     this._userInfoCacheAt = 0;
+  }
+
+  // Loader promises are memoized: concurrent dynamic imports of a mocked
+  // module race in vitest (one caller gets the real module).
+  _getGit() {
+    if (!_gitModulePromise) {
+      _gitModulePromise = import('isomorphic-git').then(_unwrapModule);
+    }
+    return _gitModulePromise;
+  }
+
+  _getHttp() {
+    if (!_httpModulePromise) {
+      _httpModulePromise = import('isomorphic-git/http/node').then(_unwrapModule);
+    }
+    return _httpModulePromise;
   }
 
   /**
@@ -174,20 +216,10 @@ class GitOperations {
     try {
       this.logger.info(`Setting git user config: ${name} <${email}>`);
       
-      await git.setConfig({
-        fs,
-        dir,
-        path: 'user.name',
-        value: name
-      });
+      await this.git.setConfig(dir, 'user.name', name);
       this._gitCache = {};
-      
-      await git.setConfig({
-        fs,
-        dir,
-        path: 'user.email',
-        value: email
-      });
+
+      await this.git.setConfig(dir, 'user.email', email);
       this._gitCache = {};
       
       this.logger.info('Git user config set successfully');
@@ -246,7 +278,7 @@ class GitOperations {
       }
       
       sendOutput(`🔍 Verificando se branch já existe...\n`);
-      const existingBranches = await git.listBranches({ fs, dir, cache: this._gitCache });
+      const existingBranches = await this.git.listBranches(dir, { cache: this._gitCache });
       if (existingBranches.includes(branchName)) {
         const errorMsg = `❌ Branch '${branchName}' já existe.\n`;
         sendOutput(errorMsg);
@@ -255,21 +287,13 @@ class GitOperations {
       
       sendOutput(`📝 Criando branch '${branchName}'...\n`);
       // Create branch
-      await git.branch({
-        fs,
-        dir,
-        ref: branchName
-      });
+      await this.git.branch(dir, branchName);
       this._gitCache = {};
       sendOutput(`✅ Branch '${branchName}' criada com sucesso\n`);
-      
+
       sendOutput(`🔄 Mudando para nova branch '${branchName}'...\n`);
       // Checkout new branch
-      await git.checkout({
-        fs,
-        dir,
-        ref: branchName
-      });
+      await this.git.checkout(dir, branchName);
       this._gitCache = {};
       sendOutput(`✅ Branch '${branchName}' selecionada com sucesso\n`);
     } catch (error) {
@@ -291,7 +315,7 @@ class GitOperations {
       
       // Check if branch exists
       sendOutput(`🔍 Verificando se branch existe...\n`);
-      const branches = await git.listBranches({ fs, dir, cache: this._gitCache });
+      const branches = await this.git.listBranches(dir, { cache: this._gitCache });
       const localBranch = branches.find(b => b === branchName);
       const remoteBranch = branches.find(b => b === `origin/${branchName}`);
       
@@ -304,25 +328,15 @@ class GitOperations {
       // If only remote branch exists, create local tracking branch
       if (!localBranch && remoteBranch) {
         sendOutput(`📥 Criando branch local '${branchName}' para rastrear branch remota\n`);
-        await git.branch({
-          fs,
-          dir,
-          ref: branchName,
-          object: `origin/${branchName}`,
-          checkout: true
-        });
-        await git.setConfig({ fs, dir, path: `branch.${branchName}.remote`, value: 'origin' });
-        await git.setConfig({ fs, dir, path: `branch.${branchName}.merge`, value: `refs/heads/${branchName}` });
+        await this.git.branch(dir, branchName, { object: `origin/${branchName}`, checkout: true });
+        await this.git.setConfig(dir, `branch.${branchName}.remote`, 'origin');
+        await this.git.setConfig(dir, `branch.${branchName}.merge`, `refs/heads/${branchName}`);
         this._gitCache = {};
         sendOutput(`✅ Branch local '${branchName}' criada e selecionada\n`);
       } else {
         // Checkout existing local branch
         sendOutput(`📂 Selecionando branch local existente '${branchName}'\n`);
-        await git.checkout({
-          fs,
-          dir,
-          ref: branchName
-        });
+        await this.git.checkout(dir, branchName);
         this._gitCache = {};
         sendOutput(`✅ Branch '${branchName}' selecionada com sucesso\n`);
       }
@@ -343,7 +357,7 @@ class GitOperations {
       sendOutput(`🔍 Verificando branch 'preview' em ${dir}...\n`);
       
       // List all branches (local and remote)
-      const branches = await git.listBranches({ fs, dir, cache: this._gitCache });
+      const branches = await this.git.listBranches(dir, { cache: this._gitCache });
       const localBranches = branches.filter(branch => !branch.includes('origin/'));
       const remoteBranches = branches.filter(branch => branch.includes('origin/'))
         .map(branch => branch.replace('origin/', ''));
@@ -390,7 +404,10 @@ class GitOperations {
       
       // Check if working directory is clean before creating branch
       try {
-        const status = await git.status({ fs, dir, cache: this._gitCache });
+        // `status` is not part of the GitProvider contract — raw module call
+        // (legacy T11 pattern for ops outside the 24-op interface).
+        const gitMod = await this._getGit();
+        const status = await gitMod.status({ fs, dir, cache: this._gitCache });
         if (status.files && status.files.length > 0) {
           sendOutput(`⚠️ Existem arquivos não commitados no diretório de trabalho\n`);
           sendOutput(`📋 Arquivos modificados: ${status.files.map(f => f.path).join(', ')}\n`);
@@ -495,10 +512,7 @@ class GitOperations {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       this.logger?.info?.('[push-retry] attempt starting', { attempt, maxAttempts });
       try {
-        await git.push({
-          fs,
-          http,
-          dir,
+        await this.git.push(dir, {
           url,
           ref,
           remoteRef,
@@ -549,7 +563,8 @@ class GitOperations {
     } else if (error.code === 'PushRejectedError') {
       retriable = false;
     } else {
-      const status = error.response && error.response.status;
+      const response = error.response || (error.cause && error.cause.response);
+      const status = response && response.status;
       if (status) {
         if (status >= 500 && status < 600) retriable = true;
         if ([401, 403, 409, 422].includes(status)) retriable = false;
@@ -598,8 +613,8 @@ class GitOperations {
 
       // Step 5: Set core.autocrlf and core.filemode to avoid spurious diffs
       // (CRLF/LF on Windows, file mode bit flips on Unix)
-      await git.setConfig({ fs, dir, path: 'core.autocrlf', value: 'true' });
-      await git.setConfig({ fs, dir, path: 'core.filemode', value: 'false' });
+      await this.git.setConfig(dir, 'core.autocrlf', 'true');
+      await this.git.setConfig(dir, 'core.filemode', 'false');
       this.logger.info('✅ Set core.autocrlf=true and core.filemode=false');
 
       this.logger.info(`✅ Git user configured successfully: ${userName} <${userEmail}>`);
@@ -622,12 +637,7 @@ class GitOperations {
    */
   async gitGetRemoteUrl(dir) {
     try {
-      return await git.getConfig({
-        fs,
-        dir,
-        path: 'remote.origin.url',
-        cache: this._gitCache
-      });
+      return await this.git.getConfig(dir, 'remote.origin.url', { cache: this._gitCache });
     } catch (error) {
       this.logger.debug('Could not get git remote URL:', error.message);
       return null;

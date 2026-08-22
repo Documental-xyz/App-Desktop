@@ -24,12 +24,18 @@ let cachedInstance = null;
  * Create (or return cached) git provider instance for the configured provider.
  * @param {Object} [providerOptions] - Passed through to the provider
  *   constructor (IsomorphicGitProvider accepts `loadGit`/`loadHttp` module
- *   overrides; ignored after first call — the instance is cached).
+ *   overrides; loader-injected instances are never cached — only the
+ *   default (optionless) instance is).
  * @returns {Object} provider instance implementing the GitProvider contract
  * @throws {Error} if GIT_PROVIDER is unsupported or implementation not yet available
  */
 function createGitProvider(providerOptions = {}) {
-  if (cachedInstance) {
+  // Instances created with module-source loaders (T11/T12 injection) are
+  // NOT cached nor served from the cache — each consumer's loaders must
+  // reach its own provider instance (the singleton would bind whichever
+  // consumer constructed first, breaking the others' mock visibility).
+  const hasLoaders = Boolean(providerOptions && (providerOptions.loadGit || providerOptions.loadHttp));
+  if (!hasLoaders && cachedInstance) {
     return cachedInstance;
   }
 
@@ -71,7 +77,9 @@ function createGitProvider(providerOptions = {}) {
       );
   }
 
-  cachedInstance = instance;
+  if (!hasLoaders) {
+    cachedInstance = instance;
+  }
   return instance;
 }
 

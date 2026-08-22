@@ -21,7 +21,8 @@
 
 'use strict';
 
-const http = require('isomorphic-git/http/node');
+const { GitService } = require('../git/GitService.js');
+const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { BRANCH_PREVIEW, BRANCH_MAIN } = require('./gitFlowTypes.js');
 
 /**
@@ -41,6 +42,17 @@ const WORKFLOWS_CACHE_TTL_MS = 5 * 60 * 1000;
  * isomorphic-git fetch error message. Matched case-insensitively.
  */
 const REMOTE_BRANCH_MISSING_HINTS = ['could not find', 'not found', '404'];
+
+function _unwrapHttp(m) {
+  try {
+    if (m && m.default) {
+      return m.default;
+    }
+  } catch (_e) {
+    // vi.mock namespace without a `default` export — use the namespace as-is
+  }
+  return m;
+}
 
 /**
  * @typedef {Object} PreflightCheckEntry
@@ -90,12 +102,23 @@ class GitPreflight {
      */
     this._workflowsCache = new Map();
 
+    // GitService facade backed by the provider, fed with THIS file's
+    // iso-git/http acquisition (external getGit stays honored) so vitest
+    // mocks remain visible to preflight calls.
+    this.git = new GitService({
+      provider: createGitProvider({
+        loadGit: () => this._getGit(),
+        loadHttp: () => this._getHttp(),
+      }),
+    });
+
     /**
      * isomorphic-git module cache (dynamic import). Lazily populated by `_getGit`.
      * @type {Object|null}
      * @private
      */
-    this._gitModuleCache = null;
+    this._gitPromise = null;
+    this._httpPromise = null;
 
     /**
      * Optional external git-loader (shares module cache with GitHandlers).
@@ -137,12 +160,11 @@ class GitPreflight {
 
     // ── Steps 2-4 in parallel (each is independent) ─────────────────────────
     const auth = { username: token, password: 'x-oauth-basic' };
-    const gitMod = await this._getGit();
 
     const [branchResult, workflowsResult, dirtyResult] = await Promise.allSettled([
-      this._checkBranchExists(projectPath, BRANCH_PREVIEW, auth, gitMod),
+      this._checkBranchExists(projectPath, BRANCH_PREVIEW, auth),
       this._checkWorkflows(projectId),
-      this._checkDirtyWorkingTree(projectPath, gitMod),
+      this._checkDirtyWorkingTree(projectPath),
     ]);
 
     // Branch existence — sets `firstPublish` flag or pushes an error.
@@ -164,7 +186,8 @@ class GitPreflight {
       // Unexpected fetch error (network / auth / corrupt) → hard block.
       // Surface AbortError specially so callers can distinguish user cancellation.
       const reason = branchResult.reason;
-      if (reason && reason.name === 'AbortError') {
+      const isAbort = reason && (reason.name === 'AbortError' || (reason.cause && reason.cause.name === 'AbortError'));
+      if (isAbort) {
         return {
           canProceed: false,
           firstPublish: false,
@@ -246,7 +269,6 @@ class GitPreflight {
     }
 
     const auth = { username: token, password: 'x-oauth-basic' };
-    const gitMod = await this._getGit();
 
     // ── Step 2: branch protection (informational warning; never blocks) ──────
     // Push-permission gating (RBAC) was removed — precedence below is now the
@@ -255,8 +277,8 @@ class GitPreflight {
 
     // ── Steps 3, 4, 5 in parallel ───────────────────────────────────────────
     const [precedenceResult, mainExistsResult, workflowsResult] = await Promise.allSettled([
-      this._checkPrecedence(projectPath, auth, gitMod, warnings),
-      this._checkBranchExists(projectPath, BRANCH_MAIN, auth, gitMod),
+      this._checkPrecedence(projectPath, auth, warnings),
+      this._checkBranchExists(projectPath, BRANCH_MAIN, auth),
       this._checkWorkflows(projectId),
     ]);
 
@@ -358,18 +380,12 @@ class GitPreflight {
    * @param {string} projectPath
    * @param {string} branchName
    * @param {Object} auth - `{ username, password }` for onAuth.
-   * @param {Object} [gitModOverride] - Pre-resolved isomorphic-git module.
    * @returns {Promise<{missing: boolean}>} `missing: true` when the branch doesn't exist on remote.
    * @private
    */
-  async _checkBranchExists(projectPath, branchName, auth, gitModOverride) {
-    const gitMod = gitModOverride || (await this._getGit());
-    const fs = require('fs');
+  async _checkBranchExists(projectPath, branchName, auth) {
     try {
-      await gitMod.fetch({
-        fs,
-        http,
-        dir: projectPath,
+      await this.git.fetch(projectPath, {
         remote: 'origin',
         ref: branchName,
         singleBranch: true,
@@ -378,6 +394,8 @@ class GitPreflight {
       });
       return { missing: false };
     } catch (error) {
+      // Errors cross the provider boundary as GitError (cause preserved) —
+      // inspect both layers so AbortError detection keeps working.
       const msg = String(error && error.message || error).toLowerCase();
       const missing = REMOTE_BRANCH_MISSING_HINTS.some((hint) => msg.includes(hint));
       if (missing) {
@@ -451,15 +469,12 @@ class GitPreflight {
   /**
    * Check whether the working tree has uncommitted changes. Informational only.
    * @param {string} projectPath
-   * @param {Object} [gitModOverride]
    * @returns {Promise<PreflightCheckEntry|null>} An informational check entry, or null on failure.
    * @private
    */
-  async _checkDirtyWorkingTree(projectPath, gitModOverride) {
+  async _checkDirtyWorkingTree(projectPath) {
     try {
-      const gitMod = gitModOverride || (await this._getGit());
-      const fs = require('fs');
-      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+      const matrix = await this.git.statusMatrix(projectPath);
       // statusMatrix rows: [filepath, HEAD, WORKDIR, STAGE]
       // A clean file has HEAD===WORKDIR===STAGE===1. Count dirty otherwise.
       const dirty = matrix.filter(
@@ -557,31 +572,21 @@ class GitPreflight {
    *
    * @param {string} projectPath
    * @param {Object} auth
-   * @param {Object} gitModOverride
    * @param {PreflightCheckEntry[]} _warnings - (unused; warnings returned as entries)
    * @returns {Promise<PreflightCheckEntry|null>}
    * @private
    */
-  async _checkPrecedence(projectPath, auth, gitModOverride, _warnings) {
-    const gitMod = gitModOverride || (await this._getGit());
-    const fs = require('fs');
-
+  async _checkPrecedence(projectPath, auth, _warnings) {
     // a. Parallel shallow fetch — updates refs/remotes/origin/{main,preview}.
     await Promise.all([
-      gitMod.fetch({
-        fs,
-        http,
-        dir: projectPath,
+      this.git.fetch(projectPath, {
         remote: 'origin',
         ref: BRANCH_MAIN,
         singleBranch: true,
         depth: 1,
         onAuth: () => auth,
       }),
-      gitMod.fetch({
-        fs,
-        http,
-        dir: projectPath,
+      this.git.fetch(projectPath, {
         remote: 'origin',
         ref: BRANCH_PREVIEW,
         singleBranch: true,
@@ -596,11 +601,7 @@ class GitPreflight {
     let previewSha;
     let mainSha;
     try {
-      previewSha = await gitMod.resolveRef({
-        fs,
-        dir: projectPath,
-        ref: `origin/${BRANCH_PREVIEW}`,
-      });
+      previewSha = await this.git.resolveRef(projectPath, `origin/${BRANCH_PREVIEW}`);
     } catch (_e) {
       return {
         code: 'PREVIEW_NOT_AHEAD',
@@ -608,11 +609,7 @@ class GitPreflight {
       };
     }
     try {
-      mainSha = await gitMod.resolveRef({
-        fs,
-        dir: projectPath,
-        ref: `origin/${BRANCH_MAIN}`,
-      });
+      mainSha = await this.git.resolveRef(projectPath, `origin/${BRANCH_MAIN}`);
     } catch (_e) {
       // main missing is reported separately by _checkBranchExists — neutral here.
       return null;
@@ -623,7 +620,7 @@ class GitPreflight {
     //    first. This runs BEFORE the ancestry check so we surface dirty-tree
     //    state even when SHAs are identical.
     try {
-      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+      const matrix = await this.git.statusMatrix(projectPath);
       // Each row: [filepath, HEAD (1=present), WORKDIR (1=unchanged), STAGE (1=unchanged)]
       // A clean file has all three === 1. Anything else is dirty.
       const dirty = matrix.filter(
@@ -665,11 +662,7 @@ class GitPreflight {
     //    before promoting to main. If the local preview ref doesn't exist
     //    at all, also block (user needs to publish first to create it).
     try {
-      const localPreviewSha = await gitMod.resolveRef({
-        fs,
-        dir: projectPath,
-        ref: BRANCH_PREVIEW,
-      });
+      const localPreviewSha = await this.git.resolveRef(projectPath, BRANCH_PREVIEW);
       if (localPreviewSha !== previewSha) {
         return {
           code: 'PREVIEW_NOT_AHEAD',
@@ -692,18 +685,33 @@ class GitPreflight {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   /**
-   * Lazily import and cache isomorphic-git. Mirrors GitHandlers._getGit.
+   * Lazily import and cache isomorphic-git (promise-memoized). Mirrors GitHandlers._getGit.
    * @returns {Promise<Object>}
    * @private
    */
   async _getGit() {
-    if (this._externalGetGit) {
-      return this._externalGetGit();
+    // Memoize the loader promise: concurrent dynamic imports of a mocked
+    // module race in vitest (one caller gets the real module), so the
+    // acquisition must happen exactly once.
+    if (!this._gitPromise) {
+      this._gitPromise = this._externalGetGit
+        ? this._externalGetGit()
+        : import('isomorphic-git');
     }
-    if (!this._gitModuleCache) {
-      this._gitModuleCache = await import('isomorphic-git');
+    return this._gitPromise;
+  }
+
+  /**
+   * Lazily import and cache the isomorphic-git http/node transport. Handles
+   * both the real module namespace and vi.mock factories (`{ default: {} }`).
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _getHttp() {
+    if (!this._httpPromise) {
+      this._httpPromise = import('isomorphic-git/http/node').then(_unwrapHttp);
     }
-    return this._gitModuleCache;
+    return this._httpPromise;
   }
 
   /**

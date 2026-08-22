@@ -10,9 +10,56 @@ const { ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsPromises = fs.promises;
+const { createRequire } = require('module');
 const { GitOperations } = require('./gitOperations.js');
+const { GitService } = require('../git/GitService.js');
+const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { ProcessManager } = require('./processManager.js');
 const { t } = require('../utils/mainI18n');
+
+// iso-git acquisition for the GitService loaders. Unlike the other T12
+// modules (dynamic import()), this file MUST acquire via require semantics:
+// tests/ipc/gitClone-security.test.js installs a Module._load monkey
+// patch, which intercepts require() (incl. createRequire) but NOT dynamic
+// import(). Loader promises are memoized (concurrent-import vitest race).
+const nodeRequire = createRequire(__filename);
+let _gitModulePromise = null;
+let _httpModulePromise = null;
+let _gitService = null;
+
+function loadGitModule() {
+  if (!_gitModulePromise) {
+    _gitModulePromise = Promise.resolve().then(() => nodeRequire('isomorphic-git'));
+  }
+  return _gitModulePromise;
+}
+
+function loadHttpModule() {
+  if (!_httpModulePromise) {
+    _httpModulePromise = Promise.resolve().then(() => nodeRequire('isomorphic-git/http/node'));
+  }
+  return _httpModulePromise;
+}
+
+function getGitService() {
+  if (!_gitService) {
+    _gitService = new GitService({
+      provider: createGitProvider({
+        loadGit: loadGitModule,
+        loadHttp: loadHttpModule,
+      }),
+    });
+  }
+  return _gitService;
+}
+
+// iso-git's parallel-mkdir race surfaces as ENOENT/mkdir. Across the
+// provider boundary the error is a GitError carrying the original as
+// `cause` (code is copied, syscall is not) — check both layers.
+function _isMkdirRace(error) {
+  const candidates = [error, error && error.cause];
+  return candidates.some((e) => e && e.code === 'ENOENT' && e.syscall === 'mkdir');
+}
 
 /**
  * Project Creation Handler Class
@@ -196,8 +243,8 @@ class ProjectCreationHandler {
    * @throws {Error} When the clone fails or yields an empty working tree.
    */
   async gitClone(url, dir, sendOutput) {
-    const git = require('isomorphic-git');
-    const http = require('isomorphic-git/http/node');
+    const git = await loadGitModule();
+    const http = await loadHttpModule();
     const nodeFs = require('fs');
 
     try {
@@ -311,17 +358,13 @@ class ProjectCreationHandler {
       // After createUsingTemplate, git protocol may return a stale HEAD symref
       // (e.g. "master" when the repo actually has "main"). Verify the cloned
       // branch matches what we expect. If not, clean up and retry.
-      const cloneArgs = {
-        fs: nodeFs,
-        http,
-        dir,
-        url,
+      const cloneOpts = {
         onAuth: () => auth,
         singleBranch: true,
         depth: 10,
       };
       if (ref) {
-        cloneArgs.ref = ref;
+        cloneOpts.ref = ref;
       }
 
       let cloneAttempt = 0;
@@ -356,11 +399,11 @@ class ProjectCreationHandler {
         // isomorphic-git v1.38.4 races on parallel mkdir for nested dirs like
         // `.github/workflows/` (index.cjs:7009-7023). The fast path stays as-is;
         // on ENOENT/mkdir we fall back to a noCheckout clone + safe checkout.
-        const cloneArgsNoCheckout = { ...cloneArgs, noCheckout: true };
+        const cloneOptsNoCheckout = { ...cloneOpts, noCheckout: true };
         try {
-          await git.clone(cloneArgs);
+          await getGitService().clone(url, dir, cloneOpts);
         } catch (cloneErr) {
-          if (!(cloneErr && cloneErr.code === 'ENOENT' && cloneErr.syscall === 'mkdir')) {
+          if (!_isMkdirRace(cloneErr)) {
             throw cloneErr;
           }
           this.logger.info(
@@ -382,25 +425,25 @@ class ProjectCreationHandler {
           await fsPromises.mkdir(dir, { recursive: true });
 
           // Clone without checkout, then checkout safely
-          await git.clone(cloneArgsNoCheckout);
+          await getGitService().clone(url, dir, cloneOptsNoCheckout);
 
           let checkoutRef;
           try {
-            checkoutRef = await git.currentBranch({ fs: nodeFs, dir });
+            checkoutRef = await getGitService().currentBranch(dir);
           } catch (cbErr) {
             checkoutRef = ref ? ref.replace(/^refs\/heads\//, '') : 'main';
             this.logger.warn('[clone-diag] currentBranch failed, using fallback:', cbErr?.message, '→', checkoutRef);
           }
 
           try {
-            await git.checkout({ fs: nodeFs, dir, ref: checkoutRef, force: true });
+            await getGitService().checkout(dir, checkoutRef, { force: true });
           } catch (checkoutErr) {
-            if (!(checkoutErr && checkoutErr.code === 'ENOENT' && checkoutErr.syscall === 'mkdir')) {
+            if (!_isMkdirRace(checkoutErr)) {
               throw checkoutErr;
             }
             this.logger.info('[clone-diag] checkout also raced on mkdir — pre-creating tree dirs');
             await this._preCreateTreeDirs(git, nodeFs, dir, checkoutRef);
-            await git.checkout({ fs: nodeFs, dir, ref: checkoutRef, force: true });
+            await getGitService().checkout(dir, checkoutRef, { force: true });
           }
         }
 
@@ -417,8 +460,8 @@ class ProjectCreationHandler {
         let localBranches = [];
         let remoteBranches = [];
         try {
-          localBranches = await git.listBranches({ fs: nodeFs, dir });
-          remoteBranches = await git.listBranches({ fs: nodeFs, dir, remote: 'origin' });
+          localBranches = await getGitService().listBranches(dir);
+          remoteBranches = await getGitService().listBranches(dir, { remote: 'origin' });
         } catch (branchErr) {
           this.logger.warn('[clone-diag] listBranches failed:', branchErr?.message);
         }
@@ -772,8 +815,8 @@ class ProjectCreationHandler {
             // NEW: git protocol readiness probe — guards against empty-clone race
             // after template creation. REST API may report ready while git smart-HTTP
             // /info/refs still serves zero refs. Probe up to 3 times (3s intervals).
-            const git = require('isomorphic-git');
-            const http = require('isomorphic-git/http/node');
+            const git = await loadGitModule();
+            const http = await loadHttpModule();
             const isGithubUrl = /^https:\/\/github\.com\//i.test(repoUrl);
             const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
             const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
