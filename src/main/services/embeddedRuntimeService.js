@@ -130,7 +130,8 @@ class EmbeddedRuntimeService {
     const { env, ...rest } = opts;
     return execa(cmd, args, {
       ...rest,
-      env: this.buildChildEnv(env || process.env)
+      env: this.buildChildEnv(env || process.env),
+      extendEnv: false
     });
   }
 }
