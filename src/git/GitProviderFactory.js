@@ -54,13 +54,10 @@ function createGitProvider() {
     }
 
     case 'dugite': {
-      let Ctor;
-      try {
-        const m = require('./providers/DugiteProvider');
-        Ctor = m.DugiteProvider || m;
-      } catch {
-        throw new Error('DugiteProvider not implemented yet — Wave 4');
-      }
+      // T15 (network ops) + T16 (local ops) land in the same file;
+      // require errors (missing/corrupt module) propagate as-is.
+      const m = require('./providers/DugiteProvider');
+      const Ctor = m.DugiteProvider || m;
       instance = new Ctor();
       break;
     }

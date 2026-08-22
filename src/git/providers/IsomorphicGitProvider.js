@@ -41,6 +41,10 @@ const fs = require('fs');
 
 const PROVIDER_NAME = 'isomorphic-git';
 
+// App identity used when commit() gets no author and the repo config has
+// none (mirrors git.js:1081).
+const DEFAULT_AUTHOR = { name: 'documental', email: 'documental@app' };
+
 /**
  * @typedef {import('../GitTypes').AuthInfo} AuthInfo
  */
@@ -270,6 +274,350 @@ class IsomorphicGitProvider {
       url,
       ...buildAuth(url, auth),
     }));
+  }
+
+  // ─── Local operations + reads (T10) ─────────────────────────────────────────
+  //
+  // Semantics MOVED from the current call sites (raw output parity — no
+  // normalization of isomorphic-git results):
+  //   - add/remove batching: git.js:500-502 (_commitAll), gitSafety.js:199-201
+  //     (_createBackup), gitMergeDriver.js:79 (resolveBinaryTheirs)
+  //   - commit: git.js:524 (message+author), git.js:1316-1321 (binary-resolved
+  //     merge commit with explicit `parent`), gitSafety.js:221-226 (backup)
+  //   - branch: git.js:666/731, gitOperations.js:258/307,
+  //     gitSafety.js:160 (backup: checkout:false, force:false)
+  //   - deleteBranch: git.js:1281/1334/1744 (temp-branch cleanup)
+  //   - checkout: git.js:155/697/721/1283/1333/1746, gitOperations.js:268/321,
+  //     projectCreation.js:396/403 (force:true), gitSafety.js:135/188/243
+  //     (force true/false respectively) — `force`/`noBranch` are forwarded
+  //     ONLY when provided (omission matters to iso-git)
+  //   - merge: git.js:1293-1301/1756-1764/1997 (ours/theirs, fastForward:false,
+  //     optional mergeDriver: theirsMergeDriver, message, author) — the whole
+  //     options object is forwarded untouched so the mergeDriver contract
+  //     (gitMergeDriver.js) keeps working verbatim
+  //   - fastForward: git.js:1067 (ref + onAuth) — iso-git fastForward does a
+  //     fetch under the hood, so http is always attached; onAuth from opts
+  //     overrides the built-in auth plumbing (rest spreads after)
+  //   - writeRef: git.js:148-154 / gitSafety.js:128-134 (refs/heads/<branch>,
+  //     value: oid, force: true)
+  //   - statusMatrix: git.js:408/480/884/1500, gitSafety.js:104 — returns the
+  //     RAW rows [filepath, head, workdir, stage] exactly as iso-git produces
+  //   - currentBranch: git.js:560/763/785, gitSafety.js:80/185/353 (cache opt)
+  //   - listBranches: git.js:593, gitOperations.js:249/294/346,
+  //     projectCreation.js:420-421 (remote: 'origin' variant)
+  //   - listRefs: git.js:566
+  //   - resolveRef: git.js:146/827/853/1538/1541/1721, gitSafety.js:81/88/127/310
+  //   - readCommit: git.js:836/861, gitSafety.js:322, projectCreation.js:479
+  //   - readBlob: gitMergeDriver.js:67 (oid + filepath)
+  //   - getConfig/setConfig: git.js:808-813 (remote.origin.url + cache),
+  //     git.js:738-739 (branch.<name>.remote/merge), gitOperations.js:177-190
+  //     (user.name/user.email), 314-315, 601-602 (core.*), 625
+  //
+  // `cache` (the iso-git stat cache callers like git.js pass as
+  // `this._gitCache`) and any other extra option flow through `...rest`
+  // untouched — this provider never filters or transforms options/results.
+
+  /**
+   * Stage file(s) (hash + object store + index update). Contract:
+   * `add(path, files)` where files is one path or an array of paths
+   * relative to the repo root (iso-git's add is single-file, so an array
+   * is staged per-entry). Extra options (e.g. cache) flow via opts.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string|string[]} files - File path(s) relative to the repo root
+   * @param {Record<string, unknown>} [opts] - Extra iso-git options (cache…)
+   * @returns {Promise<void>}
+   */
+  async add(path, files, opts = {}) {
+    const list = Array.isArray(files) ? files : [files];
+    const { ...rest } = opts;
+    return wrap('add', async () => {
+      for (const filepath of list) {
+        await git.add({ fs, dir: path, filepath, ...rest });
+      }
+    });
+  }
+
+  /**
+   * Remove file(s) from the index (stage deletions). Contract:
+   * `remove(path, files)` — same array handling as add().
+   *
+   * @param {string} path - Local repository directory
+   * @param {string|string[]} files - File path(s) relative to the repo root
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async remove(path, files, opts = {}) {
+    const list = Array.isArray(files) ? files : [files];
+    const { ...rest } = opts;
+    return wrap('remove', async () => {
+      for (const filepath of list) {
+        await git.remove({ fs, dir: path, filepath, ...rest });
+      }
+    });
+  }
+
+  /**
+   * Create a commit. Contract: `commit(path, message, opts?)` with
+   * optional `author` (and any iso-git extra, e.g. `parent` for the
+   * binary-resolved merge commit at git.js:1316-1321) in opts.
+   *
+   * When no author is supplied (opts or repo config), iso-git throws
+   * MissingNameError; the app identity from git.js:1081
+   * ('documental' <documental@app>) is used as fallback so the optional
+   * `author` in the contract really is optional.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} message - Commit message
+   * @param {{ author?: { name?: string, email?: string } } & Record<string, unknown>} [opts]
+   * @returns {Promise<string>} Commit OID (40-char SHA-1)
+   */
+  async commit(path, message, opts = {}) {
+    const { author, ...rest } = opts;
+    const run = (a) => git.commit({ fs, dir: path, message, ...(a ? { author: a } : {}), ...rest });
+    return wrap('commit', async () => {
+      try {
+        return await run(author);
+      } catch (err) {
+        if (!author && err?.code === 'MissingNameError') {
+          return run(DEFAULT_AUTHOR);
+        }
+        throw err;
+      }
+    });
+  }
+
+  /**
+   * Create a branch. Moved from git.js:666/731, gitOperations.js:258/307,
+   * gitSafety.js:160: `object` (start point, e.g. 'origin/<name>'),
+   * `checkout: true` (create+switch) and `force` are forwarded only when
+   * provided — omission semantics preserved (backup flow relies on
+   * force:false/checkout:false being sent exactly).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} ref - Branch name
+   * @param {{ object?: string, checkout?: boolean, force?: boolean } & Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async branch(path, ref, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('branch', () => git.branch({ fs, dir: path, ref, ...rest }));
+  }
+
+  /**
+   * Delete a branch. Moved from the temp-branch cleanup paths
+   * (git.js:1281/1334/1744 — callers wrap in try/catch for "not existent").
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} ref - Branch name to delete
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async deleteBranch(path, ref, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('deleteBranch', () => git.deleteBranch({ fs, dir: path, ref, ...rest }));
+  }
+
+  /**
+   * Checkout a ref (branch, remote branch or commit). Moved from
+   * git.js:155/697/1283/1746, gitSafety.js:135/188, projectCreation.js:396:
+   * `force` and `noBranch` are forwarded ONLY when the caller provides
+   * them — iso-git behavior differs between "absent" and "undefined".
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} ref - Ref to check out
+   * @param {{ force?: boolean, noBranch?: boolean } & Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async checkout(path, ref, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('checkout', () => git.checkout({ fs, dir: path, ref, ...rest }));
+  }
+
+  /**
+   * Merge a ref into HEAD (contract: `merge(path, theirRef, opts?)`).
+   * Moved from git.js:1293-1301/1756-1764/1997: opts carry `ours`,
+   * `fastForward: false`, optional `mergeDriver` (the gitMergeDriver
+   * theirs callback contract), `message`, `author` — forwarded untouched
+   * so the mergeDriver contract keeps working verbatim. An explicit
+   * `theirs` in opts overrides the positional theirRef (rest spreads
+   * after). MergeConflictError surfaces with its original code/data via
+   * wrap()'s cause chain.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} theirRef - Ref to merge into HEAD
+   * @param {{ ours?: string, theirs?: string, fastForward?: boolean, mergeDriver?: Function, message?: string, author?: object } & Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async merge(path, theirRef, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('merge', () => git.merge({ fs, dir: path, theirs: theirRef, ...rest }));
+  }
+
+  /**
+   * Fast-forward a branch to a remote ref. Moved from git.js:1067 (ref +
+   * onAuth). iso-git's fastForward performs a fetch, so `http` is always
+   * attached; an `onAuth` provided via opts overrides the built-in GitHub
+   * guard (rest spreads after the auth plumbing, mirroring the network
+   * methods above).
+   *
+   * @param {string} path - Local repository directory
+   * @param {{ ref?: string, auth?: AuthInfo, signal?: AbortSignal } & Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async fastForward(path, opts = {}) {
+    const { auth, signal, ...rest } = opts;
+    return wrap('fastForward', () => git.fastForward({
+      fs,
+      http,
+      dir: path,
+      ...(signal ? { signal } : {}),
+      ...this._authForRemote(path, auth),
+      ...rest,
+    }));
+  }
+
+  /**
+   * Write a ref. Contract: `writeRef(path, ref, oid)` — moved from
+   * git.js:148-154, gitSafety.js:128-134 (`refs/heads/<branch>` + oid +
+   * `force: true`, which flows via opts).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} ref - Full ref name (e.g. 'refs/heads/main')
+   * @param {string} oid - Commit OID to point the ref at
+   * @param {{ force?: boolean } & Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async writeRef(path, ref, oid, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('writeRef', () => git.writeRef({ fs, dir: path, ref, value: oid, ...rest }));
+  }
+
+  /**
+   * Get the working-tree state matrix. Returns the RAW isomorphic-git
+   * output — rows of `[filepath, headRefCount, workdirRefCount,
+   * stageRefCount]` (0=absent, 1=present HEAD/tree variant) with NO
+   * filtering or normalization (call sites filter themselves).
+   *
+   * @param {string} path - Local repository directory
+   * @param {Record<string, unknown>} [opts] - e.g. `{ cache }`, `filter`
+   * @returns {Promise<Array<[string, number, number, number]>>}
+   */
+  async statusMatrix(path, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('statusMatrix', () => git.statusMatrix({ fs, dir: path, ...rest }));
+  }
+
+  /**
+   * Get the current branch name (moved from git.js:560/763/785,
+   * gitSafety.js:80/185/353 — `cache` and `fullname` flow via opts).
+   *
+   * @param {string} path - Local repository directory
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<string|undefined>} Branch name (undefined when detached)
+   */
+  async currentBranch(path, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('currentBranch', () => git.currentBranch({ fs, dir: path, ...rest }));
+  }
+
+  /**
+   * List local branches — or remote ones when `{ remote: 'origin' }`
+   * (moved from git.js:593, gitOperations.js:249/294/346,
+   * projectCreation.js:420-421). Returns the RAW string array.
+   *
+   * @param {string} path - Local repository directory
+   * @param {{ remote?: string } & Record<string, unknown>} [opts]
+   * @returns {Promise<string[]>}
+   */
+  async listBranches(path, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('listBranches', () => git.listBranches({ fs, dir: path, ...rest }));
+  }
+
+  /**
+   * List all refs in the repository (moved from git.js:566). RAW output.
+   *
+   * @param {string} path - Local repository directory
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<string[]>} Ref paths (e.g. 'refs/heads/master')
+   */
+  async listRefs(path, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('listRefs', () => git.listRefs({ fs, dir: path, ...rest }));
+  }
+
+  /**
+   * Resolve a ref to an OID (moved from git.js:146/827/1538/1721,
+   * gitSafety.js:81/88/127/310 — supports 'HEAD', 'origin/x',
+   * 'refs/remotes/origin/x', full ref paths).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} ref - Ref to resolve
+   * @param {Record<string, unknown>} [opts] - e.g. `{ cache }`, `{ depth }`
+   * @returns {Promise<string>} 40-char commit OID
+   */
+  async resolveRef(path, ref, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('resolveRef', () => git.resolveRef({ fs, dir: path, ref, ...rest }));
+  }
+
+  /**
+   * Read a commit object (moved from git.js:836/861, gitSafety.js:322,
+   * projectCreation.js:479). RAW `{ oid, commit, payload }` output.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} oid - Commit OID
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<{ oid: string, commit: object, payload: string }>}
+   */
+  async readCommit(path, oid, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('readCommit', () => git.readCommit({ fs, dir: path, oid, ...rest }));
+  }
+
+  /**
+   * Read a blob (moved from gitMergeDriver.js:67 — oid + filepath for the
+   * binary theirs fallback). RAW `{ oid, blob }` output (blob is Uint8Array).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} oid - Commit/tree OID containing the file
+   * @param {{ filepath: string } & Record<string, unknown>} opts
+   * @returns {Promise<{ oid: string, blob: Uint8Array }>}
+   */
+  async readBlob(path, oid, opts) {
+    return wrap('readBlob', () => git.readBlob({ fs, dir: path, oid, ...opts }));
+  }
+
+  /**
+   * Read a config value (moved from git.js:808-813 `remote.origin.url` with
+   * cache, gitOperations.js:625, projects.js:270). Returns `undefined` when
+   * unset (iso-git behavior — no defaults injected).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} configPath - Config key (e.g. 'remote.origin.url')
+   * @param {Record<string, unknown>} [opts] - e.g. `{ cache }`, `{ all: true }`
+   * @returns {Promise<string|string[]|undefined>}
+   */
+  async getConfig(path, configPath, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('getConfig', () => git.getConfig({ fs, dir: path, path: configPath, ...rest }));
+  }
+
+  /**
+   * Write a config value (moved from git.js:738-739
+   * `branch.<name>.remote`/`.merge`, gitOperations.js:177-190 user config,
+   * 601-602 core.*).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} configPath - Config key
+   * @param {string} value - Config value
+   * @param {Record<string, unknown>} [opts]
+   * @returns {Promise<void>}
+   */
+  async setConfig(path, configPath, value, opts = {}) {
+    const { ...rest } = opts;
+    return wrap('setConfig', () => git.setConfig({ fs, dir: path, path: configPath, value, ...rest }));
   }
 
   // ─── Internal ───────────────────────────────────────────────────────────────
