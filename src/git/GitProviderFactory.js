@@ -22,10 +22,13 @@ let cachedInstance = null;
 
 /**
  * Create (or return cached) git provider instance for the configured provider.
+ * @param {Object} [providerOptions] - Passed through to the provider
+ *   constructor (IsomorphicGitProvider accepts `loadGit`/`loadHttp` module
+ *   overrides; ignored after first call — the instance is cached).
  * @returns {Object} provider instance implementing the GitProvider contract
  * @throws {Error} if GIT_PROVIDER is unsupported or implementation not yet available
  */
-function createGitProvider() {
+function createGitProvider(providerOptions = {}) {
   if (cachedInstance) {
     return cachedInstance;
   }
@@ -49,7 +52,7 @@ function createGitProvider() {
       } catch {
         throw new Error('IsomorphicGitProvider not implemented yet — Wave 3');
       }
-      instance = new Ctor();
+      instance = new Ctor(providerOptions);
       break;
     }
 

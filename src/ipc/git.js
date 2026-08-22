@@ -8,9 +8,9 @@
 
 const { ipcMain } = require('electron');
 const path = require('path');
-const git = require('isomorphic-git');
-const http = require('isomorphic-git/http/node');
 const { GitOperations } = require('./gitOperations.js');
+const { GitService } = require('../git/GitService.js');
+const { createGitProvider } = require('../git/GitProviderFactory.js');
 
 // Resilient import: fallback to 120s if gitFlowTypes.js is unavailable yet.
 const {
@@ -102,11 +102,21 @@ class GitHandlers {
    * @param {Object} dependencies.logger - Logger instance
    * @param {Object} dependencies.databaseManager - Database manager instance
    * @param {Object} [dependencies.permissionHandlers] - Permission handler (for publish-main gating)
+   * @param {Object} [dependencies.gitService] - GitService facade (provider-backed; defaults to a new one)
    */
-  constructor({ logger, databaseManager, permissionHandlers }) {
+  constructor({ logger, databaseManager, permissionHandlers, gitService }) {
     this.logger = logger;
     this.databaseManager = databaseManager;
     this.gitOps = new GitOperations({ logger, databaseManager });
+    // vitest's vi.mock() only intercepts imports in files it transforms;
+    // this file is transformed, so iso-git is acquired HERE (mock-visible)
+    // and injected into the provider via module-source loaders.
+    this.git = gitService || new GitService({
+      provider: createGitProvider({
+        loadGit: () => this._getGit(),
+        loadHttp: () => this._getHttp(),
+      }),
+    });
     this.permissionHandlers = permissionHandlers || null;
     this.gitOperationInProgress = false;
     this.LOCK_TIMEOUT_MS = _IMPORTED_LOCK_TIMEOUT_MS;
@@ -120,6 +130,7 @@ class GitHandlers {
     this._sendOutputBuffer = [];
     this._sendOutputTimer = null;
     this._gitModuleCache = null;
+    this._httpModuleCache = null;
     this.cancelRequested = false;
     this.gitSafety = _GitSafetyClass ? new _GitSafetyClass({ logger }) : null;
     this.gitPreflight = _GitPreflightClass
@@ -134,6 +145,13 @@ class GitHandlers {
     return this._gitModuleCache;
   }
 
+  async _getHttp() {
+    if (!this._httpModuleCache) {
+      this._httpModuleCache = await import('isomorphic-git/http/node');
+    }
+    return this._httpModuleCache;
+  }
+
   /**
    * Equivalent to `git reset --hard <targetRef>` using available isomorphic-git functions
    * @param {string} projectPath - Absolute path to the git repository
@@ -141,18 +159,15 @@ class GitHandlers {
    * @returns {Promise<void>}
    */
   async _hardResetBranch(projectPath, targetRef) {
-    const fs = require('fs');
-    const gitMod = await this._getGit();
-    const oid = await gitMod.resolveRef({ fs, dir: projectPath, ref: targetRef });
+    const oid = await this.git.resolveRef(projectPath, targetRef);
     const localBranch = targetRef.replace(/^origin\//, '');
-    await gitMod.writeRef({
-      fs,
-      dir: projectPath,
-      ref: `refs/heads/${localBranch}`,
-      value: oid,
-      force: true,
-    });
-    await gitMod.checkout({ fs, dir: projectPath, ref: localBranch, force: true });
+    await this.git.writeRef(
+      projectPath,
+      `refs/heads/${localBranch}`,
+      oid,
+      { force: true },
+    );
+    await this.git.checkout(projectPath, localBranch, { force: true });
   }
 
   /**
@@ -402,10 +417,7 @@ class GitHandlers {
    */
   async gitCheckStatus(projectPath) {
     try {
-      const fs = require('fs');
-      const gitMod = await this._getGit();
-
-      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath, cache: this._gitCache });
+      const matrix = await this.git.statusMatrix(projectPath, { cache: this._gitCache });
       const dirtyFiles = matrix.filter(([, head, workdir, stage]) =>
         !(head === 1 && workdir === 1 && stage === 1)
       );
@@ -430,13 +442,11 @@ class GitHandlers {
    */
   async gitCheckUnpushed(projectPath) {
     try {
-      const fs = require('fs');
-      const gitMod = await this._getGit();
-      const currentBranch = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
-      const localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+      const currentBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
+      const localSha = await this.git.resolveRef(projectPath, 'HEAD');
       let remoteSha = null;
       try {
-        remoteSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${currentBranch}` });
+        remoteSha = await this.git.resolveRef(projectPath, `refs/remotes/origin/${currentBranch}`);
       } catch (_e) {
         return { success: true, hasUnpushed: true, currentBranch, localSha, remoteSha: null };
       }
@@ -449,8 +459,6 @@ class GitHandlers {
 
   /**
    * Stage all dirty files and create a commit
-   * @param {Object} gitMod - isomorphic-git module
-   * @param {Object} fs - filesystem module
    * @param {string} projectPath - Path to the git repository
    * @param {string} commitMessage - Commit message
    * @param {Object} author - Author object with name and email
@@ -463,7 +471,7 @@ class GitHandlers {
    * @returns {Promise<string|null>} Commit SHA or null if nothing to commit
    * @private
    */
-  async _commitAll(gitMod, fs, projectPath, commitMessage, author, dirtyFiles = null) {
+  async _commitAll(projectPath, commitMessage, author, dirtyFiles = null) {
     try {
       let dirty;
 
@@ -477,7 +485,7 @@ class GitHandlers {
           return [entry, 1, 1, 1];
         });
       } else {
-        const matrix = await gitMod.statusMatrix({ fs, dir: projectPath, cache: this._gitCache });
+        const matrix = await this.git.statusMatrix(projectPath, { cache: this._gitCache });
         dirty = matrix.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
       }
 
@@ -497,9 +505,9 @@ class GitHandlers {
           batch.map(async ([filepath, , worktreeStatus]) => {
             try {
               if (worktreeStatus) {
-                await gitMod.add({ fs, dir: projectPath, filepath });
+                await this.git.add(projectPath, filepath);
               } else {
-                await gitMod.remove({ fs, dir: projectPath, filepath });
+                await this.git.remove(projectPath, filepath);
               }
             } catch (fileError) {
               stageErrors.push({ filepath, error: fileError.message });
@@ -521,7 +529,7 @@ class GitHandlers {
       this._gitCache = {};
 
       this.sendOutput(`💾 Commitando: "${commitMessage}"`);
-      const sha = await gitMod.commit({ fs, dir: projectPath, message: commitMessage, author });
+      const sha = await this.git.commit(projectPath, commitMessage, { author });
       this.sendOutput(`✅ Commit criado: ${sha.substring(0, 7)}`);
       return sha;
     } catch (error) {
@@ -557,13 +565,13 @@ class GitHandlers {
       // Get current branch with fallback
       let currentBranch = 'master'; // Default fallback
       try {
-        currentBranch = await git.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+        currentBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
         this.logger.info(`✅ Current branch detected: ${currentBranch}`);
       } catch (error) {
         this.logger.warn(`⚠️ Could not determine current branch, using fallback: ${error.message}`);
         // Try to get branches directly as fallback
         try {
-          const refs = await git.listRefs({ fs, dir: projectPath, cache: this._gitCache });
+          const refs = await this.git.listRefs(projectPath, { cache: this._gitCache });
           const headRef = refs.find(ref => ref === 'HEAD');
            if (headRef) {
              // Try to resolve HEAD manually
@@ -590,7 +598,7 @@ class GitHandlers {
     
     try {
       // Get all branches (local and remote) using isomorphic-git's built-in method
-      const allBranches = await git.listBranches({ fs, dir: projectPath, cache: this._gitCache });
+      const allBranches = await this.git.listBranches(projectPath, { cache: this._gitCache });
       
       // Separate local and remote branches (same logic as GitOperations.js)
       const localBranches = allBranches.filter(branch => !branch.includes('origin/'));
@@ -663,11 +671,7 @@ class GitHandlers {
    */
   async gitCreateBranch(projectPath, branchName) {
     try {
-      await git.branch({
-        fs: require('fs'),
-        dir: projectPath,
-        ref: branchName
-      });
+      await this.git.branch(projectPath, branchName);
       this._gitCache = {};
       
       this.logger.info(`Created branch: ${branchName}`);
@@ -694,11 +698,7 @@ class GitHandlers {
       
       // First, try to checkout directly (for local branches)
       try {
-        await git.checkout({
-          fs,
-          dir: projectPath,
-          ref: branchName
-        });
+        await this.git.checkout(projectPath, branchName);
         this._gitCache = {};
         
         this.logger.info(`✅ Successfully checked out branch: ${branchName}`);
@@ -718,25 +718,18 @@ class GitHandlers {
           if (localBranch) {
             // Local branch exists but checkout failed, try again with force
             this.logger.info(`📂 Local branch exists, trying checkout again...`);
-            await git.checkout({
-              fs,
-              dir: projectPath,
-              ref: branchName
-            });
+            await this.git.checkout(projectPath, branchName);
             this._gitCache = {};
             this.logger.info(`✅ Successfully checked out local branch: ${branchName}`);
           } else if (remoteBranch) {
             // Remote branch exists, create local tracking branch
             this.logger.info(`📥 Remote branch exists, creating local tracking branch...`);
-            await git.branch({
-              fs,
-              dir: projectPath,
-              ref: branchName,
+            await this.git.branch(projectPath, branchName, {
               object: `origin/${branchName}`,
               checkout: true
             });
-            await git.setConfig({ fs, dir: projectPath, path: `branch.${branchName}.remote`, value: 'origin' });
-            await git.setConfig({ fs, dir: projectPath, path: `branch.${branchName}.merge`, value: `refs/heads/${branchName}` });
+            await this.git.setConfig(projectPath, `branch.${branchName}.remote`, 'origin');
+            await this.git.setConfig(projectPath, `branch.${branchName}.merge`, `refs/heads/${branchName}`);
             this._gitCache = {};
             this.logger.info(`✅ Created and checked out local branch: ${branchName}`);
           } else {
@@ -760,7 +753,7 @@ class GitHandlers {
    */
   async gitGetCurrentBranch(projectPath) {
     try {
-      const currentBranch = await git.currentBranch({ fs: require('fs'), dir: projectPath, cache: this._gitCache });
+      const currentBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
       return currentBranch;
     } catch (error) {
       this.logger.error('Error getting current branch:', error);
@@ -782,7 +775,7 @@ class GitHandlers {
       // Get current branch with fallback
       let currentBranch = 'master';
       try {
-        currentBranch = await git.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+        currentBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
         this.logger.info(`✅ Current branch: ${currentBranch}`);
       } catch (error) {
         this.logger.warn(`⚠️ Could not get current branch: ${error.message}`);
@@ -805,12 +798,7 @@ class GitHandlers {
       // Get remote URL
       let remoteUrl = null;
       try {
-        remoteUrl = await git.getConfig({
-          fs,
-          dir: projectPath,
-          path: 'remote.origin.url',
-          cache: this._gitCache
-        });
+        remoteUrl = await this.git.getConfig(projectPath, 'remote.origin.url', { cache: this._gitCache });
       } catch (error) {
         this.logger.debug('Could not get remote URL:', error.message);
       }
@@ -824,21 +812,11 @@ class GitHandlers {
       
       try {
         // Try to get commit OID for the current branch HEAD
-        const commitOid = await git.resolveRef({
-          fs,
-          dir: projectPath,
-          ref: currentBranch,
-          cache: this._gitCache
-        });
+        const commitOid = await this.git.resolveRef(projectPath, currentBranch, { cache: this._gitCache });
         
         if (commitOid) {
           // Get commit details
-          const commit = await git.readCommit({
-            fs,
-            dir: projectPath,
-            oid: commitOid,
-            cache: this._gitCache
-          });
+          const commit = await this.git.readCommit(projectPath, commitOid, { cache: this._gitCache });
           
           if (commit && commit.commit) {
             lastCommit.hash = commitOid.substring(0, 7); // Short hash (7 characters)
@@ -850,20 +828,10 @@ class GitHandlers {
         this.logger.warn('Could not get last commit info:', error.message);
         // Try fallback to get commit from HEAD directly
         try {
-          const headOid = await git.resolveRef({
-            fs,
-            dir: projectPath,
-            ref: 'HEAD',
-            cache: this._gitCache
-          });
+          const headOid = await this.git.resolveRef(projectPath, 'HEAD', { cache: this._gitCache });
           
           if (headOid) {
-            const commit = await git.readCommit({
-              fs,
-              dir: projectPath,
-              oid: headOid,
-              cache: this._gitCache
-            });
+            const commit = await this.git.readCommit(projectPath, headOid, { cache: this._gitCache });
             
             if (commit && commit.commit) {
               lastCommit.hash = headOid.substring(0, 7);
@@ -881,11 +849,7 @@ class GitHandlers {
       let isClean = true;
       let status = null;
       try {
-        const statusResult = await git.statusMatrix({
-          fs,
-          dir: projectPath,
-          cache: this._gitCache
-        });
+        const statusResult = await this.git.statusMatrix(projectPath, { cache: this._gitCache });
         
         // Check if there are any unstaged changes
         isClean = statusResult.every(row => row[1] === row[2]);
@@ -925,11 +889,7 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
 
-    const fs = require('fs');
-
     try {
-      const gitMod = await this._getGit();
-
       // 1. Início - verificando
       this.sendProgress({
         stage: 'checking',
@@ -940,7 +900,7 @@ class GitHandlers {
 
       const [token, currentBranch] = await Promise.all([
         this.gitOps.getGitHubToken(),
-        gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache })
+        this.git.currentBranch(projectPath, { cache: this._gitCache })
       ]);
 
       if (!token) {
@@ -973,8 +933,8 @@ class GitHandlers {
           this.sendOutput('⚠️ Não foi possível configurar usuário git. Continuando com configuração existente...');
         }
         const [authorName, authorEmail] = await Promise.all([
-          gitMod.getConfig({ fs, dir: projectPath, path: 'user.name', cache: this._gitCache }).then(v => v || 'documental'),
-          gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then(v => v || 'documental@app')
+          this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then(v => v || 'documental'),
+          this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then(v => v || 'documental@app')
         ]);
         const author = { name: authorName, email: authorEmail };
 
@@ -986,7 +946,7 @@ class GitHandlers {
           message: 'Criando commit...'
         });
 
-        await this._commitAll(gitMod, fs, projectPath, commitMessage, author);
+        await this._commitAll(projectPath, commitMessage, author);
 
         // Check for cancellation after auto-commit
         if (this.isCancelRequested()) {
@@ -1006,10 +966,7 @@ class GitHandlers {
 
       this.sendOutput(`📥 Buscando alterações da branch remota '${currentBranch}'...`);
 
-      await gitMod.fetch({
-        fs,
-        http,
-        dir: projectPath,
+      await this.git.fetch(projectPath, {
         remote: 'origin',
         ref: currentBranch,
         singleBranch: true,
@@ -1055,27 +1012,20 @@ class GitHandlers {
 
       // Try fast-forward first (faster than pull)
       try {
-        const canFastForward = await gitMod.canFastForward({
-          fs,
-          dir: projectPath,
+        const canFastForward = await this.git.canFastForward(projectPath, {
           ref: `origin/${currentBranch}`,
           target: currentBranch
         });
 
         if (canFastForward) {
           this.sendOutput('⚡ Fast-forward possível, atualizando...');
-          await gitMod.fastForward({
-            fs,
-            dir: projectPath,
+          await this.git.fastForward(projectPath, {
             ref: currentBranch,
             onAuth: () => auth,
           });
         } else {
           this.sendOutput('🔄 Mesclando alterações...');
-          await gitMod.pull({
-            fs,
-            http,
-            dir: projectPath,
+          await this.git.pull(projectPath, {
             ref: currentBranch,
             singleBranch: true,
             author: { name: 'documental', email: 'documental@app' },
@@ -1085,10 +1035,7 @@ class GitHandlers {
       } catch (ffError) {
         // Fallback to regular pull if fast-forward check fails
         this.logger.warn('Fast-forward check failed, using regular pull:', ffError);
-        await gitMod.pull({
-          fs,
-          http,
-          dir: projectPath,
+        await this.git.pull(projectPath, {
           ref: currentBranch,
           singleBranch: true,
           author: { name: 'documental', email: 'documental@app' },
@@ -1144,13 +1091,10 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
 
-    const fs = require('fs');
-
     let tempBranchCreated = false;
     let tempBranch = null;
     let backupBranch = null;
     try {
-      const gitMod = await this._getGit();
       this._gitCache = {};
 
       this.sendProgress({
@@ -1206,8 +1150,8 @@ class GitHandlers {
         });
 
         const [authorName, authorEmail] = await Promise.all([
-          gitMod.getConfig({ fs, dir: projectPath, path: 'user.name', cache: this._gitCache }).then(v => v || 'documental'),
-          gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then(v => v || 'documental@app')
+          this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then(v => v || 'documental'),
+          this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then(v => v || 'documental@app')
         ]);
         const author = { name: authorName, email: authorEmail };
 
@@ -1218,14 +1162,14 @@ class GitHandlers {
           message: 'Criando commit...'
         });
 
-        await this._commitAll(gitMod, fs, projectPath, commitMessage, author);
+        await this._commitAll(projectPath, commitMessage, author);
 
         if (this.isCancelRequested()) {
           this.logger.info('Push operation cancelled after commit');
           return { success: false, cancelled: true, message: 'Operation cancelled by user' };
         }
 
-        const localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+        const localSha = await this.git.resolveRef(projectPath, 'HEAD');
 
         // firstPublish short-circuit: no remote branch yet → push directly.
         if (firstPublishFromPreflight) {
@@ -1243,8 +1187,8 @@ class GitHandlers {
           try {
             this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
             await this._raceTimeout(
-              gitMod.fetch({
-                fs, http, dir: projectPath, remote: 'origin', ref: targetBranch,
+              this.git.fetch(projectPath, {
+                remote: 'origin', ref: targetBranch,
                 singleBranch: true, onAuth: () => auth,
               }),
               this.STEP_TIMEOUT_FETCH_MS,
@@ -1260,13 +1204,10 @@ class GitHandlers {
             // Vitest throws on accessing undefined mock exports — guard with try/catch.
             let canFF = false;
             try {
-              if (typeof gitMod.canFastForward === 'function') {
-                canFF = await gitMod.canFastForward({
-                  fs, dir: projectPath,
-                  ref: `origin/${targetBranch}`,
-                  target: 'HEAD',
-                });
-              }
+              canFF = await this.git.canFastForward(projectPath, {
+                ref: `origin/${targetBranch}`,
+                target: 'HEAD',
+              });
             } catch (_ffErr) { canFF = false; }
             if (canFF) {
               this.sendOutput('⚡ Modo rápido');
@@ -1278,22 +1219,20 @@ class GitHandlers {
                 message: 'Integrando alterações (suas alterações têm prioridade)...'
               });
 
-              try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch }); } catch (_e) { /* not existent */ }
+              try { await this.git.deleteBranch(projectPath, tempBranch); } catch (_e) { /* not existent */ }
               await this._raceTimeout(
-                gitMod.checkout({ fs, dir: projectPath, ref: `origin/${targetBranch}` }),
+                this.git.checkout(projectPath, `origin/${targetBranch}`),
                 this.STEP_TIMEOUT_CHECKOUT_MS,
                 `checkout origin/${targetBranch}`,
               );
-              await gitMod.branch({ fs, dir: projectPath, ref: tempBranch, checkout: true });
+              await this.git.branch(projectPath, tempBranch, { checkout: true });
               tempBranchCreated = true;
 
               this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
               try {
                 await this._raceTimeout(
-                  gitMod.merge({
-                    fs, dir: projectPath,
+                  this.git.merge(projectPath, localSha, {
                     ours: tempBranch,
-                    theirs: localSha,
                     fastForward: false,
                     ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
                     message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
@@ -1303,19 +1242,22 @@ class GitHandlers {
                   `merge publish ${targetBranch}`,
                 );
               } catch (mergeErr) {
-                if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+                const isConflict = mergeErr.code === 'MergeConflictError' ||
+                  mergeErr.name === 'MergeConflictError' ||
+                  (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
+                if (isConflict) {
                   this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
-                  const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+                  const conflictFiles = Array.isArray(mergeErr.data)
+                    ? mergeErr.data
+                    : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
                   for (const filepath of conflictFiles) {
                     try {
-                      await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
+                      await resolveBinaryTheirs(await this._getGit(), require('fs'), projectPath, filepath, localSha);
                     } catch (resolveErr) {
                       this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
                     }
                   }
-                  await gitMod.commit({
-                    fs, dir: projectPath,
-                    message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+                  await this.git.commit(projectPath, `Merge publish (binary resolved) — ${new Date().toISOString()}`, {
                     author,
                     parent: [tempBranch, localSha],
                   });
@@ -1330,8 +1272,8 @@ class GitHandlers {
                 !fetchErr.message.includes('404')) {
               if (tempBranchCreated) {
                 try {
-                  await gitMod.checkout({ fs, dir: projectPath, ref: targetBranch });
-                  await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+                  await this.git.checkout(projectPath, targetBranch);
+                  await this.git.deleteBranch(projectPath, tempBranch);
                   tempBranchCreated = false;
                 } catch (_e) { /* ignore cleanup */ }
               }
@@ -1358,8 +1300,8 @@ class GitHandlers {
 
       const pushRef = tempBranchCreated ? tempBranch : targetBranch;
       await this._raceTimeout(
-        gitMod.push({
-          fs, http, dir: projectPath, remote: 'origin', ref: pushRef, remoteRef: targetBranch,
+        this.git.push(projectPath, {
+          remote: 'origin', branch: pushRef, remoteRef: targetBranch,
           force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
           onAuth: () => auth,
         }),
@@ -1383,13 +1325,13 @@ class GitHandlers {
         try {
           if (this.gitSafety) {
             const result = await this.gitSafety._safeResetOrCheckout(
-              gitMod, fs, projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
+              await this._getGit(), require('fs'), projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
             );
             backupBranch = result.backupBranch;
           } else {
             await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
           }
-          await gitMod.deleteBranch({ fs, dir: projectPath, ref: tempBranch });
+          await this.git.deleteBranch(projectPath, tempBranch);
           tempBranchCreated = false;
         } catch (_e) {
           this.logger.warn('Post-publish sync failed:', _e.message);
@@ -1398,7 +1340,7 @@ class GitHandlers {
       this._gitCache = {};
 
       if (backupBranch && this.gitSafety) {
-        await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
+        await this.gitSafety.cleanupBackupBranch(await this._getGit(), require('fs'), projectPath, backupBranch);
         backupBranch = null;
       }
 
@@ -1490,14 +1432,14 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
     try {
-      const gitMod = await this._getGit();
+      const gitMod = await this._getGit(); // legacy object-style module for GitSafety helpers (T12/T13)
       const signal = this.getAbortSignal();
 
-      const current = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+      const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
 
       if (current !== BRANCH_PREVIEW) {
         if (!force) {
-          const matrix = await gitMod.statusMatrix({ fs, dir: projectPath, cache: this._gitCache });
+          const matrix = await this.git.statusMatrix(projectPath, { cache: this._gitCache });
           const dirtyFiles = matrix
             .filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1))
             .map(([filepath]) => filepath);
@@ -1508,7 +1450,7 @@ class GitHandlers {
         }
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
-          gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }),
+          this.git.checkout(projectPath, BRANCH_PREVIEW),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout ${BRANCH_PREVIEW}`,
         );
@@ -1517,8 +1459,8 @@ class GitHandlers {
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
       this.sendOutput(`📥 Buscando alterações de origin/${BRANCH_PREVIEW}...`);
       await this._raceTimeout(
-        gitMod.fetch({
-          fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW,
+        this.git.fetch(projectPath, {
+          remote: 'origin', ref: BRANCH_PREVIEW,
           singleBranch: true, depth: 1, ...(signal ? { signal } : {}), ...(auth ? { onAuth: () => auth } : {}),
         }),
         this.STEP_TIMEOUT_FETCH_MS,
@@ -1535,21 +1477,17 @@ class GitHandlers {
       // warning is for user observability. Vitest throws on accessing undefined
       // mock exports — guard with try/catch.
       try {
-        const localHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD', cache: this._gitCache });
+        const localHead = await this.git.resolveRef(projectPath, 'HEAD', { cache: this._gitCache });
         let remoteHead = null;
         try {
-          remoteHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${BRANCH_PREVIEW}`, cache: this._gitCache });
+          remoteHead = await this.git.resolveRef(projectPath, `refs/remotes/origin/${BRANCH_PREVIEW}`, { cache: this._gitCache });
         } catch (_e) { /* remote ref may not exist */ }
         if (remoteHead && remoteHead !== localHead) {
           try {
-            if (typeof gitMod.canFastForward !== 'function') {
-              this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`);
-            } else {
-              const canFF = await gitMod.canFastForward({
-                fs, dir: projectPath, ref: BRANCH_PREVIEW, target: `origin/${BRANCH_PREVIEW}`,
-              });
-              if (!canFF) this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`);
-            }
+            const canFF = await this.git.canFastForward(projectPath, {
+              ref: BRANCH_PREVIEW, target: `origin/${BRANCH_PREVIEW}`,
+            });
+            if (!canFF) this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`);
           } catch (_e) { this.sendOutput(`⚠️ Divergência significativa detectada — backup criado`); }
         }
       } catch (_e) { /* best-effort divergence detection */ }
@@ -1564,7 +1502,7 @@ class GitHandlers {
       this.sendOutput(`✅ Atualizado para origin/${BRANCH_PREVIEW}`);
       return { success: true, branch: BRANCH_PREVIEW };
     } catch (error) {
-      if (error.name === 'AbortError') {
+      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
       this.logger.error('Error in gitRefresh:', error);
@@ -1650,7 +1588,7 @@ class GitHandlers {
     let originalBranch = null;
     let backupBranch = null;
     try {
-      const gitMod = await this._getGit();
+      const gitMod = await this._getGit(); // legacy object-style module for GitSafety/gitMergeDriver helpers (T12/T13)
       const signal = this.getAbortSignal();
       const auth = { username: token, password: 'x-oauth-basic' };
 
@@ -1658,11 +1596,11 @@ class GitHandlers {
         this.logger.warn('Could not configure git user, proceeding with existing config');
       }
 
-      originalBranch = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+      originalBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
       if (originalBranch !== BRANCH_PREVIEW) {
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
-          gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }),
+          this.git.checkout(projectPath, BRANCH_PREVIEW),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout ${BRANCH_PREVIEW}`,
         );
@@ -1670,15 +1608,15 @@ class GitHandlers {
 
       this.sendOutput('📝 Preparando commit...');
       const [authorName, authorEmail] = await Promise.all([
-        gitMod.getConfig({ fs, dir: projectPath, path: 'user.name', cache: this._gitCache }).then((v) => v || 'documental'),
-        gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then((v) => v || 'documental@app'),
+        this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
+        this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
       const author = { name: authorName, email: authorEmail };
-      let localSha = await this._commitAll(gitMod, fs, projectPath, commitMessage, author).catch((e) => {
+      let localSha = await this._commitAll(projectPath, commitMessage, author).catch((e) => {
         throw e;
       });
       if (!localSha) {
-        localSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+        localSha = await this.git.resolveRef(projectPath, 'HEAD');
         this.sendOutput('ℹ️ Nenhuma alteração nova; usando HEAD atual.');
       }
 
@@ -1687,8 +1625,8 @@ class GitHandlers {
         this.sendOutput('ℹ️ Branch preview não existe no remoto — criando.');
         this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
-          gitMod.push({
-            fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
+          this.git.push(projectPath, {
+            remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
             force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
           }),
           this.STEP_TIMEOUT_PUSH_MS,
@@ -1704,8 +1642,8 @@ class GitHandlers {
         try {
           this.sendOutput(`📥 Buscando origin/${BRANCH_PREVIEW}...`);
           await this._raceTimeout(
-            gitMod.fetch({
-              fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW,
+            this.git.fetch(projectPath, {
+              remote: 'origin', ref: BRANCH_PREVIEW,
               singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth,
             }),
             this.STEP_TIMEOUT_FETCH_MS,
@@ -1717,20 +1655,18 @@ class GitHandlers {
           // Vitest throws on accessing undefined mock exports — guard with try/catch.
           let canFF = false;
           try {
-            if (typeof gitMod.canFastForward === 'function') {
-              const originSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, cache: this._gitCache });
-              canFF = await gitMod.canFastForward({
-                fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}`, target: localSha,
-              });
-              void originSha;
-            }
+            const originSha = await this.git.resolveRef(projectPath, `origin/${BRANCH_PREVIEW}`, { cache: this._gitCache });
+            canFF = await this.git.canFastForward(projectPath, {
+              ref: `origin/${BRANCH_PREVIEW}`, target: localSha,
+            });
+            void originSha;
           } catch (_ffErr) { canFF = false; }
           if (canFF) {
             this.sendOutput('⚡ Modo rápido');
             this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
             await this._raceTimeout(
-              gitMod.push({
-                fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
+              this.git.push(projectPath, {
+                remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
                 force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
               }),
               this.STEP_TIMEOUT_PUSH_MS,
@@ -1741,22 +1677,20 @@ class GitHandlers {
             return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
           }
 
-          try { await gitMod.deleteBranch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH }); } catch (_e) { /* not existent — ok */ }
+          try { await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH); } catch (_e) { /* not existent — ok */ }
           await this._raceTimeout(
-            gitMod.checkout({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}` }),
+            this.git.checkout(projectPath, `origin/${BRANCH_PREVIEW}`),
             this.STEP_TIMEOUT_CHECKOUT_MS,
             `checkout origin/${BRANCH_PREVIEW}`,
           );
-          await gitMod.branch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH, checkout: true });
+          await this.git.branch(projectPath, TEMP_PUBLISH_BRANCH, { checkout: true });
           tempBranchCreated = true;
 
           this.sendOutput('🔀 Mesclando alterações (estratégia: theirs)...');
           try {
             await this._raceTimeout(
-              gitMod.merge({
-                fs, dir: projectPath,
+              this.git.merge(projectPath, localSha, {
                 ours: TEMP_PUBLISH_BRANCH,
-                theirs: localSha,
                 fastForward: false,
                 ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
                 message: `Merge publish (preview) — ${new Date().toISOString()}`,
@@ -1766,9 +1700,14 @@ class GitHandlers {
               `merge publish ${BRANCH_PREVIEW}`,
             );
           } catch (mergeErr) {
-            if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+            const isConflict = mergeErr.code === 'MergeConflictError' ||
+              mergeErr.name === 'MergeConflictError' ||
+              (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
+            if (isConflict) {
               this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
-              const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+              const conflictFiles = Array.isArray(mergeErr.data)
+                ? mergeErr.data
+                : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
               for (const filepath of conflictFiles) {
                 try {
                   await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, localSha);
@@ -1776,9 +1715,7 @@ class GitHandlers {
                   this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
                 }
               }
-              await gitMod.commit({
-                fs, dir: projectPath,
-                message: `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+              await this.git.commit(projectPath, `Merge publish (binary resolved) — ${new Date().toISOString()}`, {
                 author,
                 parent: [TEMP_PUBLISH_BRANCH, localSha],
               });
@@ -1789,8 +1726,8 @@ class GitHandlers {
 
           this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
           await this._raceTimeout(
-            gitMod.push({
-              fs, http, dir: projectPath, remote: 'origin', ref: TEMP_PUBLISH_BRANCH, remoteRef: BRANCH_PREVIEW,
+            this.git.push(projectPath, {
+              remote: 'origin', branch: TEMP_PUBLISH_BRANCH, remoteRef: BRANCH_PREVIEW,
               force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
             }),
             this.STEP_TIMEOUT_PUSH_MS,
@@ -1820,12 +1757,13 @@ class GitHandlers {
         } catch (attemptErr) {
           lastError = attemptErr;
           const msg = attemptErr.message || '';
-          if (msg.includes('non-fast-forward') || msg.includes('fetch first') || attemptErr.code === 'PushRejectedError') {
+          const attemptCode = attemptErr.code || (attemptErr.cause && attemptErr.cause.code);
+          if (msg.includes('non-fast-forward') || msg.includes('fetch first') || attemptCode === 'PushRejectedError') {
             this.sendOutput(`⚠️ Push rejeitado (tentativa ${attempt}/${MAX_PUBLISH_RETRIES}). Re-tentando...`);
             if (tempBranchCreated) {
               try {
-                await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
-                await gitMod.deleteBranch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH });
+                await this.git.checkout(projectPath, BRANCH_PREVIEW);
+                await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH);
               } catch (_e) { /* ignore cleanup errors */ }
               tempBranchCreated = false;
             }
@@ -1836,7 +1774,7 @@ class GitHandlers {
       }
       throw lastError || new Error('Publish failed after retries');
     } catch (error) {
-      if (error.name === 'AbortError') {
+      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
       this.logger.error('Error in gitPublishPreview:', error);
@@ -1847,14 +1785,14 @@ class GitHandlers {
         const gitMod = await this._getGit();
         if (tempBranchCreated) {
           try {
-            const current = await gitMod.currentBranch({ fs, dir: projectPath, cache: this._gitCache });
+            const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
             if (current === TEMP_PUBLISH_BRANCH) {
-              await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
+              await this.git.checkout(projectPath, BRANCH_PREVIEW);
             }
-            await gitMod.deleteBranch({ fs, dir: projectPath, ref: TEMP_PUBLISH_BRANCH });
+            await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH);
           } catch (_e) { /* ignore cleanup errors */ }
         } else if (originalBranch && originalBranch !== BRANCH_PREVIEW) {
-          try { await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW }); } catch (_e) { /* ignore */ }
+          try { await this.git.checkout(projectPath, BRANCH_PREVIEW); } catch (_e) { /* ignore */ }
         }
         if (backupBranch && this.gitSafety) {
           await this.gitSafety.cleanupBackupBranch(gitMod, fs, projectPath, backupBranch);
@@ -1945,19 +1883,19 @@ class GitHandlers {
     }
     let backupBranch = null;
     try {
-      const gitMod = await this._getGit();
+      const gitMod = await this._getGit(); // legacy object-style module for GitSafety/gitMergeDriver helpers (T12/T13)
       const signal = this.getAbortSignal();
       const auth = { username: token, password: 'x-oauth-basic' };
 
       this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
       await Promise.all([
         this._raceTimeout(
-          gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
           this.STEP_TIMEOUT_FETCH_MS,
           `fetch origin/${BRANCH_MAIN}`,
         ),
         this._raceTimeout(
-          gitMod.fetch({ fs, http, dir: projectPath, remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
           this.STEP_TIMEOUT_FETCH_MS,
           `fetch origin/${BRANCH_PREVIEW}`,
         ),
@@ -1966,7 +1904,7 @@ class GitHandlers {
 
       this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN}...`);
       await this._raceTimeout(
-        gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_MAIN }),
+        this.git.checkout(projectPath, BRANCH_MAIN),
         this.STEP_TIMEOUT_CHECKOUT_MS,
         `checkout ${BRANCH_MAIN}`,
       );
@@ -1979,21 +1917,18 @@ class GitHandlers {
 
       this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
       const [authorName, authorEmail] = await Promise.all([
-        gitMod.getConfig({ fs, dir: projectPath, path: 'user.name', cache: this._gitCache }).then((v) => v || 'documental'),
-        gitMod.getConfig({ fs, dir: projectPath, path: 'user.email', cache: this._gitCache }).then((v) => v || 'documental@app'),
+        this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
+        this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
       // Resolve theirs (origin/preview) OID up-front for the binary fallback path.
       let theirsOid = null;
       try {
-        theirsOid = await gitMod.resolveRef({ fs, dir: projectPath, ref: `origin/${BRANCH_PREVIEW}` });
+        theirsOid = await this.git.resolveRef(projectPath, `origin/${BRANCH_PREVIEW}`);
       } catch (_refErr) { /* best effort — binary fallback will simply fail later */ }
       try {
         await this._raceTimeout(
-          gitMod.merge({
-            fs,
-            dir: projectPath,
+          this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
             ours: BRANCH_MAIN,
-            theirs: `origin/${BRANCH_PREVIEW}`,
             fastForward: false,
             ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
             message: `Promote preview to main — ${new Date().toISOString()}`,
@@ -2003,9 +1938,14 @@ class GitHandlers {
           `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
         );
       } catch (mergeErr) {
-        if (mergeErr.code === 'MergeConflictError' || mergeErr.name === 'MergeConflictError') {
+        const isConflict = mergeErr.code === 'MergeConflictError' ||
+          mergeErr.name === 'MergeConflictError' ||
+          (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
+        if (isConflict) {
           this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
-          const conflictFiles = Array.isArray(mergeErr.data) ? mergeErr.data : [];
+          const conflictFiles = Array.isArray(mergeErr.data)
+            ? mergeErr.data
+            : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
           for (const filepath of conflictFiles) {
             try {
               await resolveBinaryTheirs(gitMod, fs, projectPath, filepath, theirsOid);
@@ -2013,9 +1953,7 @@ class GitHandlers {
               this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
             }
           }
-          await gitMod.commit({
-            fs, dir: projectPath,
-            message: `Promote preview to main (binary resolved) — ${new Date().toISOString()}`,
+          await this.git.commit(projectPath, `Promote preview to main (binary resolved) — ${new Date().toISOString()}`, {
             author: { name: authorName, email: authorEmail },
             parent: [BRANCH_MAIN, `origin/${BRANCH_PREVIEW}`],
           });
@@ -2035,10 +1973,10 @@ class GitHandlers {
       // produced nothing new (origin/preview === origin/main). A push here would
       // be a no-op and yield a false success. Fail explicitly instead.
       try {
-        const localMainSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: BRANCH_MAIN });
+        const localMainSha = await this.git.resolveRef(projectPath, BRANCH_MAIN);
         let remoteMainSha = null;
         try {
-          remoteMainSha = await gitMod.resolveRef({ fs, dir: projectPath, ref: `refs/remotes/origin/${BRANCH_MAIN}` });
+          remoteMainSha = await this.git.resolveRef(projectPath, `refs/remotes/origin/${BRANCH_MAIN}`);
         } catch (_e) { /* remote ref may not exist yet — proceed to push */ }
 
         if (remoteMainSha && localMainSha === remoteMainSha) {
@@ -2054,12 +1992,9 @@ class GitHandlers {
 
       this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
       await this._raceTimeout(
-        gitMod.push({
-          fs,
-          http,
-          dir: projectPath,
+        this.git.push(projectPath, {
           remote: 'origin',
-          ref: BRANCH_MAIN,
+          branch: BRANCH_MAIN,
           force: false,
           ...(signal ? { signal } : {}),
           onAuth: () => auth,
@@ -2078,12 +2013,13 @@ class GitHandlers {
 
       return { success: true, branch: BRANCH_MAIN };
     } catch (error) {
-      if (error.name === 'AbortError') {
+      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
       const msg = error.message || '';
+      const errData = error.data || (error.cause && error.cause.data);
       const isForbidden =
-        (error.data && (error.data.code === 403 || error.data.status === 403)) ||
+        (errData && (errData.code === 403 || errData.status === 403)) ||
         (error.message && /403|forbidden/i.test(error.message)) ||
         msg.includes('protected branch');
       if (isForbidden) {
@@ -2101,7 +2037,7 @@ class GitHandlers {
         if (this.gitSafety) {
           await this.gitSafety._safeResetOrCheckout(gitMod, fs, projectPath, `origin/${BRANCH_PREVIEW}`);
         } else {
-          await gitMod.checkout({ fs, dir: projectPath, ref: BRANCH_PREVIEW });
+          await this.git.checkout(projectPath, BRANCH_PREVIEW);
           await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
         }
       } catch (_e) { /* best effort */ }
@@ -2123,17 +2059,11 @@ class GitHandlers {
       const token = await this.gitOps.getGitHubToken();
       const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
 
-      const gitMod = await this._getGit();
-
-      const url = await gitMod.getConfig({
-        fs: require('fs'),
-        dir: projectPath,
-        path: 'remote.origin.url',
+      const url = await this.git.getConfig(projectPath, 'remote.origin.url', {
         cache: this._gitCache
       });
 
       const listServerRefsConfig = {
-        http,
         url,
         cache: this._gitCache,
       };
@@ -2142,7 +2072,7 @@ class GitHandlers {
         listServerRefsConfig.onAuth = () => auth;
       }
 
-      const refs = await gitMod.listServerRefs(listServerRefsConfig);
+      const refs = await this.git.listServerRefs(url, listServerRefsConfig);
 
       const branches = refs
         .filter(ref => ref.ref.startsWith('refs/heads/'))

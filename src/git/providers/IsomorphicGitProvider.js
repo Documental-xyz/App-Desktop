@@ -34,10 +34,64 @@
 
 const GitError = require('../GitError');
 
-// ─── Module-level requires (provider boundary — do not duplicate elsewhere) ──
-const git = require('isomorphic-git');
-const http = require('isomorphic-git/http/node');
+// ─── Module-level loading (provider boundary — do not duplicate elsewhere) ──
+// iso-git and its http transport are loaded LAZILY via dynamic import().
+// This is deliberate (T11): vitest's vi.mock() intercepts import() (but NOT
+// CommonJS require()) from transformed source files, so consumers migrated
+// to GitService keep seeing the test mocks — exactly what the previous
+// `await import('isomorphic-git')` in src/ipc/git.js did. In production the
+// dynamic import of the CJS package resolves to the same cached module
+// object as require() (named exports are live bindings to module.exports).
 const fs = require('fs');
+
+/** @type {Object|null} cached isomorphic-git namespace */
+let _gitModule = null;
+/** @type {Object|null} cached isomorphic-git http transport */
+let _httpModule = null;
+
+/**
+ * Load (and cache) the isomorphic-git module namespace.
+ * @returns {Promise<Object>}
+ * @private
+ */
+async function loadGit() {
+  if (!_gitModule) {
+    _gitModule = await import('isomorphic-git');
+  }
+  return _gitModule;
+}
+
+/**
+ * Load (and cache) the isomorphic-git http/node transport. Handles both the
+ * real module (namespace or `.default` carrying `request`) and test mocks
+ * (`{ default: {} }`).
+ * @returns {Promise<Object>}
+ * @private
+ */
+async function loadHttp() {
+  if (!_httpModule) {
+    _httpModule = unwrapHttp(await import('isomorphic-git/http/node'));
+  }
+  return _httpModule;
+}
+
+/**
+ * Unwrap a dynamic-import namespace to the http transport object. Prefers
+ * `.default` (CJS interop), but even PROBING `.default` throws on vitest
+ * mock namespaces whose factory omitted it — hence the try/catch.
+ * @param {Object} m - Imported module namespace (or module itself)
+ * @returns {Object}
+ */
+function unwrapHttp(m) {
+  try {
+    if (m && m.default) {
+      return m.default;
+    }
+  } catch (_e) {
+    // vi.mock namespace without a `default` export — use the namespace as-is
+  }
+  return m;
+}
 
 const PROVIDER_NAME = 'isomorphic-git';
 
@@ -89,8 +143,9 @@ function buildAuth(url, auth) {
   if (auth && auth.token && isGithubUrl(url)) {
     return { onAuth: () => ({ username: auth.token, password: 'x-oauth-basic' }) };
   }
-  // No credentials offered (also mirrors call sites: onAuth: () => undefined).
-  return { onAuth: () => undefined };
+  // No credentials offered — no onAuth key at all (call sites that
+  // conditionally attach auth must keep the key absent, not undefined).
+  return {};
 }
 
 /**
@@ -103,14 +158,17 @@ function buildAuth(url, auth) {
  * @returns {Promise<T>}
  * @private
  */
-async function wrap(operation, fn) {
+async function wrap(provider, operation, fn) {
+  let git;
+  let http;
   try {
-    return await fn();
+    [git, http] = await Promise.all([provider._gitModule(), provider._httpModule()]);
+    return await fn(git, http);
   } catch (err) {
     if (err instanceof GitError) {
       throw err;
     }
-    throw new GitError({
+    const gitError = new GitError({
       operation,
       provider: PROVIDER_NAME,
       // isomorphic-git errors carry numeric/string codes (HttpError.data,
@@ -121,6 +179,13 @@ async function wrap(operation, fn) {
         : err?.message,
       cause: err,
     });
+    // Preserve isomorphic-git's structured error fields (code, data — e.g.
+    // MergeConflictError.data lists conflicted files) so consumers' error
+    // routing (git.js conflict/push-rejected checks) keeps working across
+    // the GitError boundary.
+    if (err && err.code !== undefined) gitError.code = err.code;
+    if (err && err.data !== undefined) gitError.data = err.data;
+    throw gitError;
   }
 }
 
@@ -134,6 +199,35 @@ async function wrap(operation, fn) {
  * @implements {GitProvider}
  */
 class IsomorphicGitProvider {
+  /**
+   * @param {Object} [options]
+   * @param {Function} [options.loadGit] - Override for the iso-git module loader.
+   * @param {Function} [options.loadHttp] - Override for the http/node loader.
+   */
+  constructor({ loadGit, loadHttp } = {}) {
+    /**
+     * Module-source overrides. vi.mock() only intercepts imports in
+     * vitest-transformed files; a consumer reached via CommonJS `require`
+     * chains acquires iso-git through import() in its OWN transformed file
+     * (mock-visible) and injects that acquisition here.
+     * @type {Function|undefined}
+     */
+    this._loadGitOverride = loadGit;
+    this._loadHttpOverride = loadHttp;
+  }
+
+  /** @returns {Promise<Object>} iso-git module (mock-aware in tests) */
+  _gitModule() {
+    return this._loadGitOverride ? this._loadGitOverride() : loadGit();
+  }
+
+  /** @returns {Promise<Object>} http/node transport (unwrapped) */
+  async _httpModule() {
+    return this._loadHttpOverride
+      ? unwrapHttp(await this._loadHttpOverride())
+      : loadHttp();
+  }
+
   // ─── Network operations ─────────────────────────────────────────────────────
 
   /**
@@ -152,7 +246,7 @@ class IsomorphicGitProvider {
     const {
       auth, signal, noCheckout, singleBranch = true, depth = 10, ...rest
     } = opts;
-    return wrap('clone', () => git.clone({
+    return wrap(this, 'clone', (git, http) => git.clone({
       fs,
       http,
       dir: path,
@@ -177,15 +271,15 @@ class IsomorphicGitProvider {
    */
   async fetch(path, opts = {}) {
     const {
-      auth, signal, singleBranch = true, depth = 1, refspec, ...rest
+      auth, signal, singleBranch = true, depth, refspec, ...rest
     } = opts;
-    return wrap('fetch', () => git.fetch({
+    return wrap(this, 'fetch', (git, http) => git.fetch({
       fs,
       http,
       dir: path,
       remote: 'origin',
       singleBranch,
-      depth,
+      ...(depth !== undefined ? { depth } : {}),
       ...(refspec ? { refspec } : {}),
       ...(signal ? { signal } : {}),
       // Remote URL unknown here — token attach decided via remote URL below.
@@ -203,7 +297,7 @@ class IsomorphicGitProvider {
    */
   async pull(path, opts = {}) {
     const { auth, signal, fastForwardOnly, ...rest } = opts;
-    return wrap('pull', () => git.pull({
+    return wrap(this, 'pull', (git, http) => git.pull({
       fs,
       http,
       dir: path,
@@ -226,9 +320,9 @@ class IsomorphicGitProvider {
    */
   async push(path, opts = {}) {
     const {
-      auth, signal, remote = 'origin', branch, remoteRef, force = false, ...rest
+      auth, signal, remote = 'origin', branch, remoteRef,       force = false, ...rest
     } = opts;
-    return wrap('push', () => git.push({
+    return wrap(this, 'push', (git, http) => git.push({
       fs,
       http,
       dir: path,
@@ -251,11 +345,12 @@ class IsomorphicGitProvider {
    * @returns {Promise<import('../GitTypes').RemoteInfo>}
    */
   async getRemoteInfo(url, opts = {}) {
-    const { auth } = opts;
-    return wrap('getRemoteInfo', () => git.getRemoteInfo({
+    const { auth, ...rest } = opts;
+    return wrap(this, 'getRemoteInfo', (git, http) => git.getRemoteInfo({
       http,
       url,
       ...buildAuth(url, auth),
+      ...rest,
     }));
   }
 
@@ -268,12 +363,27 @@ class IsomorphicGitProvider {
    * @returns {Promise<import('../GitTypes').Ref[]>}
    */
   async listServerRefs(url, opts = {}) {
-    const { auth } = opts;
-    return wrap('listServerRefs', () => git.listServerRefs({
+    const { auth, ...rest } = opts;
+    return wrap(this, 'listServerRefs', (git, http) => git.listServerRefs({
       http,
       url,
       ...buildAuth(url, auth),
+      ...rest,
     }));
+  }
+
+  /**
+   * Check whether a ref can be fast-forwarded onto a target without a
+   * merge commit (isomorphic-git helper; forwarded when the underlying
+   * module provides it). Extra options flow through untouched.
+   *
+   * @param {string} path - Local repository directory
+   * @param {{ ref?: string, target?: string } & Record<string, unknown>} [opts]
+   * @returns {Promise<boolean>}
+   */
+  async canFastForward(path, opts = {}) {
+    const { ...rest } = opts;
+    return wrap(this, 'canFastForward', (git) => git.canFastForward({ fs, dir: path, ...rest }));
   }
 
   // ─── Local operations + reads (T10) ─────────────────────────────────────────
@@ -331,7 +441,7 @@ class IsomorphicGitProvider {
   async add(path, files, opts = {}) {
     const list = Array.isArray(files) ? files : [files];
     const { ...rest } = opts;
-    return wrap('add', async () => {
+    return wrap(this, 'add', async (git) => {
       for (const filepath of list) {
         await git.add({ fs, dir: path, filepath, ...rest });
       }
@@ -350,7 +460,7 @@ class IsomorphicGitProvider {
   async remove(path, files, opts = {}) {
     const list = Array.isArray(files) ? files : [files];
     const { ...rest } = opts;
-    return wrap('remove', async () => {
+    return wrap(this, 'remove', async (git) => {
       for (const filepath of list) {
         await git.remove({ fs, dir: path, filepath, ...rest });
       }
@@ -374,13 +484,13 @@ class IsomorphicGitProvider {
    */
   async commit(path, message, opts = {}) {
     const { author, ...rest } = opts;
-    const run = (a) => git.commit({ fs, dir: path, message, ...(a ? { author: a } : {}), ...rest });
-    return wrap('commit', async () => {
+    const run = (git, a) => git.commit({ fs, dir: path, message, ...(a ? { author: a } : {}), ...rest });
+    return wrap(this, 'commit', async (git) => {
       try {
-        return await run(author);
+        return await run(git, author);
       } catch (err) {
         if (!author && err?.code === 'MissingNameError') {
-          return run(DEFAULT_AUTHOR);
+          return run(git, DEFAULT_AUTHOR);
         }
         throw err;
       }
@@ -401,7 +511,7 @@ class IsomorphicGitProvider {
    */
   async branch(path, ref, opts = {}) {
     const { ...rest } = opts;
-    return wrap('branch', () => git.branch({ fs, dir: path, ref, ...rest }));
+    return wrap(this, 'branch', (git) => git.branch({ fs, dir: path, ref, ...rest }));
   }
 
   /**
@@ -415,7 +525,7 @@ class IsomorphicGitProvider {
    */
   async deleteBranch(path, ref, opts = {}) {
     const { ...rest } = opts;
-    return wrap('deleteBranch', () => git.deleteBranch({ fs, dir: path, ref, ...rest }));
+    return wrap(this, 'deleteBranch', (git) => git.deleteBranch({ fs, dir: path, ref, ...rest }));
   }
 
   /**
@@ -431,7 +541,7 @@ class IsomorphicGitProvider {
    */
   async checkout(path, ref, opts = {}) {
     const { ...rest } = opts;
-    return wrap('checkout', () => git.checkout({ fs, dir: path, ref, ...rest }));
+    return wrap(this, 'checkout', (git) => git.checkout({ fs, dir: path, ref, ...rest }));
   }
 
   /**
@@ -451,7 +561,7 @@ class IsomorphicGitProvider {
    */
   async merge(path, theirRef, opts = {}) {
     const { ...rest } = opts;
-    return wrap('merge', () => git.merge({ fs, dir: path, theirs: theirRef, ...rest }));
+    return wrap(this, 'merge', (git) => git.merge({ fs, dir: path, theirs: theirRef, ...rest }));
   }
 
   /**
@@ -467,7 +577,7 @@ class IsomorphicGitProvider {
    */
   async fastForward(path, opts = {}) {
     const { auth, signal, ...rest } = opts;
-    return wrap('fastForward', () => git.fastForward({
+    return wrap(this, 'fastForward', (git, http) => git.fastForward({
       fs,
       http,
       dir: path,
@@ -490,7 +600,7 @@ class IsomorphicGitProvider {
    */
   async writeRef(path, ref, oid, opts = {}) {
     const { ...rest } = opts;
-    return wrap('writeRef', () => git.writeRef({ fs, dir: path, ref, value: oid, ...rest }));
+    return wrap(this, 'writeRef', (git) => git.writeRef({ fs, dir: path, ref, value: oid, ...rest }));
   }
 
   /**
@@ -505,7 +615,7 @@ class IsomorphicGitProvider {
    */
   async statusMatrix(path, opts = {}) {
     const { ...rest } = opts;
-    return wrap('statusMatrix', () => git.statusMatrix({ fs, dir: path, ...rest }));
+    return wrap(this, 'statusMatrix', (git) => git.statusMatrix({ fs, dir: path, ...rest }));
   }
 
   /**
@@ -518,7 +628,7 @@ class IsomorphicGitProvider {
    */
   async currentBranch(path, opts = {}) {
     const { ...rest } = opts;
-    return wrap('currentBranch', () => git.currentBranch({ fs, dir: path, ...rest }));
+    return wrap(this, 'currentBranch', (git) => git.currentBranch({ fs, dir: path, ...rest }));
   }
 
   /**
@@ -532,7 +642,7 @@ class IsomorphicGitProvider {
    */
   async listBranches(path, opts = {}) {
     const { ...rest } = opts;
-    return wrap('listBranches', () => git.listBranches({ fs, dir: path, ...rest }));
+    return wrap(this, 'listBranches', (git) => git.listBranches({ fs, dir: path, ...rest }));
   }
 
   /**
@@ -544,7 +654,7 @@ class IsomorphicGitProvider {
    */
   async listRefs(path, opts = {}) {
     const { ...rest } = opts;
-    return wrap('listRefs', () => git.listRefs({ fs, dir: path, ...rest }));
+    return wrap(this, 'listRefs', (git) => git.listRefs({ fs, dir: path, ...rest }));
   }
 
   /**
@@ -559,7 +669,7 @@ class IsomorphicGitProvider {
    */
   async resolveRef(path, ref, opts = {}) {
     const { ...rest } = opts;
-    return wrap('resolveRef', () => git.resolveRef({ fs, dir: path, ref, ...rest }));
+    return wrap(this, 'resolveRef', (git) => git.resolveRef({ fs, dir: path, ref, ...rest }));
   }
 
   /**
@@ -573,7 +683,7 @@ class IsomorphicGitProvider {
    */
   async readCommit(path, oid, opts = {}) {
     const { ...rest } = opts;
-    return wrap('readCommit', () => git.readCommit({ fs, dir: path, oid, ...rest }));
+    return wrap(this, 'readCommit', (git) => git.readCommit({ fs, dir: path, oid, ...rest }));
   }
 
   /**
@@ -586,7 +696,7 @@ class IsomorphicGitProvider {
    * @returns {Promise<{ oid: string, blob: Uint8Array }>}
    */
   async readBlob(path, oid, opts) {
-    return wrap('readBlob', () => git.readBlob({ fs, dir: path, oid, ...opts }));
+    return wrap(this, 'readBlob', (git) => git.readBlob({ fs, dir: path, oid, ...opts }));
   }
 
   /**
@@ -601,7 +711,7 @@ class IsomorphicGitProvider {
    */
   async getConfig(path, configPath, opts = {}) {
     const { ...rest } = opts;
-    return wrap('getConfig', () => git.getConfig({ fs, dir: path, path: configPath, ...rest }));
+    return wrap(this, 'getConfig', (git) => git.getConfig({ fs, dir: path, path: configPath, ...rest }));
   }
 
   /**
@@ -617,7 +727,7 @@ class IsomorphicGitProvider {
    */
   async setConfig(path, configPath, value, opts = {}) {
     const { ...rest } = opts;
-    return wrap('setConfig', () => git.setConfig({ fs, dir: path, path: configPath, value, ...rest }));
+    return wrap(this, 'setConfig', (git) => git.setConfig({ fs, dir: path, path: configPath, value, ...rest }));
   }
 
   // ─── Internal ───────────────────────────────────────────────────────────────
@@ -635,15 +745,17 @@ class IsomorphicGitProvider {
    * @private
    */
   _authForRemote(path, auth, remote = 'origin') {
+    if (!auth || !auth.token) {
+      // No credentials — no onAuth key at all (parity with call sites that
+      // attach onAuth only when a token exists).
+      return {};
+    }
     // Return an object whose onAuth resolves the remote URL lazily — the
     // remote URL is only known at call time, and buildAuth is sync-safe.
     const onAuth = async () => {
-      if (!auth || !auth.token) {
-        return undefined;
-      }
       let url = null;
       try {
-        const remotes = await git.listRemotes({ fs, dir: path });
+        const remotes = await this._gitModule().then((git) => git.listRemotes({ fs, dir: path }));
         url = (remotes.find((r) => r.remote === remote) || {}).url;
       } catch (_e) {
         url = null;
