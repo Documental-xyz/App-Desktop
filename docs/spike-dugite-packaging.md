@@ -83,3 +83,38 @@ Recomendação T5: resolver via `path.join(path.dirname(require.resolve('dugite/
 
 - `.omo/evidence/task-6-unpacked-git.txt` — `git --version` do artefato, `ls -la`, tamanhos
 - `.omo/evidence/task-6-asar-check.txt` — checagens asar (`--is-pack`, extract-file)
+
+## Validação sem Git (Task 8, 2026-08-22)
+
+**Método usado (docker indisponível neste ambiente — documentado honestamente):**
+sandbox `env -i` com PATH mínimo (`/tmp/opencode/nogit`, symlinks só de coreutils: sh, bash, mkdir, ls, which…) e **nenhum** git acessível — verificado com `which git` → vazio (exit 1). O binário bundled foi invocado sempre por **caminho absoluto**, de dentro da árvore do artefato `dist/linux-unpacked/resources/app.asar.unpacked/node_modules/dugite/git/` (nunca copiado). Nota de transparência: libs compartilhadas (libc, libz) vêm do sistema via dynamic linker — o que a validação prova é que **nenhum git do sistema é usado**; equivalente funcional ao requisito `debian:bookworm-slim` + `which git` vazio.
+
+**Reprodução (comandos):**
+
+```bash
+GITDIR=dist/linux-unpacked/resources/app.asar.unpacked/node_modules/dugite/git
+RUN="env -i HOME=$WORK PATH=/tmp/opencode/nogit \
+  GIT_EXEC_PATH=$GITDIR/libexec/git-core \
+  GIT_CONFIG_SYSTEM=$GITDIR/etc/gitconfig \
+  GIT_TEMPLATE_DIR=$GITDIR/share/git-core/templates \
+  PREFIX=$GITDIR GIT_SSL_CAINFO=$GITDIR/ssl/cacert.pem"
+
+$RUN which git                    # → vazio (exit 1) — nenhum git do sistema
+$RUN $GITDIR/bin/git --version    # → git version 2.53.0
+$RUN $GITDIR/bin/git init --bare $WORK/test-bare.git
+$RUN $GITDIR/bin/git clone $WORK/test-bare.git $WORK/clone   # → OK
+$RUN $GITDIR/bin/git -C $WORK/clone -c user.email=test@example.com -c user.name="Test User" \
+      commit --allow-empty -m "empty commit test"            # → [master d862e6c]
+$RUN $GITDIR/bin/git -C $WORK/clone push origin HEAD:main    # → new branch OK
+```
+
+**Resultados:** `--version` → 2.53.0 ✓; `which git` → vazio ✓; `clone` de repo bare local ✓; `commit --allow-empty` com `-c user.email/user.name` ✓; `push` + `ls-remote` ✓. Evidência completa: `.omo/evidence/task-8-gitless-container.txt`.
+
+**Descoberta crítica para o DugiteProvider (Wave 4):** invocar só o binário não basta. O transporte local de `clone`/`push` faz spawn de `git-upload-pack`/`git-receive-pack` — sem `GIT_EXEC_PATH` apontando para `<gitDir>/libexec/git-core`, o clone falha com `git-upload-pack: not found` mesmo com o binário bundled no PATH-argv. Além disso, sem `GIT_TEMPLATE_DIR`/`PREFIX` aparecem warnings (`templates not found in //share/git-core/templates`). O contrato correto é o que o próprio dugite monta em `node_modules/dugite/build/lib/git-environment.js` (`setupEnvironment`): no Linux, `GIT_EXEC_PATH`, `GIT_CONFIG_SYSTEM=<gitDir>/etc/gitconfig`, `GIT_TEMPLATE_DIR`, `PREFIX=<gitDir>` e `GIT_SSL_CAINFO=<gitDir>/ssl/cacert.pem`. Com esse env replicado, execução 100% limpa (zero warnings). **Ação:** o DugiteProvider deve setar esse env ao executar o binário (ou reusar `setupEnvironment` do dugite).
+
+## Assinatura macOS (Task 8)
+
+- `.github/workflows/release.yml`: NÃO assina hoje. `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` (linha 67) desativa explicitamente a descoberta de identidade; comentários nas linhas 7–9 registram os placeholders futuros (`CSC_LINK`/`CSC_KEY_PASSWORD`, `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER`/`APPLE_TEAM_ID`) com aviso "never enable on unsigned builds (notarization fails hard)".
+- `electron-builder.yml`: bloco `mac:` só define target (dmg/zip x64) e icon — sem `identity`, `entitlements`, `gatekeeperAssess` ou afterSign hook; nenhum script de notarization em `scripts/`.
+- **Conclusão: N/A — release não assina hoje.** Os binários extras do dugite (git, scalar, `libexec/git-core/*`) não entram hoje em nenhum escopo de assinatura.
+- **Nota para o futuro (quando assinatura for habilitada):** o electron-builder assina por padrão todos os binários dentro do bundle `.app` — o que inclui `Contents/Resources/app.asar.unpacked/node_modules/dugite/git/` (centenas de executáveis Mach-O em `libexec/git-core/`). Impactos esperados: (1) aumento significativo do tempo de assinatura/notarização; (2) `codesign` precisa aceitar binários sem entitlements; (3) avaliar `mac.signIgnore`/`binaries` do electron-builder se necessário; (4) a notarização da Apple pode rejeitar binários sem `com.apple.security.cs.allow-unsigned-executable-memory` inadequado — testar com `xcrun notarytool` antes do primeiro release assinado. Registrar decisão quando CSC_LINK for provisionado.
