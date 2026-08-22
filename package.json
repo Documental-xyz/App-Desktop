@@ -25,6 +25,7 @@
     "build:win:portable": "npm run generate-icons && npm run build:theme && npm run build:css && npm run build:env && electron-builder --win portable",
     "build:macos": "npm run generate-icons && npm run build:theme && npm run build:css && npm run build:env && electron-builder --mac",
     "build:all": "npm run generate-icons && npm run build:theme && npm run build:css && npm run build:env && electron-builder -mwl",
+    "verify:bundled-git": "node scripts/verify-bundled-git.js",
     "dist": "npm run build && node scripts/post-build.js && node scripts/verify-build.js",
     "clean": "rimraf dist",
     "validate:all": "npm run validate:extensions && npm run validate:es2022 && npm run validate:jsdoc && npm run validate:hybrid",

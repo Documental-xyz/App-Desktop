@@ -29,7 +29,7 @@ files:
   - "!node_modules/**/README*"
 asarUnpack:
   - node_modules/sqlite3/**/*
-  - node_modules/keytar/**/*
+  - node_modules/dugite/git/**/*
 extraResources:
   - from: resources/config
     to: config
