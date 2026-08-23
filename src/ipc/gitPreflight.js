@@ -159,7 +159,7 @@ class GitPreflight {
     }
 
     // ── Steps 2-4 in parallel (each is independent) ─────────────────────────
-    const auth = { username: token, password: 'x-oauth-basic' };
+    const auth = { token };
 
     const [branchResult, workflowsResult, dirtyResult] = await Promise.allSettled([
       this._checkBranchExists(projectPath, BRANCH_PREVIEW, auth),
@@ -268,7 +268,7 @@ class GitPreflight {
       return { canProceed: false, checks, warnings, errors };
     }
 
-    const auth = { username: token, password: 'x-oauth-basic' };
+    const auth = { token };
 
     // ── Step 2: branch protection (informational warning; never blocks) ──────
     // Push-permission gating (RBAC) was removed — precedence below is now the
@@ -379,7 +379,7 @@ class GitPreflight {
    *
    * @param {string} projectPath
    * @param {string} branchName
-   * @param {Object} auth - `{ username, password }` for onAuth.
+   * @param {Object} auth - `{ token }` provider auth contract.
    * @returns {Promise<{missing: boolean}>} `missing: true` when the branch doesn't exist on remote.
    * @private
    */
@@ -390,7 +390,7 @@ class GitPreflight {
         ref: branchName,
         singleBranch: true,
         depth: 1,
-        onAuth: () => auth,
+        auth,
       });
       return { missing: false };
     } catch (error) {
@@ -584,14 +584,14 @@ class GitPreflight {
         ref: BRANCH_MAIN,
         singleBranch: true,
         depth: 1,
-        onAuth: () => auth,
+        auth,
       }),
       this.git.fetch(projectPath, {
         remote: 'origin',
         ref: BRANCH_PREVIEW,
         singleBranch: true,
         depth: 1,
-        onAuth: () => auth,
+        auth,
       }),
     ]);
 
