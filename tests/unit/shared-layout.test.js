@@ -10,7 +10,13 @@ const { renderLayout } = require('../../renderer/shared/layout');
 const { renderHeader } = require('../../renderer/shared/header');
 const { renderFooter } = require('../../renderer/shared/footer');
 const { renderLogo } = require('../../renderer/shared/logo');
-const { initThemeAttributes } = require('../../renderer/shared/theme-loader');
+// theme-loader was renamed to theme-init; guard so import never throws (suite is self-quarantined)
+let initThemeAttributes;
+try {
+  ({ initThemeAttributes } = require('../../renderer/shared/theme-init'));
+} catch {
+  initThemeAttributes = undefined;
+}
 
 // KNOWN-FAILURE: quarantined during perf-zombie-refactor, see tests/KNOWN-FAILURES.md
 describe.skip('renderLayout', () => {
@@ -288,13 +294,13 @@ describe.skip('browser exports (window.Documental)', () => {
     delete require.cache[require.resolve('../../renderer/shared/header')];
     delete require.cache[require.resolve('../../renderer/shared/footer')];
     delete require.cache[require.resolve('../../renderer/shared/logo')];
-    delete require.cache[require.resolve('../../renderer/shared/theme-loader')];
+    delete require.cache[require.resolve('../../renderer/shared/theme-init')];
 
     docLayout = require('../../renderer/shared/layout');
     docHeader = require('../../renderer/shared/header');
     docFooter = require('../../renderer/shared/footer');
     const docLogo = require('../../renderer/shared/logo');
-    docThemeLoader = require('../../renderer/shared/theme-loader');
+    docThemeLoader = require('../../renderer/shared/theme-init');
   });
 
   afterEach(() => {

@@ -7,29 +7,23 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { PlatformService } from '../../../src/main/services/platform/PlatformService.js';
-import { WindowsPlatformAdapter } from '../../../src/main/adapters/WindowsPlatformAdapter.js';
-import { UnixPlatformAdapter } from '../../../src/main/adapters/UnixPlatformAdapter.js';
-import { PlatformAdapterFactory } from '../../../src/main/factories/PlatformAdapterFactory.js';
+import { PlatformService } from '../../../../src/main/services/platform/PlatformService.js';
 
 describe('PlatformService', () => {
-  let platformService;
+  let mockLogger;
   let mockAdapter;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogger = { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
     mockAdapter = {
       getPlatform: vi.fn(),
       getArchitecture: vi.fn(),
-      getExecutableExtension: vi.fn(),
-      getShellCommand: vi.fn(),
-      getEnvironmentPaths: vi.fn(),
-      getSystemPaths: vi.fn(),
-      getProcessCommand: vi.fn(),
-      normalizePath: vi.fn(),
-      joinPath: vi.fn(),
       getTempDirectory: vi.fn(),
       getHomeDirectory: vi.fn(),
+      getAppDataDirectory: vi.fn(),
+      getEnvironmentVariable: vi.fn(),
+      setEnvironmentVariable: vi.fn(),
       isWindows: vi.fn(),
       isMacOS: vi.fn(),
       isLinux: vi.fn()
@@ -37,169 +31,101 @@ describe('PlatformService', () => {
   });
 
   describe('constructor', () => {
-    it('should create PlatformService with default adapter', () => {
-      platformService = new PlatformService();
+    it('should create PlatformService with default adapter when none provided', () => {
+      const platformService = new PlatformService({ logger: mockLogger });
       expect(platformService.adapter).toBeDefined();
+      expect(platformService.logger).toBe(mockLogger);
     });
 
     it('should create PlatformService with custom adapter', () => {
-      platformService = new PlatformService(mockAdapter);
+      const platformService = new PlatformService({ logger: mockLogger, adapter: mockAdapter });
       expect(platformService.adapter).toBe(mockAdapter);
     });
-  });
 
-  describe('platform detection methods', () => {
-    beforeEach(() => {
-      platformService = new PlatformService(mockAdapter);
-    });
-
-    it('should delegate getPlatform to adapter', () => {
-      mockAdapter.getPlatform.mockReturnValue('win32');
-      const result = platformService.getPlatform();
-      expect(result).toBe('win32');
-      expect(mockAdapter.getPlatform).toHaveBeenCalledTimes(1);
-    });
-
-    it('should delegate getArchitecture to adapter', () => {
-      mockAdapter.getArchitecture.mockReturnValue('x64');
-      const result = platformService.getArchitecture();
-      expect(result).toBe('x64');
-      expect(mockAdapter.getArchitecture).toHaveBeenCalledTimes(1);
-    });
-
-    it('should delegate isWindows to adapter', () => {
-      mockAdapter.isWindows.mockReturnValue(true);
-      const result = platformService.isWindows();
-      expect(result).toBe(true);
-      expect(mockAdapter.isWindows).toHaveBeenCalledTimes(1);
-    });
-
-    it('should delegate isMacOS to adapter', () => {
-      mockAdapter.isMacOS.mockReturnValue(false);
-      const result = platformService.isMacOS();
-      expect(result).toBe(false);
-      expect(mockAdapter.isMacOS).toHaveBeenCalledTimes(1);
-    });
-
-    it('should delegate isLinux to adapter', () => {
-      mockAdapter.isLinux.mockReturnValue(false);
-      const result = platformService.isLinux();
-      expect(result).toBe(false);
-      expect(mockAdapter.isLinux).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('executable methods', () => {
-    beforeEach(() => {
-      platformService = new PlatformService(mockAdapter);
-    });
-
-    it('should delegate getExecutableExtension to adapter', () => {
-      mockAdapter.getExecutableExtension.mockReturnValue('.exe');
-      const result = platformService.getExecutableExtension();
-      expect(result).toBe('.exe');
-      expect(mockAdapter.getExecutableExtension).toHaveBeenCalledTimes(1);
-    });
-
-    it('should delegate getProcessCommand to adapter', () => {
-      const command = 'node';
-      const args = ['--version'];
-      const expected = { command: 'node.exe', args: ['--version'] };
-      
-      mockAdapter.getProcessCommand.mockReturnValue(expected);
-      const result = platformService.getProcessCommand(command, args);
-      
-      expect(result).toEqual(expected);
-      expect(mockAdapter.getProcessCommand).toHaveBeenCalledWith(command, args);
+    it('should expose the adapter via getAdapter', () => {
+      const platformService = new PlatformService({ logger: mockLogger, adapter: mockAdapter });
+      expect(platformService.getAdapter()).toBe(mockAdapter);
     });
   });
 
   describe('path methods', () => {
+    let platformService;
+
     beforeEach(() => {
-      platformService = new PlatformService(mockAdapter);
+      platformService = new PlatformService({ logger: mockLogger, adapter: mockAdapter });
     });
 
-    it('should delegate normalizePath to adapter', () => {
-      const path = 'C:\\Users\\test\\file.txt';
-      const expected = 'C:/Users/test/file.txt';
-      
-      mockAdapter.normalizePath.mockReturnValue(expected);
-      const result = platformService.normalizePath(path);
-      
-      expect(result).toBe(expected);
-      expect(mockAdapter.normalizePath).toHaveBeenCalledWith(path);
+    it('should join path segments with path.join semantics', () => {
+      const result = platformService.joinPath('usr', 'local', 'bin');
+      expect(result).toBe(require('node:path').join('usr', 'local', 'bin'));
     });
 
-    it('should delegate joinPath to adapter', () => {
-      const paths = ['C:', 'Users', 'test', 'file.txt'];
-      const expected = 'C:/Users/test/file.txt';
-      
-      mockAdapter.joinPath.mockReturnValue(expected);
-      const result = platformService.joinPath(...paths);
-      
-      expect(result).toBe(expected);
-      expect(mockAdapter.joinPath).toHaveBeenCalledWith(...paths);
+    it('should normalize paths with path.normalize semantics', () => {
+      const result = platformService.normalizePath('usr/./local/../bin');
+      expect(result).toBe(require('node:path').normalize('usr/./local/../bin'));
+    });
+
+    it('should resolve paths to absolute with path.resolve semantics', () => {
+      const result = platformService.resolvePath('relative', 'file.txt');
+      expect(result).toBe(require('node:path').resolve('relative', 'file.txt'));
+    });
+  });
+
+  describe('directory methods', () => {
+    let platformService;
+
+    beforeEach(() => {
+      platformService = new PlatformService({ logger: mockLogger, adapter: mockAdapter });
     });
 
     it('should delegate getTempDirectory to adapter', () => {
-      const expected = '/tmp';
-      mockAdapter.getTempDirectory.mockReturnValue(expected);
-      
+      mockAdapter.getTempDirectory.mockReturnValue('/tmp');
       const result = platformService.getTempDirectory();
-      expect(result).toBe(expected);
+      expect(result).toBe('/tmp');
       expect(mockAdapter.getTempDirectory).toHaveBeenCalledTimes(1);
     });
 
     it('should delegate getHomeDirectory to adapter', () => {
-      const expected = '/home/user';
-      mockAdapter.getHomeDirectory.mockReturnValue(expected);
-      
+      mockAdapter.getHomeDirectory.mockReturnValue('/home/user');
       const result = platformService.getHomeDirectory();
-      expect(result).toBe(expected);
+      expect(result).toBe('/home/user');
       expect(mockAdapter.getHomeDirectory).toHaveBeenCalledTimes(1);
+    });
+
+    it('should delegate getAppDataDirectory to adapter', () => {
+      mockAdapter.getAppDataDirectory.mockReturnValue('/home/user/.config');
+      const result = platformService.getAppDataDirectory();
+      expect(result).toBe('/home/user/.config');
+      expect(mockAdapter.getAppDataDirectory).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('environment methods', () => {
+    let platformService;
+
     beforeEach(() => {
-      platformService = new PlatformService(mockAdapter);
+      platformService = new PlatformService({ logger: mockLogger, adapter: mockAdapter });
     });
 
-    it('should delegate getEnvironmentPaths to adapter', () => {
-      const expected = {
-        PATH: '/usr/bin:/bin',
-        HOME: '/home/user'
-      };
-      
-      mockAdapter.getEnvironmentPaths.mockReturnValue(expected);
-      const result = platformService.getEnvironmentPaths();
-      
-      expect(result).toEqual(expected);
-      expect(mockAdapter.getEnvironmentPaths).toHaveBeenCalledTimes(1);
+    it('should delegate getEnvironmentVariable to adapter', () => {
+      mockAdapter.getEnvironmentVariable.mockReturnValue('/usr/bin:/bin');
+      const result = platformService.getEnvironmentVariable('PATH');
+      expect(result).toBe('/usr/bin:/bin');
+      expect(mockAdapter.getEnvironmentVariable).toHaveBeenCalledWith('PATH');
     });
 
-    it('should delegate getSystemPaths to adapter', () => {
-      const expected = {
-        programFiles: 'C:\\Program Files',
-        appData: 'C:\\Users\\user\\AppData\\Roaming'
-      };
-      
-      mockAdapter.getSystemPaths.mockReturnValue(expected);
-      const result = platformService.getSystemPaths();
-      
-      expect(result).toEqual(expected);
-      expect(mockAdapter.getSystemPaths).toHaveBeenCalledTimes(1);
+    it('should return defaultValue when adapter returns falsy', () => {
+      mockAdapter.getEnvironmentVariable.mockReturnValue(undefined);
+      const result = platformService.getEnvironmentVariable('MISSING', 'fallback');
+      expect(result).toBe('fallback');
     });
 
-    it('should delegate getShellCommand to adapter', () => {
-      const command = 'list-files';
-      const expected = 'dir';
-      
-      mockAdapter.getShellCommand.mockReturnValue(expected);
-      const result = platformService.getShellCommand(command);
-      
-      expect(result).toBe(expected);
-      expect(mockAdapter.getShellCommand).toHaveBeenCalledWith(command);
+    it('should delegate setEnvironmentVariable to adapter', () => {
+      mockAdapter.setEnvironmentVariable.mockReturnValue(true);
+      const result = platformService.setEnvironmentVariable('VAR', 'value');
+      expect(result).toBe(true);
+      expect(mockAdapter.setEnvironmentVariable).toHaveBeenCalledWith('VAR', 'value');
     });
   });
+
 });

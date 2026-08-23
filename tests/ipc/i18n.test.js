@@ -37,7 +37,7 @@ describe('I18n IPC Handlers', () => {
   describe('readYamlTranslations', () => {
     it('should parse en.yaml and return object with expected keys', async () => {
       const { readYamlTranslations } = await import('../../src/ipc/i18n.js');
-      const result = readYamlTranslations('en', FIXTURES_PATH);
+      const result = await readYamlTranslations('en', FIXTURES_PATH);
 
       expect(result).toBeDefined();
       expect(result).not.toBeNull();
@@ -50,7 +50,7 @@ describe('I18n IPC Handlers', () => {
 
     it('should parse pt-BR.yaml and return Portuguese translations', async () => {
       const { readYamlTranslations } = await import('../../src/ipc/i18n.js');
-      const result = readYamlTranslations('pt-BR', FIXTURES_PATH);
+      const result = await readYamlTranslations('pt-BR', FIXTURES_PATH);
 
       expect(result).toBeDefined();
       expect(result).not.toBeNull();
@@ -60,7 +60,7 @@ describe('I18n IPC Handlers', () => {
 
     it('should parse es.yaml and return Spanish translations', async () => {
       const { readYamlTranslations } = await import('../../src/ipc/i18n.js');
-      const result = readYamlTranslations('es', FIXTURES_PATH);
+      const result = await readYamlTranslations('es', FIXTURES_PATH);
 
       expect(result).toBeDefined();
       expect(result).not.toBeNull();
@@ -70,7 +70,7 @@ describe('I18n IPC Handlers', () => {
 
     it('should return null when locale file does not exist', async () => {
       const { readYamlTranslations } = await import('../../src/ipc/i18n.js');
-      const result = readYamlTranslations('xx', FIXTURES_PATH);
+      const result = await readYamlTranslations('xx', FIXTURES_PATH);
 
       expect(result).toBeNull();
     });
@@ -79,7 +79,7 @@ describe('I18n IPC Handlers', () => {
   describe('getTranslations', () => {
     it('should fallback to en when locale file does not exist', async () => {
       const { getTranslations } = await import('../../src/ipc/i18n.js');
-      const result = getTranslations('xx', FIXTURES_PATH);
+      const result = await getTranslations('xx', FIXTURES_PATH);
 
       expect(result).toBeDefined();
       expect(result).not.toBeNull();
@@ -89,7 +89,7 @@ describe('I18n IPC Handlers', () => {
 
     it('should return requested locale when it exists', async () => {
       const { getTranslations } = await import('../../src/ipc/i18n.js');
-      const result = getTranslations('es', FIXTURES_PATH);
+      const result = await getTranslations('es', FIXTURES_PATH);
 
       expect(result).toBeDefined();
       expect(result).not.toBeNull();
