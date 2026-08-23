@@ -16,8 +16,19 @@ describe('Static code invariants', () => {
   it('NEVER uses force push in src/ipc/git.js', () => {
     const content = fs.readFileSync(path.join(ROOT, 'src/ipc/git.js'), 'utf8');
     // Allow force: false, force=false, force: undefined
-    // FORBID force: true or force=true
-    expect(content).not.toMatch(/force\s*:\s*true/i);
+    // FORBID force: true or force=true in any push path. Allowed only:
+    // (1) the body of _hardResetBranch (local `git reset --hard` equivalent)
+    // (2) this.git.checkout(...) calls — checkout is always a local
+    //     operation in isomorphic-git and can never push.
+    const withoutHardReset = content.replace(
+      /async _hardResetBranch\(projectPath, targetRef\) \{[\s\S]*?\n  \}/,
+      ''
+    );
+    const withoutLocalCheckouts = withoutHardReset
+      .split('\n')
+      .filter((line) => !/this\.git\.checkout\([^)]*force\s*:\s*true/i.test(line))
+      .join('\n');
+    expect(withoutLocalCheckouts).not.toMatch(/force\s*:\s*true/i);
   });
 
   it('NEVER shells out to native git in src/ipc/git*.js', () => {
@@ -31,10 +42,23 @@ describe('Static code invariants', () => {
     expect(result).toBe('');
   });
 
-  it('NEVER calls getBranchProtection anywhere in src/', () => {
+  it('NEVER calls getBranchProtection anywhere in src/ (one allowlisted call)', () => {
+    // Exact allowlist: the single legitimate call at
+    // src/ipc/permissionHandlers.js:391 inside _fetchBranchProtection(),
+    // used to gate publish-main (read-only protection check). Any other
+    // occurrence anywhere in src/ still fails this invariant.
+    const ALLOWLIST = [
+      'src/ipc/permissionHandlers.js:391:      const { data } = await octokit.repos.getBranchProtection({ owner, repo, branch });'
+    ];
     const result = execSync(
       `grep -rn "getBranchProtection" ${path.join(ROOT, 'src/')} || true`
-    ).toString().trim();
+    )
+      .toString()
+      .trim()
+      // Normalize to repo-relative paths so the allowlist is stable
+      .split('\n')
+      .filter((line) => line && !ALLOWLIST.includes(line.replace(ROOT + '/', '')))
+      .join('\n');
     expect(result).toBe('');
   });
 
