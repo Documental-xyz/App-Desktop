@@ -41,20 +41,33 @@ function defaultUserDataPath() {
 }
 
 /**
- * Resolve bundled npm/npx cli paths via embeddedRuntimeService when it exists.
- * Lazy/optional: Task 2 runs in parallel, no hard dependency.
+ * Resolve bundled npm/npx cli paths via embeddedRuntimeService when available.
+ * Lazy require so this still works outside Electron or when the service is absent.
  * @returns {{npmCliPath: string|undefined, npxCliPath: string|undefined}}
  */
 function defaultNpmCliPaths() {
+  const paths = { npmCliPath: undefined, npxCliPath: undefined };
+  let svc;
   try {
-    const svc = require('./embeddedRuntimeService');
-    return {
-      npmCliPath: svc.getNpmCliPath ? svc.getNpmCliPath() : undefined,
-      npxCliPath: svc.getNpxCliPath ? svc.getNpxCliPath() : undefined,
-    };
+    const { EmbeddedRuntimeService } = require('./embeddedRuntimeService');
+    svc = new EmbeddedRuntimeService();
   } catch {
-    return { npmCliPath: undefined, npxCliPath: undefined };
+    return paths;
   }
+  // A shim needs a .js CLI script to pass after the app binary. If the descriptor
+  // execs something else directly (non-.js CUSTOM_NPM_PATH), there is nothing to shim.
+  const cliPathFrom = (descriptor) => (
+    descriptor && descriptor.command === process.execPath && descriptor.args.length
+      ? descriptor.args[0]
+      : undefined
+  );
+  try {
+    paths.npmCliPath = cliPathFrom(svc.getNpmExecutable());
+  } catch { /* npm CLI not resolvable */ }
+  try {
+    paths.npxCliPath = cliPathFrom(svc.getNpxExecutable());
+  } catch { /* npx CLI not resolvable */ }
+  return paths;
 }
 
 /**
