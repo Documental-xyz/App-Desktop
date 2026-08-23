@@ -179,7 +179,7 @@ class ProjectCreationHandler {
    * @param {Object} git - isomorphic-git module.
    * @param {Object} http - isomorphic-git http/node client.
    * @param {string} url - Remote URL.
-   * @param {Object} [auth] - Auth object ({ username, password }) or undefined.
+   * @param {Object} [auth] - Auth object ({ token }) or undefined.
    * @returns {Promise<{ head?: string, branches: string[] }|null>}
    * @private
    */
@@ -188,7 +188,7 @@ class ProjectCreationHandler {
       const info = await git.getRemoteInfo({
         http,
         url,
-        onAuth: () => auth,
+        auth,
       });
       const heads = (info && info.refs && info.refs.heads) || {};
       const branches = Object.keys(heads);
@@ -316,7 +316,7 @@ class ProjectCreationHandler {
 
       const isGithubUrl = /^https:\/\/github\.com\//i.test(url);
       const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
-      const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+      const auth = token ? { token } : undefined;
       if (!isGithubUrl) {
         this.logger.warn('Clone URL is not a GitHub URL — proceeding without token auth');
         sendOutput(await t('create.non_github_warning') + '\n');
@@ -359,7 +359,7 @@ class ProjectCreationHandler {
       // (e.g. "master" when the repo actually has "main"). Verify the cloned
       // branch matches what we expect. If not, clean up and retry.
       const cloneOpts = {
-        onAuth: () => auth,
+        auth,
         singleBranch: true,
         depth: 10,
       };
@@ -819,7 +819,7 @@ class ProjectCreationHandler {
             const http = await loadHttpModule();
             const isGithubUrl = /^https:\/\/github\.com\//i.test(repoUrl);
             const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
-            const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+            const auth = token ? { token } : undefined;
             let probeSuccess = false;
             for (let i = 0; i < 3; i++) {
               const refs = await this._probeRemoteRefs(git, http, repoUrl, auth);
