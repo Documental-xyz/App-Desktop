@@ -304,6 +304,18 @@ describe('GitOperations._pushWithRetry', () => {
     expect(pushSpy).toHaveBeenCalledTimes(1);
     expect(outputs).toEqual([]);
   });
+
+  it('regression task 6: HTTP 401 (bad/anonymous-gated token) is classified NON-retriable by _isRetriablePushError', () => {
+    expect(ops._isRetriablePushError(
+      Object.assign(new Error('No anonymous write access'), { response: { status: 401 } })
+    )).toBe(false);
+    expect(ops._isRetriablePushError(
+      Object.assign(new Error('auth via cause'), { cause: { response: { status: 401 } } })
+    )).toBe(false);
+    expect(ops._isRetriablePushError(
+      Object.assign(new Error('bad credentials'), { response: { status: 403 } })
+    )).toBe(false);
+  });
 });
 
 // ─── gitEnsurePreviewBranch push-failure propagation ───────────────────────

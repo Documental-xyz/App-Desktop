@@ -16,6 +16,7 @@ vi.mock('isomorphic-git', () => ({
   fetch: vi.fn(),
   checkout: vi.fn(),
   getConfig: vi.fn(),
+  listRemotes: vi.fn(),
   listServerRefs: vi.fn(),
 }));
 
@@ -113,16 +114,24 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       expect(result.error).toBeDefined();
     });
 
-    it('passes auth to git.pull() with username=token and password=x-oauth-basic', async () => {
+    it('passes auth to git.pull() in the provider contract shape (auth.token)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockResolvedValue({});
       git.pull.mockResolvedValue({});
+      git.listRemotes.mockResolvedValue([
+        { remote: 'origin', url: 'https://github.com/user/repo.git' },
+      ]);
       await handlers.gitPullFromPreview('/test/path');
       const pullCall = git.pull.mock.calls[0]?.[0];
+      // IPC passes auth:{token}; the iso provider maps it to its internal
+      // (async) onAuth ({username: token, password: x-oauth-basic}).
       expect(pullCall?.onAuth).toEqual(expect.any(Function));
-      expect(pullCall?.onAuth()).toEqual({ username: 'ghp_test_token', password: 'x-oauth-basic' });
+      await expect(pullCall?.onAuth()).resolves.toEqual({
+        username: 'ghp_test_token',
+        password: 'x-oauth-basic',
+      });
     });
 
     it('returns error when HEAD is detached (currentBranch returns null)', async () => {

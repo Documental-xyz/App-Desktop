@@ -126,8 +126,7 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
 
     const callArg = mockGitClone.mock.calls[0][0];
     expect(callArg.url).toBe(url);
-    // onAuth callback must yield undefined (no credentials) for non-GitHub URLs
-    expect(callArg.onAuth()).toBeUndefined();
+    expect(callArg.onAuth).toBeUndefined();
     expect(callArg.auth).toBeUndefined();
   });
 
