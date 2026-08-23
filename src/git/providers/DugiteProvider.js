@@ -25,15 +25,18 @@
  *   - dugite exec passes argv straight to `execFile(gitBinary, args)` —
  *     argv is visible in `ps`, so the token NEVER goes there and NEVER
  *     goes into the URL or logs.
- *   - Instead, a temporary helper script (mode 0600, in the OS temp
- *     dir) is written and exposed via `env.GIT_ASKPASS`. Git invokes it
- *     with the prompt ("Username for ...:" / "Password for ...:") and
- *     the script answers `x-oauth-basic` / the token. The token itself
- *     reaches the helper through a process-env var (inherited by the
- *     git process and its children) — not embedded in the script, not
- *     in argv, not in any URL.
- *   - GIT_ASKPASS is set to `sh <path>` (git runs askpass via the
- *     shell), so the script needs only read permission → strict 0600.
+ *   - Instead, a temporary helper script (mode 0755, shebang `#!/bin/sh`,
+ *     unique name in the OS temp dir) is written and exposed via
+ *     `env.GIT_ASKPASS` as the PLAIN absolute path — git execs the
+ *     GIT_ASKPASS value DIRECTLY (execvp, no shell; a real-user log
+ *     showed `cannot exec 'sh "<path>"'` when the value was wrapped in
+ *     a shell quoting) — so the file must be executable and carry its
+ *     own interpreter line. Git invokes it with the prompt ("Username
+ *     for ...:" / "Password for ...:") and the script answers the
+ *     token / `x-oauth-basic`. The token itself reaches the helper
+ *     through a process-env var (inherited by the git process and its
+ *     children) — not embedded in the script, not in argv, not in any
+ *     URL.
  *   - The helper file is DELETED in a `finally` after every operation.
  *   - `GIT_TERMINAL_PROMPT: '0'` guarantees git fails instead of
  *     hanging on a terminal prompt (message classifies as 'auth').
@@ -120,9 +123,9 @@ function isGithubUrl(url) {
 
 /**
  * Body of the askpass helper. Reads the token from the environment
- * (never embedded in the file). POSIX `sh` — git runs GIT_ASKPASS
- * through the shell, and we point GIT_ASKPASS at `sh <file>` so the
- * file itself needs no execute bit (0600 is enough).
+ * (never embedded in the file). POSIX `sh` — the script MUST start
+ * with a `#!/bin/sh` shebang because git execs the GIT_ASKPASS value
+ * DIRECTLY (execvp, no shell), so the file is a real executable.
  *
  * @type {string}
  */
@@ -136,7 +139,7 @@ const ASKPASS_SCRIPT = [
 ].join('\n');
 
 /**
- * Create the temporary askpass helper (mode 0600, unique name in the
+ * Create the temporary askpass helper (mode 0755, unique name in the
  * OS temp dir). Returns the env fragment to merge into the dugite exec
  * env plus a `cleanup()` that removes the file.
  *
@@ -149,12 +152,13 @@ function createAskpass(token) {
     os.tmpdir(),
     `git-askpass-${process.pid}-${crypto.randomBytes(6).toString('hex')}.sh`
   );
-  // 0600: owner read/write only. Invoked as `sh <file>` so no exec bit
-  // is required — the file is strict data, not an executable.
-  fs.writeFileSync(helperPath, ASKPASS_SCRIPT, { mode: 0o600 });
+  // 0755 + shebang: git execs the GIT_ASKPASS value DIRECTLY
+  // (execvp, no shell), so the helper must be a standalone
+  // executable. The token is NOT in the file — only its env var name.
+  fs.writeFileSync(helperPath, ASKPASS_SCRIPT, { mode: 0o755 });
   return {
     env: {
-      GIT_ASKPASS: `sh "${helperPath}"`,
+      GIT_ASKPASS: helperPath,
       GIT_TERMINAL_PROMPT: '0',
       [ASKPASS_TOKEN_ENV]: token,
     },

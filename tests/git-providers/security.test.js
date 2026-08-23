@@ -5,7 +5,8 @@
  *  - Token-leak: a FAILING network operation WITH auth must never leak the
  *    token into GitError.message, GitError.stderr, or console output.
  *  - Askpass helper lifecycle: no `git-askpass-*` remnants in os.tmpdir()
- *    after an auth'd operation; helper file is created with mode 0600.
+ *    after an auth'd operation; helper file is created with mode 0755
+ *    (executable — git execs the GIT_ASKPASS value directly).
  *  - Non-GitHub guard: file:// (or local path) remotes never get an askpass
  *    helper and never receive credentials.
  *  - GIT_PROVIDER=banana → fatal factory error (no silent fallback).
@@ -168,7 +169,7 @@ describe('git provider security', () => {
     );
 
     it(
-      'creates the askpass helper with mode 0600 (captured via fs.writeFileSync spy)',
+      'creates the askpass helper with mode 0755, executable (captured via fs.writeFileSync spy)',
       async () => {
         const writeSpy = vi.spyOn(fs, 'writeFileSync');
 
@@ -181,9 +182,12 @@ describe('git provider security', () => {
         );
         // The op is a github.com https op with auth → helper must exist.
         expect(askpassWrites.length).toBeGreaterThanOrEqual(1);
-        for (const [, , opts] of askpassWrites) {
-          // 0600 = owner rw only; helper is data (run via `sh <file>`).
-          expect(opts && opts.mode).toBe(0o600);
+        for (const [, content, opts] of askpassWrites) {
+          // 0755: git execs the GIT_ASKPASS value DIRECTLY (execvp, no
+          // shell) → the helper must be a standalone executable with a
+          // shebang as its first line.
+          expect(opts && opts.mode).toBe(0o755);
+          expect(String(content).startsWith('#!/bin/sh')).toBe(true);
         }
       },
       60000

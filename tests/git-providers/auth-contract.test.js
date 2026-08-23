@@ -32,7 +32,7 @@ vi.unmock('path');
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawnSync } from 'child_process';
+import { spawnSync, execFileSync } from 'child_process';
 import { exec as dugiteExec } from 'dugite';
 
 import { DugiteProvider } from '../../src/git/providers/DugiteProvider.js';
@@ -211,13 +211,17 @@ describe('dugite boundary: auth:{token} push against a github.com remote', () =>
 
     let helperPath = null;
     let helperContent = null;
+    let helperMode = null;
     const helperCopy = path.join(base, 'helper-copy.sh');
     const realWrite = fs.writeFileSync;
     const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((file, data, ...rest) => {
       if (path.basename(String(file)).startsWith(`git-askpass-${process.pid}-`)) {
         helperPath = String(file);
         helperContent = String(data);
-        realWrite(helperCopy, data, { mode: 0o600 });
+        helperMode = rest[0] && rest[0].mode;
+        // 0755 — git execs GIT_ASKPASS directly; the copy must keep
+        // the exec bit to be spawned the same way.
+        realWrite(helperCopy, data, { mode: 0o755 });
       }
       return realWrite(file, data, ...rest);
     });
@@ -234,23 +238,49 @@ describe('dugite boundary: auth:{token} push against a github.com remote', () =>
 
     // GitHub-only guard fired + env-only token contract + cleanup in finally.
     expect(helperPath).toMatch(/git-askpass-\d+-[0-9a-f]+\.sh$/);
+    expect(helperContent.startsWith('#!/bin/sh')).toBe(true);
     expect(helperContent).not.toContain(FAKE_TOKEN);
+    expect(helperMode).toBe(0o755);
     expect(fs.existsSync(helperPath)).toBe(false);
 
-    // Helper answers prompts from SMC_GIT_ASKPASS_TOKEN env — proves the
-    // env plumbing end-to-end (token reaches the git process env-only).
-    process.env.SMC_GIT_ASKPASS_TOKEN = FAKE_TOKEN;
-    const answer = spawnSync('sh', [helperCopy, 'Username for "https://github.com":'], {
-      env: process.env,
+    // Helper answers prompts from SMC_GIT_ASKPASS_TOKEN env, spawned
+    // DIRECTLY (execFile, no `sh` prefix) — replicates how git execs
+    // the GIT_ASKPASS value (execvp) — proves the env plumbing
+    // end-to-end (token reaches the git process env-only).
+    const promptEnv = { ...process.env, SMC_GIT_ASKPASS_TOKEN: FAKE_TOKEN };
+    const answer = execFileSync(helperCopy, ['Username for "https://github.com":'], {
+      env: promptEnv,
       encoding: 'utf8',
     });
-    expect(answer.status).toBe(0);
-    expect(answer.stdout).toBe(FAKE_TOKEN);
-    const pw = spawnSync('sh', [helperCopy, 'Password for "https://x@github.com":'], {
-      env: process.env,
+    expect(answer).toBe(FAKE_TOKEN);
+    const pw = execFileSync(helperCopy, ['Password for "https://x@github.com":'], {
+      env: promptEnv,
       encoding: 'utf8',
     });
-    expect(pw.stdout).toBe('x-oauth-basic');
+    expect(pw).toBe('x-oauth-basic');
+
+    // Real-git check (offline): `git credential fill` consults
+    // GIT_ASKPASS, so running it with GIT_ASKPASS = the PLAIN helper
+    // path proves real git execs the value DIRECTLY (execvp, no
+    // shell). The old `sh "<path>"` wrapper failed exactly here
+    // (`cannot exec 'sh "<path>"': No such file or directory` →
+    // terminal prompt → disabled → auth failure). Task 8 regression.
+    const fill = spawnSync(
+      'git',
+      ['-c', 'credential.helper=', 'credential', 'fill'],
+      {
+        input: 'protocol=https\nhost=github.com\n\n',
+        env: {
+          ...promptEnv,
+          GIT_ASKPASS: helperCopy,
+          GIT_TERMINAL_PROMPT: '0',
+        },
+        encoding: 'utf8',
+      }
+    );
+    expect(fill.status).toBe(0);
+    expect(fill.stdout).toContain(`username=${FAKE_TOKEN}`);
+    expect(fill.stdout).toContain('password=x-oauth-basic');
 
     // refs/heads/preview exists on the (local) bare remote.
     const branches = (await dugiteExec(
