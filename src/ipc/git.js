@@ -927,7 +927,7 @@ class GitHandlers {
         return { success: false, error: 'Nenhuma branch selecionada (detached HEAD). Selecione uma branch primeiro.' };
       }
 
-      const auth = { username: token, password: 'x-oauth-basic' };
+      const auth = { token };
 
       // Commit local changes before pulling if commitMessage provided
       if (commitMessage) {
@@ -985,7 +985,7 @@ class GitHandlers {
         ref: currentBranch,
         singleBranch: true,
         depth: 1,
-        onAuth: () => auth,
+        auth,
         onProgress: (evt) => {
           if (evt.total && evt.loaded) {
             const percent = Math.round((evt.loaded / evt.total) * 100);
@@ -1035,7 +1035,7 @@ class GitHandlers {
           this.sendOutput('⚡ Fast-forward possível, atualizando...');
           await this.git.fastForward(projectPath, {
             ref: currentBranch,
-            onAuth: () => auth,
+            auth,
           });
         } else {
           this.sendOutput('🔄 Mesclando alterações...');
@@ -1043,7 +1043,7 @@ class GitHandlers {
             ref: currentBranch,
             singleBranch: true,
             author: { name: 'documental', email: 'documental@app' },
-            onAuth: () => auth,
+            auth,
           });
         }
       } catch (ffError) {
@@ -1053,7 +1053,7 @@ class GitHandlers {
           ref: currentBranch,
           singleBranch: true,
           author: { name: 'documental', email: 'documental@app' },
-          onAuth: () => auth,
+          auth,
         });
       }
       this._gitCache = {};
@@ -1153,7 +1153,7 @@ class GitHandlers {
         }
       }
 
-      const auth = { username: token, password: 'x-oauth-basic' };
+      const auth = { token };
 
       if (commitMessage) {
         this.sendProgress({
@@ -1203,7 +1203,7 @@ class GitHandlers {
             await this._raceTimeout(
               this.git.fetch(projectPath, {
                 remote: 'origin', ref: targetBranch,
-                singleBranch: true, onAuth: () => auth,
+                singleBranch: true, auth,
               }),
               this.STEP_TIMEOUT_FETCH_MS,
               `fetch origin/${targetBranch}`,
@@ -1317,7 +1317,7 @@ class GitHandlers {
         this.git.push(projectPath, {
           remote: 'origin', branch: pushRef, remoteRef: targetBranch,
           force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
-          onAuth: () => auth,
+          auth,
         }),
         this.STEP_TIMEOUT_PUSH_MS,
         `push ${targetBranch}`,
@@ -1468,12 +1468,12 @@ class GitHandlers {
         );
       }
 
-      const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+      const auth = token ? { token } : undefined;
       this.sendOutput(`📥 Buscando alterações de origin/${BRANCH_PREVIEW}...`);
       await this._raceTimeout(
         this.git.fetch(projectPath, {
           remote: 'origin', ref: BRANCH_PREVIEW,
-          singleBranch: true, depth: 1, ...(signal ? { signal } : {}), ...(auth ? { onAuth: () => auth } : {}),
+          singleBranch: true, depth: 1, ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
         }),
         this.STEP_TIMEOUT_FETCH_MS,
         `fetch origin/${BRANCH_PREVIEW}`,
@@ -1601,7 +1601,7 @@ class GitHandlers {
     let backupBranch = null;
     try {
       const signal = this.getAbortSignal();
-      const auth = { username: token, password: 'x-oauth-basic' };
+      const auth = { token };
 
       if (!userConfigured) {
         this.logger.warn('Could not configure git user, proceeding with existing config');
@@ -1638,7 +1638,7 @@ class GitHandlers {
         await this._raceTimeout(
           this.git.push(projectPath, {
             remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
-            force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+            force: false, ...(signal ? { signal } : {}), auth,
           }),
           this.STEP_TIMEOUT_PUSH_MS,
           `push ${BRANCH_PREVIEW}`,
@@ -1655,7 +1655,7 @@ class GitHandlers {
           await this._raceTimeout(
             this.git.fetch(projectPath, {
               remote: 'origin', ref: BRANCH_PREVIEW,
-              singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth,
+              singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth,
             }),
             this.STEP_TIMEOUT_FETCH_MS,
             `fetch origin/${BRANCH_PREVIEW}`,
@@ -1678,7 +1678,7 @@ class GitHandlers {
             await this._raceTimeout(
               this.git.push(projectPath, {
                 remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
-                force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+                force: false, ...(signal ? { signal } : {}), auth,
               }),
               this.STEP_TIMEOUT_PUSH_MS,
               `push ${BRANCH_PREVIEW}`,
@@ -1739,7 +1739,7 @@ class GitHandlers {
           await this._raceTimeout(
             this.git.push(projectPath, {
               remote: 'origin', branch: TEMP_PUBLISH_BRANCH, remoteRef: BRANCH_PREVIEW,
-              force: false, ...(signal ? { signal } : {}), onAuth: () => auth,
+              force: false, ...(signal ? { signal } : {}), auth,
             }),
             this.STEP_TIMEOUT_PUSH_MS,
             `push ${BRANCH_PREVIEW}`,
@@ -1894,17 +1894,17 @@ class GitHandlers {
     let backupBranch = null;
     try {
       const signal = this.getAbortSignal();
-      const auth = { username: token, password: 'x-oauth-basic' };
+      const auth = { token };
 
       this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
       await Promise.all([
         this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
           this.STEP_TIMEOUT_FETCH_MS,
           `fetch origin/${BRANCH_MAIN}`,
         ),
         this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), onAuth: () => auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
           this.STEP_TIMEOUT_FETCH_MS,
           `fetch origin/${BRANCH_PREVIEW}`,
         ),
@@ -2006,7 +2006,7 @@ class GitHandlers {
           branch: BRANCH_MAIN,
           force: false,
           ...(signal ? { signal } : {}),
-          onAuth: () => auth,
+          auth,
         }),
         this.STEP_TIMEOUT_PUSH_MS,
         `push ${BRANCH_MAIN}`,
@@ -2064,7 +2064,7 @@ class GitHandlers {
 
       // Get auth token for private repo support
       const token = await this.gitOps.getGitHubToken();
-      const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+      const auth = token ? { token } : undefined;
 
       const url = await this.git.getConfig(projectPath, 'remote.origin.url', {
         cache: this._gitCache
@@ -2076,7 +2076,7 @@ class GitHandlers {
       };
 
       if (auth) {
-        listServerRefsConfig.onAuth = () => auth;
+        listServerRefsConfig.auth = auth;
       }
 
       const refs = await this.git.listServerRefs(url, listServerRefsConfig);
