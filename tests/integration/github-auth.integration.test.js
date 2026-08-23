@@ -6,6 +6,24 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// GITHUB_CONFIG (src/config/github-config.js) resolves CLIENT_ID exactly once,
+// at module import time. Setting the env var in beforeEach is too late, so we
+// capture it here at the top of the file, before any dynamic import of the
+// config module. No real client-id is embedded — only the env value is used.
+const githubClientId = (process.env.GITHUB_CLIENT_ID || '').trim();
+const hasGithubClientId = githubClientId.length > 0;
+
+// The config module resolves CLIENT_ID in an async IIFE after import, so we
+// poll briefly until it settles instead of racing it.
+async function waitForResolvedConfig(timeoutMs = 2000) {
+  const { GITHUB_CONFIG } = await import('../../src/config/github-config.js');
+  const start = Date.now();
+  while (GITHUB_CONFIG.CLIENT_ID === '' && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return GITHUB_CONFIG;
+}
+
 describe('GitHub Authentication Integration Tests', () => {
   let authHandlers;
   let mockLogger;
@@ -29,9 +47,6 @@ describe('GitHub Authentication Integration Tests', () => {
       })
     };
 
-    // Load environment variables for testing
-    process.env.GITHUB_CLIENT_ID = 'Ov23litU3WhYXS9XXpGd';
-
     const { AuthHandlers } = await import('../../src/ipc/auth.js');
     authHandlers = new AuthHandlers({
       logger: mockLogger,
@@ -40,11 +55,11 @@ describe('GitHub Authentication Integration Tests', () => {
   });
 
   describe('Device Flow Integration', () => {
-    it('should successfully initiate device flow with real GitHub API', async () => {
+    it.skipIf(!hasGithubClientId, 'requires GITHUB_CLIENT_ID (live network request)')('should successfully initiate device flow with real GitHub API', async () => {
       // Test the actual device flow initiation
-      const { GITHUB_CONFIG } = await import('../../src/config/github-config.js');
-      
-      expect(GITHUB_CONFIG.CLIENT_ID).toBe('Ov23litU3WhYXS9XXpGd');
+      const GITHUB_CONFIG = await waitForResolvedConfig();
+
+      expect(GITHUB_CONFIG.CLIENT_ID).toBe(githubClientId);
       expect(GITHUB_CONFIG.DEVICE_CODE_URL).toBe('https://github.com/login/device/code');
       
       // Test the makeHttpsRequest method directly
@@ -109,8 +124,9 @@ describe('GitHub Authentication Integration Tests', () => {
   });
 
   describe('Configuration Validation', () => {
-    it('should validate GitHub configuration in test environment', async () => {
-      const { validateGitHubConfig, GITHUB_CONFIG } = await import('../../src/config/github-config.js');
+    it.skipIf(!hasGithubClientId, 'requires GITHUB_CLIENT_ID (validates env-provided client-id)')('should validate GitHub configuration in test environment', async () => {
+      const { validateGitHubConfig } = await import('../../src/config/github-config.js');
+      const GITHUB_CONFIG = await waitForResolvedConfig();
       
       const validation = validateGitHubConfig();
       
@@ -118,7 +134,7 @@ describe('GitHub Authentication Integration Tests', () => {
       expect(validation.warnings.length).toBe(0); // Should be no warnings when env var is set
       expect(validation.errors.length).toBe(0);
       
-      expect(GITHUB_CONFIG.CLIENT_ID).toBe('Ov23litU3WhYXS9XXpGd');
+      expect(GITHUB_CONFIG.CLIENT_ID).toBe(githubClientId);
       expect(GITHUB_CONFIG.SCOPES).toEqual(['user:email', 'repo', 'read:org']);
       expect(GITHUB_CONFIG.DEVICE_CODE_URL).toBe('https://github.com/login/device/code');
       expect(GITHUB_CONFIG.TOKEN_URL).toBe('https://github.com/login/oauth/access_token');
