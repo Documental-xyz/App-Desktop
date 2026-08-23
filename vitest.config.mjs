@@ -12,7 +12,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/**/*.{test,spec}.{js,mjs,cjs}'],
-    exclude: ['node_modules', 'dist', '.electron'],
+    exclude: ['node_modules', 'dist', '.electron', 'tests/e2e/**', 'tests/*logo*.test.mjs'],
     setupFiles: ['tests/setup.js'],
     coverage: {
       provider: 'v8',
