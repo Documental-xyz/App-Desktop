@@ -1,12 +1,7 @@
 /**
- * @fileoverview RED tests for ProcessManager.killAll / killProcessTree integration (Task 7).
- *
- * These tests are EXPECTED TO FAIL until Task 12 (Wave 3) implements `killAll`
- * on the ProcessManager class. The helpers `acquireProcessManagerLock` /
- * `releaseProcessManagerLock` already exist (Wave 1 Task 6), but `killAll`
- * itself does not, so every test in this file should fail with one of:
- *   - "killAll is not a function"
- *   - "processManager.killAll is not a function"
+ * @fileoverview Tests for ProcessManager.killAll / killProcessTree integration
+ * (constructor takes nodeDetectionService since Task 6; killAll landed with
+ * the embedded-node migration).
  *
  * Lock-guard contract under test (matches GitHandlers pattern in src/ipc/git.js):
  *   1. acquire lock before iterating activeProcesses

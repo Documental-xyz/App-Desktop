@@ -62,16 +62,22 @@ describe('EmbeddedFallbackService', () => {
   });
 
   it('forwards install progress via onProgress and tolerates non-Electron environments', async () => {
-    const seen = [];
+    const progressPayloads = [
+      { stage: 'downloading', message: 'Baixando Node.js oficial...', percent: 5 },
+      { stage: 'extracting', message: 'Extraindo Node.js...', percent: 65 },
+      { stage: 'completed', message: 'Instalação concluída.', percent: 100 }
+    ];
     const installManagedRuntime = vi.fn(async ({ onProgress }) => {
-      onProgress({ stage: 'downloading', message: 'Baixando Node.js oficial...', percent: 5 });
-      onProgress({ stage: 'extracting', message: 'Extraindo Node.js...', percent: 65 });
+      for (const payload of progressPayloads) {
+        onProgress(payload);
+      }
       return { installed: true, isValid: true };
     });
     const service = new EmbeddedFallbackService({ logger, nodeDetectionService: { installManagedRuntime } });
+    const broadcast = vi.spyOn(service, 'broadcastProgress');
 
-    // broadcastProgress is invoked from onProgress; outside Electron it must
-    // not throw even though require('electron') has no BrowserWindow.
+    // broadcastProgress must tolerate require('electron') failing (plain node
+    // resolves it to a path string with no BrowserWindow).
     const origEnv = process.env.QA_NO_ELECTRON;
     process.env.QA_NO_ELECTRON = '1';
     try {
@@ -84,10 +90,9 @@ describe('EmbeddedFallbackService', () => {
       }
     }
 
-    // onProgress payload shape is the runtime manager's contract
-    const calls = installManagedRuntime.mock.calls[0][0];
-    expect(calls.onProgress).toBeTypeOf('function');
-    seen.push('progress-contract-ok');
-    expect(seen).toEqual(['progress-contract-ok']);
+    // Every progress event from the runtime manager is forwarded verbatim
+    // (the {stage, message, percent} wizard contract)
+    expect(broadcast.mock.calls.map((call) => call[0])).toEqual(progressPayloads);
+    expect(installManagedRuntime.mock.calls[0][0].onProgress).toBeTypeOf('function');
   });
 });
