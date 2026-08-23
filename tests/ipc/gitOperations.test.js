@@ -232,7 +232,7 @@ describe('GitOperations._pushWithRetry', () => {
   });
 
   const sendOutput = (msg) => { outputs.push(msg); };
-  const pushArgs = ['/repo', 'https://example.com/test.git', { username: 'token', password: 'x-oauth-basic' }, 'preview', 'preview'];
+  const pushArgs = ['/repo', 'https://example.com/test.git', { token: 'token' }, 'preview', 'preview'];
 
   it('should succeed on 1st attempt without retry', async () => {
     pushSpy = vi.spyOn(git, 'push').mockResolvedValue({ ok: true });
@@ -281,19 +281,18 @@ describe('GitOperations._pushWithRetry', () => {
     expect(outputs.join('')).toContain('Retentando em 2s');
   });
 
-  it('should pass auth via onAuth callback (not direct auth property)', async () => {
-    pushSpy = vi.spyOn(git, 'push').mockResolvedValue({ ok: true });
+  it('should pass auth in the provider contract shape (auth.token)', async () => {
+    const servicePushSpy = vi.spyOn(ops.git, 'push').mockResolvedValue({ ok: true });
 
     await ops._pushWithRetry(...pushArgs, sendOutput);
 
-    expect(pushSpy).toHaveBeenCalledTimes(1);
-    const callArgs = pushSpy.mock.calls[0][0];
+    expect(servicePushSpy).toHaveBeenCalledTimes(1);
+    const callArgs = servicePushSpy.mock.calls[0][1];
     expect(callArgs.ref).toBe('preview');
     expect(callArgs.remoteRef).toBe('preview');
-    expect(typeof callArgs.onAuth).toBe('function');
-    expect(callArgs.auth).toBeUndefined();
-    // Verify the callback returns the auth object
-    expect(callArgs.onAuth()).toEqual({ username: 'token', password: 'x-oauth-basic' });
+    expect(callArgs.auth).toEqual({ token: 'token' });
+    expect(callArgs.onAuth).toBeUndefined();
+    servicePushSpy.mockRestore();
   });
 
   it('should abort immediately on non-retriable error (HTTP 403) without retry', async () => {
@@ -337,8 +336,8 @@ describe('GitOperations.gitEnsurePreviewBranch — push failure propagation', ()
     ops.gitCreateBranch = vi.fn().mockResolvedValue(undefined);
     ops.gitGetRemoteUrl = vi.fn().mockResolvedValue('https://github.com/acme/repo.git');
     ops.getGitHubToken = vi.fn().mockResolvedValue('fake-token-1234567890');
-    // isomorphic-git status() check — return clean tree
-    vi.spyOn(git, 'status').mockResolvedValue({ files: [] });
+    // statusMatrix dirty-check — return clean tree (all rows in agreement)
+    vi.spyOn(git, 'statusMatrix').mockResolvedValue([['file.txt', 1, 1, 1]]);
     // listBranches — no preview locally or remotely forces the create path
     vi.spyOn(git, 'listBranches').mockResolvedValue(['main']);
     impl(ops);

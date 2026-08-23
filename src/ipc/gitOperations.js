@@ -6,8 +6,6 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { GitService } = require('../git/GitService.js');
 const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { secureTokenService } = require('../services/secureTokenService.js');
@@ -404,13 +402,13 @@ class GitOperations {
       
       // Check if working directory is clean before creating branch
       try {
-        // `status` is not part of the GitProvider contract — raw module call
-        // (legacy T11 pattern for ops outside the 24-op interface).
-        const gitMod = await this._getGit();
-        const status = await gitMod.status({ fs, dir, cache: this._gitCache });
-        if (status.files && status.files.length > 0) {
+        const matrix = await this.git.statusMatrix(dir, { cache: this._gitCache });
+        const dirtyFiles = matrix
+          .filter(([filepath, head, workdir, stage]) => head !== workdir || workdir !== stage || head !== stage)
+          .map(([filepath]) => filepath);
+        if (dirtyFiles.length > 0) {
           sendOutput(`⚠️ Existem arquivos não commitados no diretório de trabalho\n`);
-          sendOutput(`📋 Arquivos modificados: ${status.files.map(f => f.path).join(', ')}\n`);
+          sendOutput(`📋 Arquivos modificados: ${dirtyFiles.join(', ')}\n`);
           sendOutput(`💡 Criando branch 'preview' mesmo com arquivos pendentes\n`);
         } else {
           sendOutput(`✅ Diretório de trabalho limpo, seguro para criar branch\n`);
@@ -439,9 +437,9 @@ class GitOperations {
           this.logger?.info?.('[preview-push] token retrieved', { hasToken: Boolean(token), tokenLen: token ? token.length : 0 });
           if (token) {
             sendOutput(`🔐 Autenticação GitHub configurada\n`);
-            const auth = { username: token, password: 'x-oauth-basic' };
-            
-            this.logger?.info?.('[preview-push] calling _pushWithRetry', { ref: 'preview', remoteRef: 'preview', authUsernamePrefix: token.substring(0, 4) });
+            const auth = { token };
+
+            this.logger?.info?.('[preview-push] calling _pushWithRetry', { ref: 'preview', remoteRef: 'preview' });
             await this._pushWithRetry(dir, remoteUrl, auth, 'preview', 'preview', sendOutput);
             this.logger?.info?.('[preview-push] push succeeded');
             this._gitCache = {};
@@ -500,7 +498,7 @@ class GitOperations {
    * (auth 401/403, non-fast-forward, ref conflict) abort immediately.
    * @param {string} dir - Repository directory
    * @param {string} url - Remote URL
-   * @param {Object} auth - Auth object ({ username, password })
+   * @param {Object} auth - Auth object in the provider contract shape ({ token })
    * @param {string} ref - Source branch name to push (e.g. 'preview')
    * @param {string} remoteRef - Destination branch name on the remote (e.g. 'preview')
    * @param {Function} sendOutput - Output function
@@ -516,7 +514,7 @@ class GitOperations {
           url,
           ref,
           remoteRef,
-          onAuth: () => auth,
+          auth,
           force: false
         });
         this.logger?.info?.('[push-retry] push succeeded', { attempt });
