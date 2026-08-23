@@ -64,9 +64,10 @@ describe('GitOperations configureGitForUser', () => {
     vi.spyOn(gitOps, 'getGitHubToken').mockResolvedValue('fake-token');
     vi.spyOn(gitOps, 'getGitHubUserInfo').mockResolvedValue(mockUserInfo);
     vi.spyOn(gitOps, 'gitSetUserConfig').mockResolvedValue(true);
+    vi.spyOn(gitOps.git, 'setConfig').mockResolvedValue(undefined);
 
     const result = await gitOps.configureGitForUser('/test/path');
-    
+
     expect(result).toBe(true);
       expect(gitOps.gitSetUserConfig).toHaveBeenCalledWith('/test/path', 'Test User', 'test@example.com');
       expect(mockLogger.info).toHaveBeenCalledWith('✅ Git user configured successfully: Test User <test@example.com>');
@@ -82,9 +83,10 @@ describe('GitOperations configureGitForUser', () => {
     vi.spyOn(gitOps, 'getGitHubToken').mockResolvedValue('fake-token');
     vi.spyOn(gitOps, 'getGitHubUserInfo').mockResolvedValue(mockUserInfo);
     vi.spyOn(gitOps, 'gitSetUserConfig').mockResolvedValue(true);
+    vi.spyOn(gitOps.git, 'setConfig').mockResolvedValue(undefined);
 
     const result = await gitOps.configureGitForUser('/test/path');
-    
+
     expect(result).toBe(true);
     expect(gitOps.gitSetUserConfig).toHaveBeenCalledWith('/test/path', 'testuser', 'test@example.com');
   });
@@ -99,9 +101,10 @@ describe('GitOperations configureGitForUser', () => {
     vi.spyOn(gitOps, 'getGitHubToken').mockResolvedValue('fake-token');
     vi.spyOn(gitOps, 'getGitHubUserInfo').mockResolvedValue(mockUserInfo);
     vi.spyOn(gitOps, 'gitSetUserConfig').mockResolvedValue(true);
+    vi.spyOn(gitOps.git, 'setConfig').mockResolvedValue(undefined);
 
     const result = await gitOps.configureGitForUser('/test/path');
-    
+
     expect(result).toBe(true);
     expect(gitOps.gitSetUserConfig).toHaveBeenCalledWith('/test/path', 'Test User', 'testuser@users.noreply.github.com');
   });
