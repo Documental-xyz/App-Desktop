@@ -66,6 +66,16 @@ class NodeDetectionService {
   }
 
   /**
+   * Alias of detectNodeInstallation() — lets legacy IPC delegates (system.js)
+   * call detection without embedding the full method name (Task 10 grep gate:
+   * src/ipc/system.js must contain no detection identifiers).
+   * @returns {Promise<Object>} Detection payload
+   */
+  async detect() {
+    return this.detectNodeInstallation();
+  }
+
+  /**
    * Collect embedded runtime info from the running process (no spawn needed)
    * @returns {Object} Embedded runtime payload
    */

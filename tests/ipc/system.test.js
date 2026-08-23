@@ -87,8 +87,8 @@ describe('SystemHandlers Unit Tests', () => {
       expect(typeof systemHandlers.openDirectoryDialog).toBe('function');
     });
 
-    it('should have detectNodeInstallation method', () => {
-      expect(typeof systemHandlers.detectNodeInstallation).toBe('function');
+    it('should have checkNodeInstallation method (delegates to nodeDetectionService)', () => {
+      expect(typeof systemHandlers.checkNodeInstallation).toBe('function');
     });
 
     it('should have registerHandlers method', () => {

@@ -1,195 +1,147 @@
 /**
- * @fileoverview Test Node.js installation functionality
+ * @fileoverview Tests for consolidated Node.js runtime detection/installation.
+ * Legacy NVM/shell-probe logic was removed from system.js (Task 10); these
+ * tests assert delegation to nodeDetectionService and guard against regression.
  * @author Documental Team
  * @since 1.0.0
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SystemHandlers } from '../../src/ipc/system.js';
 
-describe('Node.js Installation Tests', () => {
+const createMockLogger = () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() });
+
+describe('Node.js Installation Tests (consolidated)', () => {
   let systemHandlers;
   let mockLogger;
   let mockWindowManager;
+  let mockNodeDetectionService;
+
+  const detectionPayload = {
+    embedded: { available: true, version: '24.15.0' },
+    runtime: { installed: false, isValid: false },
+    systemNode: null,
+    recommendation: 'embedded_ready'
+  };
 
   beforeEach(async () => {
-    mockLogger = {
-      info: vi.fn(),
-      error: vi.fn(),
-      warn: vi.fn()
-    };
-
-    mockWindowManager = {
-      getMainWindow: vi.fn()
+    mockLogger = createMockLogger();
+    mockWindowManager = { getMainWindow: vi.fn() };
+    mockNodeDetectionService = {
+      detect: vi.fn().mockResolvedValue(detectionPayload),
+      installManagedRuntime: vi.fn().mockResolvedValue({
+        installed: true,
+        isValid: true,
+        version: '20.12.0',
+        nodePath: '/userData/node-runtime/bin/node'
+      })
     };
 
     const { SystemHandlers } = await import('../../src/ipc/system.js');
     systemHandlers = new SystemHandlers({
       logger: mockLogger,
-      windowManager: mockWindowManager
+      windowManager: mockWindowManager,
+      nodeDetectionService: mockNodeDetectionService
     });
   });
 
-  describe('NVM Detection', () => {
-    it('should detect NVM when it exists', async () => {
-      // Mock fs.existsSync to return true for NVM directory
-      const fs = require('fs');
-      vi.spyOn(fs, 'existsSync').mockImplementation((path) => {
-        return path.includes('.nvm');
-      });
-
-      const result = await systemHandlers.detectNVM();
-      
-      expect(result.exists).toBe(true);
-      expect(result.type).toBe('directory');
-      expect(result.path).toContain('.nvm');
+  describe('Detection delegation', () => {
+    it('checkNodeInstallation delegates to nodeDetectionService.detect', async () => {
+      const result = await systemHandlers.checkNodeInstallation();
+      expect(mockNodeDetectionService.detect).toHaveBeenCalledTimes(1);
+      expect(result).toBe(detectionPayload);
     });
 
-    it('should return false when NVM does not exist', async () => {
-      // Mock fs.existsSync to return false
-      const fs = require('fs');
-      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    it('returns error payload when nodeDetectionService is unavailable', async () => {
+      const { SystemHandlers } = await import('../../src/ipc/system.js');
+      const bare = new SystemHandlers({ logger: mockLogger, windowManager: mockWindowManager });
+      const result = await bare.checkNodeInstallation();
+      expect(result.recommendation).toBe('error');
+      expect(result.error).toContain('nodeDetectionService');
+    });
 
-      // Mock exec to return error
-      const { exec } = require('child_process');
-      vi.spyOn({ exec }, 'exec').mockImplementation((cmd, callback) => {
-        callback(new Error('Command not found'), '', '');
-      });
-
-      const result = await systemHandlers.detectNVM();
-      
-      expect(result.exists).toBe(false);
-      expect(result.path).toBe(null);
+    it('returns error payload when detection throws', async () => {
+      mockNodeDetectionService.detect.mockRejectedValue(new Error('boom'));
+      const result = await systemHandlers.checkNodeInstallation();
+      expect(result.recommendation).toBe('error');
+      expect(result.error).toBe('boom');
     });
   });
 
-  describe('Node.js Installation', () => {
-    it('should have installNodeDependencies method', () => {
-      expect(typeof systemHandlers.installNodeDependencies).toBe('function');
-    });
-
-    it('should have detectNVM method', () => {
-      expect(typeof systemHandlers.detectNVM).toBe('function');
-    });
-
-    it('should have installNVM method', () => {
-      expect(typeof systemHandlers.installNVM).toBe('function');
-    });
-
-    it('should have installNodeVersion method', () => {
-      expect(typeof systemHandlers.installNodeVersion).toBe('function');
-    });
-
-    it('should have configureNodeEnvironment method', () => {
-      expect(typeof systemHandlers.configureNodeEnvironment).toBe('function');
-    });
-
-    it('should have verifyNodeInstallation method', () => {
-      expect(typeof systemHandlers.verifyNodeInstallation).toBe('function');
-    });
-
-    it('should initialize with correct installation progress', () => {
-      expect(systemHandlers.installationProgress).toBeDefined();
-      expect(systemHandlers.installationProgress.stage).toBe('idle');
-      expect(systemHandlers.installationProgress.progress).toBe(0);
-    });
-
-    it('should update installation progress during process', async () => {
-      // Mock NVM detection to return false (needs installation)
-      vi.spyOn(systemHandlers, 'detectNVM').mockResolvedValue({
-        exists: false,
-        path: null,
-        type: null
-      });
-
-      // Mock NVM installation
-      vi.spyOn(systemHandlers, 'installNVM').mockResolvedValue();
-
-      // Mock Node.js installation
-      vi.spyOn(systemHandlers, 'installNodeVersion').mockResolvedValue({
-        version: '22',
-        success: true
-      });
-
-      // Mock environment configuration
-      vi.spyOn(systemHandlers, 'configureNodeEnvironment').mockResolvedValue();
-
-      // Mock verification
-      vi.spyOn(systemHandlers, 'verifyNodeInstallation').mockResolvedValue({
-        success: true,
-        version: '22.0.0',
-        path: '/home/user/.nvm/versions/node/v22.0.0/bin/node'
-      });
-
-      try {
-        await systemHandlers.installNodeDependencies();
-      } catch (error) {
-        // Expected to fail in test environment
-      }
-
-      // Check that progress was updated
-      expect(systemHandlers.installationProgress.stage).toBeDefined();
-      expect(systemHandlers.installationProgress.progress).toBeGreaterThanOrEqual(0);
-    });
-  });
-
-  describe('Environment Configuration', () => {
-    it('should configure shell profiles correctly', async () => {
-      const fs = require('fs');
-      const path = require('path');
-      const os = require('os');
-
-      // Mock fs methods
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue('# Existing content\n');
-      vi.spyOn(fs, 'appendFileSync').mockImplementation();
-
-      await systemHandlers.configureNodeEnvironment();
-
-      // Should check for shell profiles
-      expect(fs.existsSync).toHaveBeenCalledWith(path.join(os.homedir(), '.bashrc'));
-      expect(fs.existsSync).toHaveBeenCalledWith(path.join(os.homedir(), '.zshrc'));
-      expect(fs.existsSync).toHaveBeenCalledWith(path.join(os.homedir(), '.profile'));
-    });
-  });
-
-  describe('Installation Verification', () => {
-    it('should verify successful Node.js installation', async () => {
-      // Mock exec to return successful Node.js verification
-      const { exec } = require('child_process');
-      vi.spyOn({ exec }, 'exec').mockImplementation((cmd, callback) => {
-        if (cmd.includes('node --version')) {
-          callback(null, 'v22.11.0\nnpm 9.0.0\n/usr/bin/node\n/usr/bin/npm\n', '');
-        } else {
-          callback(null, '', '');
-        }
-      });
-
-      const result = await systemHandlers.verifyNodeInstallation();
-
+  describe('Installation delegation', () => {
+    it('installNodeDependencies delegates to installManagedRuntime', async () => {
+      const result = await systemHandlers.installNodeDependencies({ force: false });
+      expect(mockNodeDetectionService.installManagedRuntime).toHaveBeenCalledWith(
+        expect.objectContaining({ force: false })
+      );
       expect(result.success).toBe(true);
-      expect(result.version).toBe('22.11.0');
-      expect(result.npmVersion).toBe('10.9.0');
-      expect(result.path).toContain('/.nvm/versions/node/v22.11.0/bin/node');
+      expect(result.nodeVersion).toBe('20.12.0');
+      expect(result.nodePath).toContain('node-runtime');
     });
 
-    it('should handle verification failure', async () => {
-      // Mock child_process.exec to return error
-      const childProcess = require('child_process');
-      vi.spyOn(childProcess, 'exec').mockImplementation((cmd, options, callback) => {
-        if (typeof callback === 'undefined') {
-          callback = options;
-        }
-        callback(new Error('Command failed'), '', '');
+    it('forwards onProgress to installationProgress', async () => {
+      mockNodeDetectionService.installManagedRuntime.mockImplementation(async ({ onProgress }) => {
+        onProgress({ stage: 'downloading', percent: 42, message: 'Downloading...' });
+        return { installed: true, isValid: true, version: '20.12.0', nodePath: null };
       });
+      await systemHandlers.installNodeDependencies();
+      expect(systemHandlers.installationProgress.stage).toBe('completed');
+      expect(systemHandlers.installationProgress.progress).toBe(100);
 
-      const result = await systemHandlers.verifyNodeInstallation();
+      const progress = systemHandlers.getNodeInstallationProgress();
+      expect(progress).toEqual({ stage: 'completed', progress: 100, message: 'Installation completed successfully!' });
+    });
 
+    it('reports failure and error progress when install throws', async () => {
+      mockNodeDetectionService.installManagedRuntime.mockRejectedValue(new Error('download failed'));
+      const result = await systemHandlers.installNodeDependencies();
       expect(result.success).toBe(false);
-      expect(result.error).toContain('Verification failed');
-      
-      // Restore mock
-      childProcess.exec.mockRestore();
+      expect(result.error).toBe('download failed');
+      expect(systemHandlers.installationProgress.stage).toBe('error');
+    });
+
+    it('fails gracefully when nodeDetectionService is unavailable', async () => {
+      const { SystemHandlers } = await import('../../src/ipc/system.js');
+      const bare = new SystemHandlers({ logger: mockLogger, windowManager: mockWindowManager });
+      const result = await bare.installNodeDependencies();
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('nodeDetectionService');
+    });
+  });
+
+  describe('Legacy detection removal (regression guard)', () => {
+    it('system.js contains no node-detection logic', async () => {
+      const { readFileSync } = require('node:fs');
+      const source = readFileSync(require('node:path').join(__dirname, '../../src/ipc/system.js'), 'utf8');
+      expect(source).not.toMatch(/detectNodeInstallation/);
+      expect(source).not.toMatch(/nvm/i);
+      expect(source).not.toMatch(/node --version/);
+    });
+
+    it('nodeDetectionService.js is the only definition of detectNodeInstallation in src/', async () => {
+      const { readFileSync, readdirSync, statSync } = require('node:fs');
+      const path = require('node:path');
+      const srcRoot = path.join(__dirname, '../../src');
+      const definers = [];
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir)) {
+          const full = path.join(dir, entry);
+          if (statSync(full).isDirectory()) { walk(full); continue; }
+          if (!entry.endsWith('.js')) continue;
+          const content = readFileSync(full, 'utf8');
+          if (/async detectNodeInstallation\(/.test(content)) definers.push(full);
+        }
+      };
+      walk(srcRoot);
+      expect(definers).toHaveLength(1);
+      expect(definers[0]).toContain('nodeDetectionService.js');
+    });
+
+    it('SystemHandlers no longer exposes NVM-era methods', () => {
+      for (const name of ['detectNVM', 'installNVM', 'installNodeVersion', 'configureNodeEnvironment', 'verifyNodeInstallation']) {
+        expect(systemHandlers[name]).toBeUndefined();
+      }
+      expect(typeof systemHandlers.checkNodeInstallation).toBe('function');
+      expect(typeof systemHandlers.installNodeDependencies).toBe('function');
     });
   });
 });
