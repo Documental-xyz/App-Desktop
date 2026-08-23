@@ -86,7 +86,7 @@ async function gitClone(url, dir, options = {}) {
     console.log(`🔄 Cloning repository from ${url} to ${dir}`);
     
     const token = await getGitHubToken();
-    const auth = token ? { username: token, password: 'x-oauth-basic' } : undefined;
+    const auth = token ? { token } : undefined;
     
     await getGitService().clone(url, dir, {
       auth,
