@@ -1336,9 +1336,18 @@ class GitHandlers {
   _isPushRejected(err) {
     const msg = (err && err.message) || '';
     const code = err && (err.code || (err.cause && err.cause.code));
+    // "cannot lock ref"/"incorrect old value provided"/"remote rejected":
+    // non-fast-forward RACE — the origin advanced between the ref
+    // advertisement and the git-receive-pack POST (T11-D1). Same remedy as
+    // any other rejection: typed PUSH_REJECTED so the renderer offers
+    // "Atualizar primeiro".
     return code === 'PushRejectedError' ||
       msg.includes('non-fast-forward') ||
       msg.includes('fetch first') ||
+      msg.includes('cannot lock ref') ||
+      msg.includes('incorrect old value') ||
+      msg.includes('[remote rejected]') ||
+      msg.includes('remote rejected') ||
       /\b409\b/.test(msg);
   }
 

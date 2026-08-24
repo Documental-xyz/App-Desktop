@@ -196,6 +196,29 @@ describe('gitPublishPreview — push rejected (PUSH_REJECTED)', () => {
   });
 });
 
+// ─── T11-D1 regression: push ref-lock race classified as PUSH_REJECTED ──────
+
+describe('_isPushRejected — ref-lock race variants (T11-D1)', () => {
+  const RACE_MESSAGE =
+    "remote: error: cannot lock ref 'refs/heads/preview': is at 3f2a1b but expected 9c8d7e " +
+    '! [remote rejected] refs/heads/preview -> refs/heads/preview (incorrect old value provided)';
+
+  it('classifies the E2E-captured race message as rejected', () => {
+    const handlers = makeHandlers('/unused');
+    expect(handlers._isPushRejected(new Error(RACE_MESSAGE))).toBe(true);
+    expect(handlers._isPushRejected(new Error('cannot lock ref'))).toBe(true);
+    expect(handlers._isPushRejected(new Error('push failed: incorrect old value provided'))).toBe(true);
+    expect(handlers._isPushRejected(new Error('[remote rejected] preview (fetch first)'))).toBe(true);
+  });
+
+  it('does not swallow unrelated errors', () => {
+    const handlers = makeHandlers('/unused');
+    expect(handlers._isPushRejected(new Error('HTTP Error: 401 Unauthorized'))).toBe(false);
+    expect(handlers._isPushRejected(new Error('ECONNREFUSED network down'))).toBe(false);
+    expect(handlers._isPushRejected(new Error('disk full'))).toBe(false);
+  });
+});
+
 // ─── No-upstream compensation (backup path) ─────────────────────────────────
 
 describe('gitPushToBranch — no upstream treated as all-unpushed', () => {
