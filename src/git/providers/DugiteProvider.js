@@ -221,13 +221,49 @@ class DugiteProvider {
    * @returns {Promise<import('../GitTypes').FetchResult>}
    */
   async fetch(repoPath, opts = {}) {
+    // Serialize fetches per repo: real git processes racing on
+    // .git/shallow.lock fail spuriously (the flows fetch main+preview
+    // via Promise.all; iso-git is in-process and never races) — T10-D3.
+    const prev = DugiteProvider._fetchChains.get(repoPath) || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this._fetchSerialized(repoPath, opts));
+    DugiteProvider._fetchChains.set(repoPath, run);
+    try {
+      return await run;
+    } finally {
+      if (DugiteProvider._fetchChains.get(repoPath) === run) {
+        DugiteProvider._fetchChains.delete(repoPath);
+      }
+    }
+  }
+
+  /** @type {Map<string, Promise<unknown>>} */
+  static _fetchChains = new Map();
+
+  async _fetchSerialized(repoPath, opts = {}) {
     const {
-      auth, signal, singleBranch = true, depth = 1, refspec, remote = 'origin',
-      branch,
+      auth, signal, singleBranch = true, depth, refspec, remote = 'origin',
+      // `ref` is the arg name the flows (and iso-git callers) use for
+      // the branch being fetched; accept it as an alias of `branch`
+      // (parity fix T10-D3).
+      branch, ref,
     } = opts;
     const args = ['fetch'];
+    // A FAILED fetch can die while holding .git/shallow.lock, poisoning
+    // every later fetch in the repo (git's own advice is to remove the
+    // stale file). Ops are serialized by the app's git lock, so any lock
+    // present before we start is stale (T10-D3 leftover-lock).
+    const shallowLock = path.join(repoPath, '.git', 'shallow.lock');
+    if (fs.existsSync(shallowLock)) {
+      fs.rmSync(shallowLock, { force: true });
+    }
     if (depth !== undefined) {
       args.push('--depth', String(depth));
+    } else if (fs.existsSync(path.join(repoPath, '.git', 'shallow'))) {
+      // Parity fix T10-D1: iso-git's no-depth fetch fully deepens a
+      // shallow repo even when everything is already up to date; plain
+      // git keeps the boundary in that case. `--unshallow` matches the
+      // iso-git semantics (fatal on complete repos → only when shallow).
+      args.push('--unshallow');
     }
     args.push(remote);
     if (refspec) {
@@ -236,14 +272,30 @@ class DugiteProvider {
       // `--single-branch` is a clone-only flag; for fetch the iso-git
       // semantics translate to an explicit refspec for the one branch
       // being tracked (configured by clone --single-branch).
-      const name = branch || await this._currentBranchName(repoPath);
+      const name = branch || ref || await this._currentBranchName(repoPath);
       if (name) {
         args.push(`+refs/heads/${name}:refs/remotes/${remote}/${name}`);
       }
       // No branch resolvable (empty repo/detached) → fetch configured
       // refspecs as-is.
     }
-    await this._run('fetch', args, repoPath, { repoPath, remote, auth, signal });
+    try {
+      await this._run('fetch', args, repoPath, { repoPath, remote, auth, signal });
+    } catch (err) {
+      // Parity fix T10-D2: git says "couldn't find remote ref" where
+      // iso-git says "Could not find ref" — normalize so consumers
+      // matching /Could not find|not found|404/ behave identically.
+      if (/couldn't find remote ref/i.test(String(err && err.message))) {
+        throw new GitError({
+          operation: 'fetch',
+          provider: PROVIDER_NAME,
+          exitCode: err.exitCode,
+          stderr: 'Could not find remote ref (normalized from git: "couldn\'t find remote ref")',
+          cause: err,
+        });
+      }
+      throw err;
+    }
     // dugite has no structured FetchResult equivalent; iso-git's
     // optional fields (defaultBranch/fetchHead/pruned) are all
     // optional in the contract — resolve a bare result.

@@ -372,15 +372,15 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
   });
 });
 
-// ─── Bug tripwires (`it.fails`: PASS now = bug present; when src is fixed
-// these FAIL loudly → remove the matching conditional gate above) ────────────
+// ─── Parity regressions (formerly `it.fails` tripwires for T10-D1/D2;
+// the bugs were fixed — these now pin the CORRECT behavior) ──────────────────
 
-describe('parity bug tripwires [dugite]', () => {
-  it.fails('T10-D1: fetch() without depth deepens a depth:1 repo (merge-base appears)', async () => {
+describe('parity regressions [dugite]', () => {
+  it('T10-D1 (fixed): fetch() without depth deepens a depth:1 repo (merge-base appears)', async () => {
     expect(await dugiteDeepenFetchWorks('dugite')).toBe(true);
   });
 
-  it.fails('T10-D2: fetching a missing remote branch raises a flow-recognizable error', async () => {
+  it('T10-D2 (fixed): fetching a missing remote branch raises a flow-recognizable error', async () => {
     expect(await dugiteMissingRefFetchTolerated('dugite')).toBe(true);
   });
 });
