@@ -748,15 +748,15 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
       expect(handlers.gitSafety).not.toBeNull();
       const safeSpy = vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout');
-      const hardResetSpy = vi.spyOn(handlers, '_hardResetBranch');
 
       const result = await handlers.gitRefresh(1);
 
       expect(result.success).toBe(true);
       expect(safeSpy).toHaveBeenCalledTimes(1);
-      // _hardResetBranch MUST NOT be called when gitSafety is available —
-      // safe-checkout is the data-loss guard.
-      expect(hardResetSpy).not.toHaveBeenCalled();
+      // Task 5: the raw _hardResetBranch fallback was REMOVED entirely —
+      // every destructive reset routes through the backup-guarded path.
+      expect('_hardResetBranch' in handlers).toBe(false);
+      expect(typeof handlers._safeResetToOrigin).toBe('function');
     });
 
     it('still completes refresh when gitSafety._safeResetOrCheckout creates a backup', async () => {

@@ -167,21 +167,22 @@ class GitHandlers {
   }
 
   /**
-   * Equivalent to `git reset --hard <targetRef>` using available isomorphic-git functions
+   * The ONLY sanctioned path to a hard reset (Task 5): always through
+   * GitSafety's backup-guarded `_safeResetOrCheckout`. The raw
+   * `_hardResetBranch` fallback was removed — when GitSafety is
+   * unavailable a destructive reset is REFUSED (fail-safe), never
+   * degraded to an unguarded writeRef-force + checkout-force.
    * @param {string} projectPath - Absolute path to the git repository
    * @param {string} targetRef - Ref to reset to (e.g., `'origin/preview'`)
-   * @returns {Promise<void>}
+   * @param {object} [options] - forwarded to _safeResetOrCheckout ({ author })
+   * @returns {Promise<{ backupBranch: string|null }>}
    */
-  async _hardResetBranch(projectPath, targetRef) {
-    const oid = await this.git.resolveRef(projectPath, targetRef);
-    const localBranch = targetRef.replace(/^origin\//, '');
-    await this.git.writeRef(
-      projectPath,
-      `refs/heads/${localBranch}`,
-      oid,
-      { force: true },
-    );
-    await this.git.checkout(projectPath, localBranch, { force: true });
+  async _safeResetToOrigin(projectPath, targetRef, options) {
+    const ops = this._safetyOps();
+    if (!this.gitSafety || !ops) {
+      throw new Error('GitSafety indisponível — reset destrutivo recusado (sem backup obrigatório)');
+    }
+    return this.gitSafety._safeResetOrCheckout(ops, require('fs'), projectPath, targetRef, options);
   }
 
   /**
@@ -1337,14 +1338,10 @@ class GitHandlers {
       this._gitCache = {};
       if (tempBranchCreated) {
         try {
-          if (this.gitSafety) {
-            const result = await this.gitSafety._safeResetOrCheckout(
-              this._safetyOps(), require('fs'), projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
-            );
-            backupBranch = result.backupBranch;
-          } else {
-            await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
-          }
+          const result = await this._safeResetToOrigin(
+            projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
+          );
+          backupBranch = result.backupBranch;
           await this.git.deleteBranch(projectPath, tempBranch);
           tempBranchCreated = false;
         } catch (_e) {
@@ -1392,11 +1389,7 @@ class GitHandlers {
             catch (_e2) { /* ignore */ }
           }
           try {
-            if (this.gitSafety) {
-              await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${targetBranch}`);
-            } else {
-              await this._hardResetBranch(projectPath, `origin/${targetBranch}`);
-            }
+            await this._safeResetToOrigin(projectPath, `origin/${targetBranch}`);
           } catch (_e2) { /* origin ref may not exist */ }
           try { await this.git.deleteBranch(projectPath, tempBranch); } catch (_e3) { /* ignore */ }
         } catch (_e) { /* best effort */ }
@@ -1511,11 +1504,7 @@ class GitHandlers {
       } catch (_e) { /* best-effort divergence detection */ }
 
       this.sendOutput(`🔄 Atualizando para origin/${BRANCH_PREVIEW}...`);
-      if (this.gitSafety) {
-        await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`);
-      } else {
-        await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
-      }
+      await this._safeResetToOrigin(projectPath, `origin/${BRANCH_PREVIEW}`);
 
       this.sendOutput(`✅ Atualizado para origin/${BRANCH_PREVIEW}`);
       return { success: true, branch: BRANCH_PREVIEW };
@@ -1923,12 +1912,8 @@ class GitHandlers {
         this.STEP_TIMEOUT_CHECKOUT_MS,
         `checkout ${BRANCH_MAIN}`,
       );
-      if (this.gitSafety) {
-        const result = await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_MAIN}`);
-        backupBranch = result.backupBranch;
-      } else {
-        await this._hardResetBranch(projectPath, `origin/${BRANCH_MAIN}`);
-      }
+      const result = await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`);
+      backupBranch = result.backupBranch;
 
       this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
       const [authorName, authorEmail] = await Promise.all([
@@ -2048,12 +2033,7 @@ class GitHandlers {
       return { success: false, error: error.message };
     } finally {
       try {
-        if (this.gitSafety) {
-          await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`);
-        } else {
-          await this.git.checkout(projectPath, BRANCH_PREVIEW);
-          await this._hardResetBranch(projectPath, `origin/${BRANCH_PREVIEW}`);
-        }
+        await this._safeResetToOrigin(projectPath, `origin/${BRANCH_PREVIEW}`);
       } catch (_e) { /* best effort */ }
       if (backupBranch && this.gitSafety) {
         try {
@@ -2335,7 +2315,16 @@ class GitHandlers {
     });
 
     /**
-     * Cancel current Git operation
+     * Cancel current Git operation.
+     *
+     * RECOVERY CONTRACT (Task 5): cancelling NEVER deletes backup
+     * branches. If the operation was interrupted mid-merge/reset, the
+     * repository is restorable from any retained `backup/*` branch via
+     * `GitSafety.recoverFromBackup(ops, fs, projectPath, backupBranch,
+     * workBranch)` — which performs `writeRef` of the work branch to the
+     * backup tip + force checkout (pattern at GitProvider.js:601-604) and
+     * keeps the backup for retry. Backups expire only through the 7-day
+     * retention pruning (`GitSafety.pruneOldBackups`).
      */
     ipcMain.handle('git:cancel-operation', async () => {
       this.logger.info('Cancel operation requested via IPC');

@@ -69,6 +69,32 @@ function createObjectStyleOps(gitService) {
   };
 }
 
+/**
+ * Typed error for gitSafety hard blocks (Task 5).
+ *
+ * Codes:
+ *  - `BACKUP_FAILED`        — backup creation (createBranch / snapshot
+ *    commit) failed; the protected operation MUST NOT run. Guarantees
+ *    zero destructive provider mutations on this path.
+ *  - `STATUS_MATRIX_FAILED` — statusMatrix threw; we can't know whether
+ *    the working tree is dirty, so proceeding would risk treating a
+ *    dirty tree as clean (the historical dirty=[] data-loss path).
+ *    Hard block — never fall back to dirty=[].
+ */
+class GitSafetyError extends Error {
+  /**
+   * @param {'BACKUP_FAILED'|'STATUS_MATRIX_FAILED'} code
+   * @param {string} message
+   * @param {Error} [cause]
+   */
+  constructor(code, message, cause) {
+    super(message);
+    this.name = 'GitSafetyError';
+    this.code = code;
+    if (cause) this.cause = cause;
+  }
+}
+
 // Regex to parse the trailing timestamp from an auto-generated backup name.
 // Backup names are of the form:  backup/<branch>-<shortSha>-<timestamp>
 // We capture the final dash-separated numeric group as the timestamp.
@@ -99,6 +125,108 @@ class GitSafety {
   // ─── Core destructive-op wrapper ─────────────────────────────────────────────
 
   /**
+   * Shared pre-flight (Task 5): assess unpushed/dirty state and create the
+   * backup when there is anything to lose. All failures are HARD blocks:
+   *  - statusMatrix throws  → GitSafetyError STATUS_MATRIX_FAILED
+   *    (never continue with dirty=[] — that was the data-loss bug)
+   *  - backup creation fails → GitSafetyError BACKUP_FAILED
+   *    (never reach the destructive step without a backup)
+   *
+   * @private
+   * @returns {Promise<{ backupBranch: string|null }>}
+   */
+  async _assessAndBackup(gitMod, fs, projectPath, localBranch, options = {}) {
+    const currentBranch = await gitMod.currentBranch({ fs, dir: projectPath });
+    const localHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+
+    let hasUnpushed = false;
+    if (currentBranch) {
+      try {
+        const remoteHead = await gitMod.resolveRef({
+          fs,
+          dir: projectPath,
+          ref: 'refs/remotes/origin/' + currentBranch,
+        });
+        hasUnpushed = remoteHead !== localHead;
+      } catch {
+        // No upstream tracking ref → assume everything is unpushed if there
+        // are commits; the dirty-tree check below is the authoritative guard.
+        hasUnpushed = false;
+      }
+    }
+
+    let matrix;
+    try {
+      matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+    } catch (err) {
+      throw new GitSafetyError(
+        'STATUS_MATRIX_FAILED',
+        `Não foi possível avaliar o estado do repositório (statusMatrix: ${err.message}) — operação bloqueada por segurança`,
+        err
+      );
+    }
+    const dirty = matrix.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
+
+    if (!hasUnpushed && dirty.length === 0) {
+      return { backupBranch: null };
+    }
+
+    let backupBranch;
+    try {
+      backupBranch = await this._createBackup({
+        gitMod,
+        fs,
+        projectPath,
+        currentBranch: currentBranch || localBranch || 'detached',
+        localHead,
+        dirty,
+        author: options.author,
+      });
+    } catch (err) {
+      if (err instanceof GitSafetyError) throw err;
+      throw new GitSafetyError(
+        'BACKUP_FAILED',
+        `Backup obrigatório falhou — operação abortada para proteger seus dados (${err.message})`,
+        err
+      );
+    }
+    this.logger.info(`📦 Backup criado: ${backupBranch}`);
+    return { backupBranch };
+  }
+
+  /**
+   * MANDATORY blocking backup around any destructive flow (Task 5).
+   *
+   * Contract: `operation` (the destructive/mutating part of a flow —
+   * merge/push/checkout-force/...) runs ONLY after the pre-flight above
+   * succeeded. If there is anything to lose and the backup cannot be
+   * created, `operation` is NEVER invoked — zero provider mutations —
+   * and a {@link GitSafetyError} (`BACKUP_FAILED` or
+   * `STATUS_MATRIX_FAILED`) is thrown for the caller to surface.
+   *
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
+   * @param {object} fs - filesystem client accepted by isomorphic-git
+   * @param {string} projectPath - absolute path to the repository
+   * @param {() => Promise<T>} operation - the protected (destructive) flow body
+   * @param {object} [options]
+   * @param {string} [options.author] - author for the temp backup commit
+   * @param {string} [options.branch] - branch name used for backup naming (default: current)
+   * @returns {Promise<{ backupBranch: string|null, result: T }>}
+   * @template T
+   */
+  async withMandatoryBackup(gitMod, fs, projectPath, operation, options = {}) {
+    const { backupBranch } = await this._assessAndBackup(
+      gitMod,
+      fs,
+      projectPath,
+      options.branch || '',
+      options
+    );
+    const result = await operation();
+    return { backupBranch, result };
+  }
+
+  /**
    * Replaces `_hardResetBranch`. Performs a safe destructive operation:
    * if there is unpushed work OR uncommitted working-tree state, a backup
    * branch is created (including a temp commit of dirty files) BEFORE the
@@ -117,52 +245,8 @@ class GitSafety {
   async _safeResetOrCheckout(gitMod, fs, projectPath, targetRef, options = {}) {
     const localBranch = targetRef.replace(/^origin\//, '');
 
-    // 1. Current branch + local HEAD
-    const currentBranch = await gitMod.currentBranch({ fs, dir: projectPath });
-    const localHead = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
-
-    // 2. Detect unpushed commits (best-effort — remote ref may not exist yet)
-    let remoteHead = null;
-    let hasUnpushed = false;
-    if (currentBranch) {
-      try {
-        remoteHead = await gitMod.resolveRef({
-          fs,
-          dir: projectPath,
-          ref: 'refs/remotes/origin/' + currentBranch,
-        });
-        hasUnpushed = remoteHead !== localHead;
-      } catch {
-        // No upstream tracking ref → assume everything is unpushed if there
-        // are commits; the dirty-tree check below is the authoritative guard.
-        hasUnpushed = false;
-      }
-    }
-
-    // 3. Detect uncommitted working-tree changes
-    let dirty = [];
-    try {
-      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
-      dirty = matrix.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
-    } catch (err) {
-      this.logger.warn('statusMatrix falhou na criação de backup:', err.message);
-    }
-    const hasDirty = dirty.length > 0;
-
-    // 4. Create backup if there's anything to lose
-    let backupBranch = null;
-    if (hasUnpushed || hasDirty) {
-      backupBranch = await this._createBackup({
-        gitMod,
-        fs,
-        projectPath,
-        currentBranch: currentBranch || localBranch || 'detached',
-        localHead,
-        dirty,
-        author: options.author,
-      });
-      this.logger.info(`📦 Backup criado: ${backupBranch}`);
-    }
+    // 1-4. Assess + mandatory blocking backup (see _assessAndBackup).
+    const { backupBranch } = await this._assessAndBackup(gitMod, fs, projectPath, localBranch, options);
 
     // 5. Execute the destructive reset/checkout (mirrors `_hardResetBranch`)
     const oid = await gitMod.resolveRef({ fs, dir: projectPath, ref: targetRef });
@@ -476,6 +560,38 @@ class GitSafety {
   }
 
   /**
+   * Cancel/CRASH RECOVERY (Task 5). Restores `workBranch` to the state
+   * captured by a backup branch: `writeRef` of the work branch to the
+   * backup tip + force checkout (the pattern at GitProvider.js:601-604).
+   *
+   * The backup branch is NEVER deleted here — `git:cancel-operation`
+   * keeps backups so the user can retry recovery or restore an older
+   * snapshot; expiry is handled solely by {@link GitSafety#pruneOldBackups}
+   * (7-day retention).
+   *
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
+   * @param {object} fs - filesystem client
+   * @param {string} projectPath - absolute repo path
+   * @param {string} backupBranch - backup branch to restore from (retained)
+   * @param {string} workBranch - branch to point at the backup tip
+   * @returns {Promise<{ restoredFrom: string, backupRetained: true }>}
+   * @throws on ref/checkout failure — the backup is untouched either way
+   */
+  async recoverFromBackup(gitMod, fs, projectPath, backupBranch, workBranch) {
+    const oid = await gitMod.resolveRef({ fs, dir: projectPath, ref: backupBranch });
+    await gitMod.writeRef({
+      fs,
+      dir: projectPath,
+      ref: 'refs/heads/' + workBranch,
+      value: oid,
+      force: true,
+    });
+    await gitMod.checkout({ fs, dir: projectPath, ref: workBranch, force: true });
+    this.fsSyncSafe(fs, projectPath);
+    return { restoredFrom: backupBranch, backupRetained: true };
+  }
+
+  /**
    * User-initiated backup deletion (from UI).
    *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
@@ -548,6 +664,7 @@ class GitSafety {
 
 module.exports = {
   GitSafety,
+  GitSafetyError,
   BACKUP_BRANCH_PREFIX,
   BACKUP_RETENTION_DAYS,
   createObjectStyleOps,
