@@ -524,10 +524,33 @@ class DugiteProvider {
    *   - legacy iso-git booleans `ours: true` / `theirs: true` (git.js
    *     call sites) → same `-X` mapping; a STRING `theirs` in opts
    *     overrides the positional theirRef (rest-spread parity with T10)
-   *   - `mergeDriver` (the JS theirsMergeDriver callback): a callback
-   *     cannot cross a CLI boundary — gitMergeDriver.js documents itself
-   *     as the equivalent of `git merge -X theirs`, so it maps to
-   *     `-X theirs` (documented approximation)
+   *   - `mergeDriver` (a JS callback such as oursMergeDriver /
+   *     theirsMergeDriver): a callback cannot cross a CLI boundary, so
+   *     the driver's INTENT is translated to the equivalent native
+   *     flag (`git merge -X ours` / `-X theirs`). Intent detection
+   *     (contract with src/ipc/gitMergeDriver.js, git-sync-strategy
+   *     Task 3):
+   *       1. `mergeDriver.direction === 'ours' | 'theirs'` marker, OR
+   *       2. the named exports `oursMergeDriver` / `theirsMergeDriver`,
+   *          detected via the function's `name` (reference comparison
+   *          would require importing the ipc layer from the provider
+   *          layer — a dependency inversion; the name check survives
+   *          CJS require and vitest's transforms).
+   *     Any OTHER callback is an untranslatable custom driver → the
+   *     merge FAILS EXPLICITLY before `git merge` runs (never silently
+   *     degraded to `-X theirs` as the old code did).
+   *
+   *     Residual divergences vs isomorphic-git drivers (documented,
+   *     accepted at hunk granularity):
+   *       - `-X ours|theirs` operates per conflicting hunk exactly like
+   *         the JS drivers (non-conflicting changes from both sides are
+   *         always kept), BUT delete/modify conflicts are NOT resolved
+   *         by `-X` (git leaves them conflicted → errorType 'conflict')
+   *         whereas the iso-git drivers resolve them to the winning
+   *         side's content (including deletion, contents[2] = '').
+   *       - dugite's merge also rewrites the working tree (git CLI
+   *         semantics); iso-git write ops leave the worktree stale —
+   *         callers must read the committed tree, not the files.
    *   - `fastForward: false` (git.js merge call sites) → `--no-ff`
    *
    * Conflicts: exitCode ≠ 0 with CONFLICT in stderr → GitError whose
@@ -540,6 +563,25 @@ class DugiteProvider {
    * @param {{ strategy?: 'theirs'|'ours'|'ort', ours?: boolean, theirs?: boolean|string, fastForward?: boolean, mergeDriver?: Function, message?: string } & Record<string, unknown>} [opts]
    * @returns {Promise<import('../GitTypes').MergeResult>}
    */
+  /**
+   * Resolve a JS mergeDriver callback's INTENT to a native `-X` favor.
+   * Detection contract (see merge JSDoc): `direction` marker property
+   * first, then the canonical names oursMergeDriver/theirsMergeDriver.
+   * Returns 'ours' | 'theirs' | null (null = no recognizable intent).
+   * @param {Function} driver
+   * @returns {'ours'|'theirs'|null}
+   */
+  static mergeDriverFavor(driver) {
+    if (driver && (driver.direction === 'ours' || driver.direction === 'theirs')) {
+      return driver.direction;
+    }
+    if (typeof driver?.name === 'string') {
+      if (driver.name === 'oursMergeDriver') return 'ours';
+      if (driver.name === 'theirsMergeDriver') return 'theirs';
+    }
+    return null;
+  }
+
   async merge(path, theirRef, opts = {}) {
     const { strategy, ours, theirs, fastForward, mergeDriver, message } = opts;
     const ref = typeof theirs === 'string' ? theirs : theirRef;
@@ -547,11 +589,26 @@ class DugiteProvider {
     const favor = strategy === 'theirs' || strategy === 'ours'
       ? strategy
       : (theirs === true ? 'theirs' : (ours === true ? 'ours' : null));
-    if (!favor && mergeDriver) {
-      // theirsMergeDriver ≡ -X theirs (see JSDoc above)
-      args.push('-X', 'theirs');
-    } else if (favor) {
+    if (favor) {
       args.push('-X', favor);
+    } else if (mergeDriver) {
+      // Untranslatable custom driver: fail EXPLICITLY — never silently
+      // degrade to a default strategy (would invert ours/theirs intent).
+      const driverFavor = DugiteProvider.mergeDriverFavor(mergeDriver);
+      if (!driverFavor) {
+        throw new GitError({
+          operation: 'merge',
+          provider: PROVIDER_NAME,
+          exitCode: 1,
+          stderr:
+            `unsupported mergeDriver callback "${mergeDriver?.name || 'anonymous'}": ` +
+            'dugite can only translate drivers whose intent is ours/theirs ' +
+            "(marker property direction: 'ours'|'theirs' or the named " +
+            'exports oursMergeDriver/theirsMergeDriver); refusing to run ' +
+            'the merge with a wrong default strategy',
+        });
+      }
+      args.push('-X', driverFavor);
     }
     if (fastForward === false) {
       args.push('--no-ff');
