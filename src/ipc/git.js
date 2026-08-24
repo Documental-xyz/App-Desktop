@@ -1925,23 +1925,36 @@ class GitHandlers {
   }
 
   /**
-   * Promote preview branch content to main.
+   * Promote preview branch content to main (Task 8 rewrite:
+   * preview-wins merge, return to preview).
    *
-   * Workflow:
-   *  1. Pre-check permission via PermissionHandlers (defense in depth).
-   *  2. Fetch main and preview shallow (parallel).
-   *  3. Checkout main; hard reset to origin/main.
-   *  4. Merge origin/preview with --no-ff (NO theirs driver — main is sacred;
-   *     any conflict is a hard error).
-   *  5. Push main (NEVER force).
-   *
-   * Always returns to preview workspace in finally.
+   * Workflow (mirrors the Task 6/7 pattern — _runRefreshFlow):
+   *  1. Blocking preflight (runPreflightForMain): PREVIEW_NOT_AHEAD,
+   *     MAIN_MISSING; a throwing preflight BLOCKS (never catch-and-run).
+   *  2. Lock + WIP auto-commit of uncommitted changes (message
+   *     `WIP by <login> at <ISO>`) BEFORE the mandatory backup. The WIP
+   *     commit is LOCAL to preview — it is NEVER auto-moved to main
+   *     (publishing to preview first is the user's job).
+   *  3. Mandatory blocking backup (withMandatoryBackup, Task 5).
+   *  4. Fetch origin/main + origin/preview (deepen best-effort so the
+   *     merge-base exists — pattern of _publishCore).
+   *  5. Local main := origin/main via _safeResetToOrigin (backup-guarded,
+   *     no raw hard reset), then merge origin/preview into main with the
+   *     PREVIEW-WINS contract: in the main←preview merge ours=main,
+   *     theirs=preview → theirsMergeDriver + resolveBinaryTheirs keep
+   *     PREVIEW winning (the OPPOSITE winner of the refresh flow).
+   *  6. Push main force:false; a rejection is a typed GitFlowError
+   *     PUSH_REJECTED (Task 6 contract — one attempt, renderer guides
+   *     the user to "Atualizar primeiro").
+   *  7. Success: return to the `preview` working branch (plain checkout —
+   *     already inside the withMandatoryBackup guard; NO hard reset),
+   *     then best-effort pruneOldBackups (7-day retention, Task 4).
+   *     The backup is NEVER deleted on success.
    *
    * @param {number|string} projectId - Project ID (resolved to working directory).
    * @returns {Promise<{success: boolean, branch?: string, code?: string, cancelled?: boolean, error?: string}>}
    */
   async gitPublishMain(projectId) {
-    const fs = require('fs');
     let projectPath;
     try {
       projectPath = await this.getProjectPath(projectId);
@@ -2003,132 +2016,24 @@ class GitHandlers {
     if (!this.acquireGitLock()) {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
-    let backupBranch = null;
     try {
-      const signal = this.getAbortSignal();
-      const auth = { token };
-
-      this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
-      await Promise.all([
-        this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
-          this.STEP_TIMEOUT_FETCH_MS,
-          `fetch origin/${BRANCH_MAIN}`,
-        ),
-        this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
-          this.STEP_TIMEOUT_FETCH_MS,
-          `fetch origin/${BRANCH_PREVIEW}`,
-        ),
-      ]);
-      this._gitCache = {};
-
-      this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN}...`);
-      await this._raceTimeout(
-        this.git.checkout(projectPath, BRANCH_MAIN),
-        this.STEP_TIMEOUT_CHECKOUT_MS,
-        `checkout ${BRANCH_MAIN}`,
-      );
-      const result = await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`);
-      backupBranch = result.backupBranch;
-
-      this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
       const [authorName, authorEmail] = await Promise.all([
         this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
         this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
-      // Resolve theirs (origin/preview) OID up-front for the binary fallback path.
-      let theirsOid = null;
+
+      // Login for the WIP message (best-effort — config user is the fallback).
+      let login = null;
       try {
-        theirsOid = await this.git.resolveRef(projectPath, `origin/${BRANCH_PREVIEW}`);
-      } catch (_refErr) { /* best effort — binary fallback will simply fail later */ }
-      try {
-        await this._raceTimeout(
-          this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
-            ours: BRANCH_MAIN,
-            fastForward: false,
-            ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-            message: `Promote preview to main — ${new Date().toISOString()}`,
-            author: { name: authorName, email: authorEmail },
-          }),
-          this.STEP_TIMEOUT_MERGE_MS,
-          `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
-        );
-      } catch (mergeErr) {
-        const isConflict = mergeErr.code === 'MergeConflictError' ||
-          mergeErr.name === 'MergeConflictError' ||
-          (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
-        if (isConflict) {
-          this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
-          const conflictFiles = Array.isArray(mergeErr.data)
-            ? mergeErr.data
-            : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
-          for (const filepath of conflictFiles) {
-            try {
-              await resolveBinaryTheirs(this.git, projectPath, filepath, theirsOid);
-            } catch (resolveErr) {
-              this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
-            }
-          }
-          await this.git.commit(projectPath, `Promote preview to main (binary resolved) — ${new Date().toISOString()}`, {
-            author: { name: authorName, email: authorEmail },
-            parent: [BRANCH_MAIN, `origin/${BRANCH_PREVIEW}`],
-          });
-        } else {
-          // Non-recoverable merge failure: restore repo state before propagating.
-          // isomorphic-git has no `merge --abort`; reset via the safety helper.
-          try {
-            if (this.gitSafety) {
-              await this.gitSafety._safeResetOrCheckout(this._safetyOps(), fs, projectPath, `origin/${BRANCH_MAIN}`);
-            }
-          } catch (_resetErr) { /* best effort */ }
-          throw mergeErr;
-        }
-      }
+        const userInfo = await this.gitOps.getGitHubUserInfo();
+        login = (userInfo && userInfo.login) || null;
+      } catch (_loginErr) { /* best-effort */ }
 
-      // Detect no-op push: if local main already equals origin/main, the merge
-      // produced nothing new (origin/preview === origin/main). A push here would
-      // be a no-op and yield a false success. Fail explicitly instead.
-      try {
-        const localMainSha = await this.git.resolveRef(projectPath, BRANCH_MAIN);
-        let remoteMainSha = null;
-        try {
-          remoteMainSha = await this.git.resolveRef(projectPath, `refs/remotes/origin/${BRANCH_MAIN}`);
-        } catch (_e) { /* remote ref may not exist yet — proceed to push */ }
-
-        if (remoteMainSha && localMainSha === remoteMainSha) {
-          this.sendOutput('⚠️ Nada novo para publicar — preview e main estão idênticos no remoto.');
-          this.sendOutput('ℹ️ Publique suas alterações na branch preview primeiro.');
-          return {
-            success: false,
-            code: 'NOTHING_TO_PUSH',
-            error: 'Preview não tem mudanças além de main. Publique em preview primeiro.',
-          };
-        }
-      } catch (_e) { /* best effort — if check fails, proceed to push */ }
-
-      this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
-      await this._raceTimeout(
-        this.git.push(projectPath, {
-          remote: 'origin',
-          branch: BRANCH_MAIN,
-          force: false,
-          ...(signal ? { signal } : {}),
-          auth,
-        }),
-        this.STEP_TIMEOUT_PUSH_MS,
-        `push ${BRANCH_MAIN}`,
-      );
-      this._gitCache = {};
-
-      this.sendOutput(`✅ ${BRANCH_PREVIEW} promovido para ${BRANCH_MAIN}`);
-
-      if (backupBranch && this.gitSafety) {
-        await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
-        backupBranch = null;
-      }
-
-      return { success: true, branch: BRANCH_MAIN };
+      return await this._runPublishMainFlow(projectPath, {
+        auth: { token },
+        author: { name: authorName, email: authorEmail },
+        who: login || authorName,
+      });
     } catch (error) {
       if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
@@ -2146,19 +2051,237 @@ class GitHandlers {
         return { success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg };
       }
       this.logger.error('Error in gitPublishMain:', error);
-      this.sendOutput(`❌ Erro ao publicar em main: ${error.message}`);
-      return { success: false, error: error.message };
+      return this._publishErrorToResult(error);
     } finally {
-      try {
-        await this._safeResetToOrigin(projectPath, `origin/${BRANCH_PREVIEW}`);
-      } catch (_e) { /* best effort */ }
-      if (backupBranch && this.gitSafety) {
-        try {
-          await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
-        } catch (_e) { /* ignore */ }
-      }
+      this._gitCache = {};
       this.releaseGitLock();
     }
+  }
+
+  /**
+   * Backup-guarded publish-main body (Task 8): WIP commit BEFORE the
+   * mandatory backup (Task 6/7 ordering — the backup snapshot
+   * force-checkout wipes uncommitted edits), then the fetch/merge/push
+   * core, then best-effort pruning. The backup is NEVER deleted on
+   * success (7-day retention) and NO hard reset runs anywhere — the
+   * return to preview is a plain checkout already inside the guard.
+   *
+   * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
+   */
+  async _runPublishMainFlow(projectPath, { auth, author, who }) {
+    const ops = this._safetyOps();
+    if (!this.gitSafety || !ops) {
+      throw new Error('GitSafety indisponível — publicação em main recusada (backup obrigatório)');
+    }
+
+    // 1. WIP auto-commit FIRST: protects the dirty tree and stays on the
+    //    LOCAL preview branch (never auto-promoted to main).
+    const wipMessage = `WIP by ${who} at ${new Date().toISOString()}`;
+    this.sendOutput('📝 Commitando alterações não salvas (WIP)...');
+    await this._commitAll(projectPath, wipMessage, author);
+
+    // 2. Mandatory blocking backup around the whole mutating core.
+    const { result } = await this.gitSafety.withMandatoryBackup(
+      this._opsTreatMissingUpstreamAsUnpushed(ops, BRANCH_PREVIEW),
+      require('fs'),
+      projectPath,
+      () => this._publishMainCore(projectPath, {
+        auth,
+        signal: this.getAbortSignal(),
+        author,
+      }),
+      { branch: BRANCH_PREVIEW, author }
+    );
+
+    if (result && result.cancelled) {
+      return { success: false, cancelled: true, message: 'Operation cancelled by user' };
+    }
+
+    // 3. Best-effort pruning (failure never fails the publish).
+    try {
+      await this.gitSafety.pruneOldBackups(ops, require('fs'), projectPath);
+    } catch (pruneErr) {
+      this.logger.warn('Backup pruning failed (best-effort):', pruneErr.message);
+    }
+
+    return result;
+  }
+
+  /**
+   * Publish-main core (Task 8): fetch main+preview (deepen best-effort),
+   * sync local main to origin/main (backup-guarded, no raw hard reset),
+   * merge origin/preview with PREVIEW-WINS, push force:false (typed
+   * PUSH_REJECTED), then return to the preview working branch.
+   *
+   * Direction contract (ANTI-INVERSION): in the merge main←preview,
+   * ours=main, theirs=preview → theirsMergeDriver /
+   * resolveBinaryTheirs keep PREVIEW winning conflicting hunks — the
+   * OPPOSITE winner of the refresh flow (which merges preview into the
+   * local working branch with oursMergeDriver).
+   *
+   * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
+   */
+  async _publishMainCore(projectPath, { auth, signal, author }) {
+    if (this.isCancelRequested()) {
+      return { success: false, cancelled: true, message: 'Operation cancelled by user' };
+    }
+
+    this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
+    await Promise.all([
+      this._raceTimeout(
+        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
+        this.STEP_TIMEOUT_FETCH_MS,
+        `fetch origin/${BRANCH_MAIN}`,
+      ),
+      this._raceTimeout(
+        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
+        this.STEP_TIMEOUT_FETCH_MS,
+        `fetch origin/${BRANCH_PREVIEW}`,
+      ),
+    ]);
+    this._gitCache = {};
+
+    let originMainOid = null;
+    try {
+      originMainOid = await this.git.resolveRef(projectPath, `refs/remotes/origin/${BRANCH_MAIN}`);
+    } catch (_e) { /* handled below */ }
+    if (!originMainOid) {
+      throw new GitFlowError(
+        'MAIN_MISSING',
+        `A branch remota origin/${BRANCH_MAIN} não existe. Crie a branch main no repositório remoto antes de publicar.`,
+      );
+    }
+    const theirsOid = await this.git.resolveRef(projectPath, `refs/remotes/origin/${BRANCH_PREVIEW}`);
+
+    // No-op push guard: preview identical to main remotely → nothing to
+    // promote (the preflight normally blocks this earlier).
+    if (theirsOid === originMainOid) {
+      this.sendOutput('⚠️ Nada novo para publicar — preview e main estão idênticos no remoto.');
+      return {
+        success: false,
+        code: 'NOTHING_TO_PUSH',
+        error: 'Preview não tem mudanças além de main. Publique em preview primeiro.',
+      };
+    }
+
+    // Local main := origin/main. Backup-guarded (this whole core runs
+    // inside withMandatoryBackup); _safeResetOrCheckout creates the local
+    // branch when missing — no raw hard reset anywhere.
+    this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN} com origin/${BRANCH_MAIN}...`);
+    await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`, { author });
+    this._gitCache = {};
+
+    // Deepen the depth:1 fetches so the merge-base exists (shallow tips
+    // have no common history to merge from). Best-effort — the merge
+    // below surfaces the real error if any.
+    try {
+      await Promise.all([
+        this._raceTimeout(
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, ...(signal ? { signal } : {}), auth }),
+          this.STEP_TIMEOUT_FETCH_MS,
+          `deepen fetch origin/${BRANCH_MAIN}`,
+        ),
+        this._raceTimeout(
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, ...(signal ? { signal } : {}), auth }),
+          this.STEP_TIMEOUT_FETCH_MS,
+          `deepen fetch origin/${BRANCH_PREVIEW}`,
+        ),
+      ]);
+      this._gitCache = {};
+    } catch (_deepenErr) { /* best-effort */ }
+
+    if (this.isCancelRequested()) {
+      return { success: false, cancelled: true, message: 'Operation cancelled by user' };
+    }
+
+    this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN} (preview vence conflitos)...`);
+    try {
+      await this._raceTimeout(
+        this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
+          ours: BRANCH_MAIN,
+          fastForward: false,
+          ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+          message: `Promote preview to main — ${new Date().toISOString()}`,
+          author,
+        }),
+        this.STEP_TIMEOUT_MERGE_MS,
+        `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
+      );
+    } catch (mergeErr) {
+      const conflictFiles = this._extractConflictFiles(mergeErr);
+      if (!conflictFiles) {
+        // Non-recoverable merge failure: restore main to the remote state
+        // (backup-guarded) before propagating.
+        try {
+          await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`, { author });
+        } catch (_resetErr) { /* best-effort */ }
+        throw mergeErr;
+      }
+      // Binary conflicts: PREVIEW wins (theirs = origin/preview).
+      this.sendOutput('⚠️ Conflito binário detectado — usando versão do preview.');
+      for (const filepath of conflictFiles) {
+        try {
+          await resolveBinaryTheirs(this.git, projectPath, filepath, theirsOid);
+        } catch (resolveErr) {
+          this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+        }
+      }
+      await this.git.commit(projectPath, `Promote preview to main (binary resolved) — ${new Date().toISOString()}`, {
+        author,
+        parent: [BRANCH_MAIN, `origin/${BRANCH_PREVIEW}`],
+      });
+    }
+
+    // isomorphic-git merge does NOT touch the working tree — materialize
+    // HEAD (main). Safe: this core runs inside withMandatoryBackup.
+    await this._raceTimeout(
+      this.git.checkout(projectPath, BRANCH_MAIN, { force: true }),
+      this.STEP_TIMEOUT_CHECKOUT_MS,
+      `materialize ${BRANCH_MAIN}`,
+    );
+    this._gitCache = {};
+
+    this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
+    try {
+      await this._raceTimeout(
+        this.git.push(projectPath, {
+          remote: 'origin',
+          branch: BRANCH_MAIN,
+          force: false,
+          ...(signal ? { signal } : {}),
+          auth,
+        }),
+        this.STEP_TIMEOUT_PUSH_MS,
+        `push ${BRANCH_MAIN}`,
+      );
+    } catch (pushErr) {
+      // Task 6 contract: ONE attempt, typed error, renderer guides the
+      // update. Nothing local was lost (merge kept + backup retained).
+      if (this._isPushRejected(pushErr)) {
+        throw new GitFlowError(
+          'PUSH_REJECTED',
+          'O repositório remoto tem novidades em main. Atualize primeiro e depois publique novamente.',
+          pushErr,
+        );
+      }
+      throw pushErr;
+    }
+    this._gitCache = {};
+
+    this.sendOutput(`✅ ${BRANCH_PREVIEW} promovido para ${BRANCH_MAIN}`);
+
+    // Return to the preview working branch — a plain checkout (we are
+    // still inside the withMandatoryBackup guard; the WIP commit and any
+    // local-only commits stay untouched on preview).
+    this.sendOutput(`📥 Voltando para a branch ${BRANCH_PREVIEW}...`);
+    await this._raceTimeout(
+      this.git.checkout(projectPath, BRANCH_PREVIEW),
+      this.STEP_TIMEOUT_CHECKOUT_MS,
+      `checkout ${BRANCH_PREVIEW}`,
+    );
+    this._gitCache = {};
+
+    return { success: true, branch: BRANCH_PREVIEW };
   }
 
   async gitListRemoteBranches(projectPath) {

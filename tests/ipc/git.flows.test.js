@@ -505,7 +505,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           const result = await handlers.gitPublishMain(1);
 
           expect(result.success).toBe(true);
-          expect(result.branch).toBe('main');
+          // Task 8 contract: success returns to the preview working branch.
+          expect(result.branch).toBe('preview');
 
           const mergeCall = git.merge.mock.calls.find(
             (c) => c[0] && c[0].ours === 'main'
@@ -635,8 +636,11 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(handlers.gitOperationInProgress).toBe(false);
           const checkoutCalls = git.checkout.mock.calls;
           expect(checkoutCalls.length).toBeGreaterThan(0);
+          // Task 8 contract: return-to-preview happens ONLY on success; on
+          // failure main is restored to origin/main (backup-guarded) and the
+          // repo stays on main — nothing is reset back to preview blindly.
           const last = checkoutCalls[checkoutCalls.length - 1][0];
-          expect(last.ref).toBe('preview');
+          expect(last.ref).toBe('main');
         });
 
         it('captures 403 from final push with clear PT-BR message', async () => {
