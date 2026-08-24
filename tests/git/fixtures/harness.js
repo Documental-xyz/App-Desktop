@@ -295,10 +295,24 @@ export async function makeConflict(pair, opts = {}) {
 
   // Sync colleague to the base, then diverge.
   await pair.remote.fetch();
-  await git.checkout({
+  // NB: `checkout(ref: 'origin/<branch>')` on an unborn repo DETACHES HEAD
+  // (subsequent commit creates no branch and push fails). Materialize the
+  // local branch at the remote tip first, then check it out.
+  const originTip = await git.resolveRef({
     fs,
     dir: pair.remote.dir,
     ref: `origin/${pair.branch}`,
+  });
+  await git.branch({
+    fs,
+    dir: pair.remote.dir,
+    ref: pair.branch,
+    object: originTip,
+  });
+  await git.checkout({
+    fs,
+    dir: pair.remote.dir,
+    ref: pair.branch,
   });
 
   await commitFile(pair.remote, file, remoteVersion, `remote: edit ${file}`);
