@@ -1353,9 +1353,15 @@ class GitHandlers {
       }
       this._gitCache = {};
 
-      if (backupBranch && this.gitSafety) {
-        await this.gitSafety.cleanupBackupBranch(this._safetyOps(), require('fs'), projectPath, backupBranch);
+      if (this.gitSafety) {
+        // Task 4: backups are RETAINED (7 days) — never deleted on success.
+        // Prune expired ones best-effort; failure must not fail the sync.
         backupBranch = null;
+        try {
+          await this.gitSafety.pruneOldBackups(this._safetyOps(), require('fs'), projectPath);
+        } catch (_pruneErr) {
+          this.logger.warn('Backup pruning failed (best-effort):', _pruneErr.message);
+        }
       }
 
       return { success: true, pushed: true, branch: targetBranch };

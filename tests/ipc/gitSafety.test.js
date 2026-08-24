@@ -194,26 +194,22 @@ describe('GitSafety', () => {
   });
 
   // ─── cleanupBackupBranch ───────────────────────────────────────────────
-  describe('cleanupBackupBranch — best-effort', () => {
-    it('does NOT throw when deleteBranch fails (logs only)', async () => {
+  describe('cleanupBackupBranch — retention (Task 4)', () => {
+    it('does NOT delete the backup (retention semantics) and never throws', async () => {
       const git = makeGitMock();
-      git.deleteBranch.mockRejectedValue(new Error('ref still in use'));
+      git.deleteBranch.mockRejectedValue(new Error('should not be called'));
 
       await expect(
         safety.cleanupBackupBranch(git, fsStub, PROJECT_PATH, 'backup/preview-abc-1700000000000')
       ).resolves.toBeUndefined();
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Não foi possível remover backup')
-      );
+      expect(git.deleteBranch).not.toHaveBeenCalled();
     });
 
-    it('calls deleteBranch with the provided ref', async () => {
+    it('logs the retention decision', async () => {
       const git = makeGitMock();
       await safety.cleanupBackupBranch(git, fsStub, PROJECT_PATH, 'backup/preview-abc-123');
-      expect(git.deleteBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ ref: 'backup/preview-abc-123', dir: PROJECT_PATH })
-      );
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('backup/preview-abc-123'));
     });
   });
 

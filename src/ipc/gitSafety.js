@@ -74,6 +74,9 @@ function createObjectStyleOps(gitService) {
 // We capture the final dash-separated numeric group as the timestamp.
 const BACKUP_TIMESTAMP_SUFFIX = /-(\d+)$/;
 
+/** Retention window (days) for `backup/*` branches before pruning. */
+const BACKUP_RETENTION_DAYS = 7;
+
 /**
  * @typedef {Object} BackupInfo
  * @property {string} name - Full ref name of the backup branch
@@ -304,21 +307,83 @@ class GitSafety {
   // ─── Backup lifecycle ────────────────────────────────────────────────────────
 
   /**
-   * Best-effort delete of a backup branch. Called by the caller on operation
-   * SUCCESS. Never throws — logs failures only.
+   * Post-success backup cleanup — RETENTION semantics (Task 4).
+   *
+   * Backups are NO LONGER deleted on operation success. They are kept
+   * for `BACKUP_RETENTION_DAYS` (7) and removed by {@link GitSafety#pruneOldBackups},
+   * which runs best-effort at the end of successful sync operations.
+   * Keeping this method (as a no-op) preserves existing call sites; flows
+   * are rewritten in later tasks of the git-sync-strategy plan.
    *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client
    * @param {string} projectPath - absolute repo path
-   * @param {string} backupBranch - backup branch ref to delete
+   * @param {string} backupBranch - backup branch ref (retained, not deleted)
    * @returns {Promise<void>}
    */
   async cleanupBackupBranch(gitMod, fs, projectPath, backupBranch) {
+    void gitMod;
+    void fs;
+    void projectPath;
+    this.logger.info(
+      `📦 Backup ${backupBranch} retido (pruning automático após ${BACKUP_RETENTION_DAYS} dias)`
+    );
+  }
+
+  /**
+   * Delete backup branches older than `maxAgeDays` (default 7).
+   *
+   * Age is determined by the tip commit's committer timestamp (readCommit),
+   * the same pattern used by {@link GitSafety#listBackups}. Uses only
+   * existing provider methods: listBranches → resolveRef → readCommit →
+   * deleteBranch.
+   *
+   * Best-effort by design: NEVER throws — a pruning failure must not fail
+   * the sync operation that triggered it. Per-branch failures are skipped
+   * and logged.
+   *
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
+   * @param {object} fs - filesystem client
+   * @param {string} projectPath - absolute repo path
+   * @param {number} [maxAgeDays=BACKUP_RETENTION_DAYS] - retention window in days
+   * @returns {Promise<{ pruned: string[] }>} names of the deleted backup branches
+   */
+  async pruneOldBackups(gitMod, fs, projectPath, maxAgeDays = BACKUP_RETENTION_DAYS) {
+    const pruned = [];
+
+    let branches;
     try {
-      await gitMod.deleteBranch({ fs, dir: projectPath, ref: backupBranch });
+      branches = await gitMod.listBranches({ fs, dir: projectPath });
     } catch (err) {
-      this.logger.warn(`Não foi possível remover backup ${backupBranch}: ${err.message}`);
+      this.logger.warn(`pruneOldBackups: falha ao listar branches: ${err.message}`);
+      return { pruned };
     }
+
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+
+    for (const name of branches) {
+      if (!name.startsWith(BACKUP_BRANCH_PREFIX)) continue;
+
+      try {
+        const sha = await gitMod.resolveRef({ fs, dir: projectPath, ref: name });
+        const { commit } = await gitMod.readCommit({ fs, dir: projectPath, oid: sha });
+        const committedAt =
+          commit && commit.committer && commit.committer.timestamp
+            ? commit.committer.timestamp * 1000
+            : Date.now();
+
+        if (committedAt < cutoff) {
+          await gitMod.deleteBranch({ fs, dir: projectPath, ref: name });
+          pruned.push(name);
+          this.logger.info(`🗑️ Backup expirado (${maxAgeDays}+ dias) removido: ${name}`);
+        }
+      } catch (err) {
+        // Skip this branch; never abort the whole pruning (nor the sync).
+        this.logger.warn(`pruneOldBackups: pulando ${name}: ${err.message}`);
+      }
+    }
+
+    return { pruned };
   }
 
   /**
@@ -481,4 +546,9 @@ class GitSafety {
   }
 }
 
-module.exports = { GitSafety, BACKUP_BRANCH_PREFIX, createObjectStyleOps };
+module.exports = {
+  GitSafety,
+  BACKUP_BRANCH_PREFIX,
+  BACKUP_RETENTION_DAYS,
+  createObjectStyleOps,
+};
