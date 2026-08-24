@@ -59,14 +59,47 @@ const { GitPreflight: _GitPreflightClass } = (() => {
   }
 })();
 
-// Resilient import: theirs merge driver + binary fallback for publish-preview.
-const { theirsMergeDriver, resolveBinaryTheirs } = (() => {
+// Resilient import: merge drivers + binary fallbacks.
+// - oursMergeDriver/resolveBinaryOurs: publish/refresh direction (LOCAL wins)
+// - theirsMergeDriver/resolveBinaryTheirs: cross-branch publish + publish-main
+const { theirsMergeDriver, resolveBinaryTheirs, oursMergeDriver, resolveBinaryOurs } = (() => {
   try {
     return require('./gitMergeDriver.js');
   } catch (_e) {
-    return { theirsMergeDriver: null, resolveBinaryTheirs: null };
+    return {
+      theirsMergeDriver: null,
+      resolveBinaryTheirs: null,
+      oursMergeDriver: null,
+      resolveBinaryOurs: null,
+    };
   }
 })();
+
+/**
+ * Typed error for git FLOW failures (Task 6). Mirrors the GitSafetyError
+ * pattern (machine-readable `code` + user-facing message) so the renderer
+ * can branch on it without parsing free-form strings.
+ *
+ * Codes:
+ *  - `PUSH_REJECTED` — remote refused the push (non-fast-forward /
+ *    shallow-related rejection). Payload message guides the user to
+ *    "update first" (Atualizar) before publishing again. Nothing local
+ *    was lost: the merge step already synced, and the mandatory backup
+ *    branch is retained.
+ */
+class GitFlowError extends Error {
+  /**
+   * @param {'PUSH_REJECTED'} code
+   * @param {string} message
+   * @param {Error} [cause]
+   */
+  constructor(code, message, cause) {
+    super(message);
+    this.name = 'GitFlowError';
+    this.code = code;
+    if (cause) this.cause = cause;
+  }
+}
 
 /**
  * @typedef {Object} GitOperationResult
@@ -1099,53 +1132,364 @@ class GitHandlers {
    * @param {string|null} [commitMessage=null] - If provided, commit all changes before pushing
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, error?: string}>}
    */
+  async _publishCore(projectPath, targetBranch, { localSha, auth, signal, author }) {
+    const originalBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
+    const onWorkingBranch = originalBranch === targetBranch;
+
+    const headBeforeMerge = localSha || await this.git.resolveRef(projectPath, 'HEAD');
+
+    if (this.isCancelRequested()) {
+      return { cancelled: true };
+    }
+
+    if (!onWorkingBranch) {
+      this.sendOutput(`📥 Mudando para branch '${targetBranch}'...`);
+      try {
+        await this._raceTimeout(
+          this.git.checkout(projectPath, targetBranch),
+          this.STEP_TIMEOUT_CHECKOUT_MS,
+          `checkout ${targetBranch}`,
+        );
+      } catch (_e) {
+        await this._raceTimeout(
+          this.git.checkout(projectPath, `origin/${targetBranch}`),
+          this.STEP_TIMEOUT_CHECKOUT_MS,
+          `checkout origin/${targetBranch}`,
+        );
+        await this.git.branch(projectPath, targetBranch, { checkout: true });
+      }
+    }
+
+    this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
+    let firstPublish = false;
+    try {
+      await this._raceTimeout(
+        this.git.fetch(projectPath, {
+          remote: 'origin', ref: targetBranch, singleBranch: true, depth: 1,
+          ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+        }),
+        this.STEP_TIMEOUT_FETCH_MS,
+        `fetch origin/${targetBranch}`,
+      );
+    } catch (fetchErr) {
+      const msg = fetchErr.message || '';
+      if (!msg.includes('Could not find') && !msg.includes('not found') && !msg.includes('404')) {
+        throw fetchErr;
+      }
+      firstPublish = true;
+    }
+    this._gitCache = {};
+
+    let originOid = null;
+    if (!firstPublish) {
+      try {
+        originOid = await this.git.resolveRef(projectPath, `refs/remotes/origin/${targetBranch}`);
+      } catch (_e) {
+        firstPublish = true;
+      }
+    }
+
+    if (firstPublish) {
+      this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
+    } else if (originOid !== headBeforeMerge) {
+      // Divergence: is the remote tip already an ancestor of HEAD (local ahead)?
+      // Vitest throws on accessing undefined mock exports — guard with try/catch.
+      let localAhead = false;
+      try {
+        localAhead = await this.git.canFastForward(projectPath, {
+          ref: `origin/${targetBranch}`, target: 'HEAD',
+        });
+      } catch (_ffErr) { localAhead = false; }
+
+      if (!localAhead) {
+        // Diverged AND not ahead: deepen the depth:1 fetch so the merge-base
+        // exists (shallow tips have no common history to merge from).
+        try {
+          await this._raceTimeout(
+            this.git.fetch(projectPath, {
+              remote: 'origin', ref: targetBranch, singleBranch: true,
+              ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+            }),
+            this.STEP_TIMEOUT_FETCH_MS,
+            `deepen fetch origin/${targetBranch}`,
+          );
+          this._gitCache = {};
+        } catch (_deepenErr) {
+          // best-effort: the merge below surfaces the real error if any
+        }
+
+        // Direction contract (anti-inversion):
+        //  - working-branch publish: ours = LOCAL commits → oursMergeDriver
+        //  - cross-branch publish:   ours = target(remote state), theirs =
+        //    the local commits → theirsMergeDriver keeps LOCAL winning
+        this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
+        const theirRef = onWorkingBranch ? `origin/${targetBranch}` : originalBranch;
+        try {
+          await this._raceTimeout(
+            this.git.merge(projectPath, theirRef, {
+              ours: targetBranch,
+              fastForward: false,
+              ...(onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {}),
+              ...(!onWorkingBranch && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+              message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
+              author,
+            }),
+            this.STEP_TIMEOUT_MERGE_MS,
+            `merge publish ${targetBranch}`,
+          );
+        } catch (mergeErr) {
+          const conflictFiles = this._extractConflictFiles(mergeErr);
+          if (!conflictFiles) {
+            throw mergeErr;
+          }
+          this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+          for (const filepath of conflictFiles) {
+            try {
+              if (onWorkingBranch) {
+                await resolveBinaryOurs(this.git, projectPath, filepath, headBeforeMerge);
+              } else {
+                await resolveBinaryTheirs(this.git, projectPath, filepath, headBeforeMerge);
+              }
+            } catch (resolveErr) {
+              this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+            }
+          }
+          const otherParent = onWorkingBranch ? originOid : originalBranch;
+          await this.git.commit(
+            projectPath,
+            `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+            { author, parent: [targetBranch, otherParent] },
+          );
+        }
+
+        // isomorphic-git merge does NOT touch the working tree — materialize
+        // HEAD. Safe: the caller wraps this core in withMandatoryBackup.
+        await this._raceTimeout(
+          this.git.checkout(projectPath, targetBranch, { force: true }),
+          this.STEP_TIMEOUT_CHECKOUT_MS,
+          `materialize ${targetBranch}`,
+        );
+        this._gitCache = {};
+      } else {
+        this.sendOutput('⚡ Modo rápido');
+      }
+    }
+
+    if (this.isCancelRequested()) {
+      return { cancelled: true };
+    }
+
+    this.sendOutput(`🚀 Publicando na branch '${targetBranch}'...`);
+    try {
+      await this._raceTimeout(
+        this.git.push(projectPath, {
+          remote: 'origin', branch: targetBranch, remoteRef: targetBranch,
+          force: false, ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+        }),
+        this.STEP_TIMEOUT_PUSH_MS,
+        `push ${targetBranch}`,
+      );
+    } catch (pushErr) {
+      if (this._isPushRejected(pushErr)) {
+        throw new GitFlowError(
+          'PUSH_REJECTED',
+          'O repositório remoto tem novidades. Clique em Atualizar primeiro e depois publique novamente.',
+          pushErr,
+        );
+      }
+      throw pushErr;
+    }
+    this._gitCache = {};
+
+    if (!onWorkingBranch && originalBranch) {
+      try {
+        await this.git.checkout(projectPath, originalBranch);
+        this._gitCache = {};
+      } catch (_e) { /* best-effort return to the working branch */ }
+    }
+
+    return { pushedBranch: targetBranch, localSha: headBeforeMerge };
+  }
+
+  /**
+   * Conflict-file list from a (possibly provider-wrapped) MergeConflictError.
+   *
+   * @param {Error} err
+   * @returns {string[]|null} filepaths, or null when the error is not a
+   *   merge conflict (caller must rethrow).
+   */
+  _extractConflictFiles(err) {
+    const isConflict = err.code === 'MergeConflictError' ||
+      err.name === 'MergeConflictError' ||
+      (err.cause && (err.cause.code === 'MergeConflictError' || err.cause.name === 'MergeConflictError'));
+    if (!isConflict) {
+      return null;
+    }
+    return Array.isArray(err.data)
+      ? err.data
+      : (err.cause && Array.isArray(err.cause.data) ? err.cause.data : []);
+  }
+
+  _isPushRejected(err) {
+    const msg = (err && err.message) || '';
+    const code = err && (err.code || (err.cause && err.cause.code));
+    return code === 'PushRejectedError' ||
+      msg.includes('non-fast-forward') ||
+      msg.includes('fetch first') ||
+      /\b409\b/.test(msg);
+  }
+
+  /**
+   * Wrap object-style ops so a MISSING `refs/remotes/origin/<branch>` resolves
+   * to a sentinel OID instead of throwing. gitSafety's assessment maps a
+   * throwing resolveRef to hasUnpushed=false; per the plan a missing upstream
+   * must mean "everything is unpushed" so the mandatory backup is created
+   * even on a clean tree. gitSafety.js itself is frozen for this task
+   * (see .omo/notepads/git-sync-strategy/learnings.md) — the compensation
+   * lives here, scoped to the publish flow only.
+   */
+  _opsTreatMissingUpstreamAsUnpushed(ops, targetBranch) {
+    const remoteRef = 'refs/remotes/origin/' + targetBranch;
+    const NO_UPSTREAM_OID = '0000000000000000000000000000000000000000';
+    return {
+      ...ops,
+      resolveRef: async (args) => {
+        if (args && args.ref === remoteRef) {
+          try {
+            return await ops.resolveRef(args);
+          } catch (_e) {
+            return NO_UPSTREAM_OID;
+          }
+        }
+        return ops.resolveRef(args);
+      },
+    };
+  }
+
+  /**
+   * Backup-guarded publish (Task 6): mandatory blocking backup BEFORE any
+   * mutating provider call, then the commit-first merge publish core, then
+   * best-effort pruning. The backup is NEVER deleted on success (7-day
+   * retention, Task 4). No hard reset runs post-push — the merge already
+   * left the working branch in sync with origin/target.
+   *
+   * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, error?: string}>}
+   */
+  async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author }) {
+    const ops = this._safetyOps();
+    if (!this.gitSafety || !ops) {
+      throw new Error('GitSafety indisponível — publicação recusada (backup obrigatório)');
+    }
+    // Commit-first, BEFORE the backup: _createBackup snapshots a dirty tree
+    // onto the backup branch and then force-checks the working branch back
+    // out, which WIPES uncommitted edits from the working tree. Committing
+    // first keeps the user's edits in the branch history, and the fresh
+    // commit is unpushed — forcing the backup branch to exist.
+    let localSha = null;
+    if (commitMessage) {
+      this.sendOutput('📝 Preparando commit...');
+      localSha = await this._commitAll(projectPath, commitMessage, author);
+    }
+    const { result } = await this.gitSafety.withMandatoryBackup(
+      this._opsTreatMissingUpstreamAsUnpushed(ops, targetBranch),
+      require('fs'),
+      projectPath,
+      () => this._publishCore(projectPath, targetBranch, {
+        localSha,
+        auth,
+        signal: this.getAbortSignal(),
+        author,
+      }),
+      { branch: targetBranch }
+    );
+
+    if (result && result.cancelled) {
+      return { success: false, cancelled: true, message: 'Operation cancelled by user' };
+    }
+
+    try {
+      await this.gitSafety.pruneOldBackups(ops, require('fs'), projectPath);
+    } catch (pruneErr) {
+      this.logger.warn('Backup pruning failed (best-effort):', pruneErr.message);
+    }
+
+    return { success: true, pushed: true, branch: targetBranch, commitSha: result.localSha };
+  }
+
+  /**
+   * Map a publish-flow error to the IPC result shape (typed codes for the
+   * renderer: PUSH_REJECTED, BACKUP_FAILED, STATUS_MATRIX_FAILED).
+   */
+  _publishErrorToResult(error) {
+    if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
+      return { success: false, cancelled: true, message: 'Operation aborted' };
+    }
+    if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
+      this.sendOutput(`❌ ${error.message}`);
+      return { success: false, code: error.code, error: error.message };
+    }
+    let errorMessage = error.message || 'Erro desconhecido ao publicar';
+    let code;
+    if (this._isPushRejected(error)) {
+      code = 'PUSH_REJECTED';
+      errorMessage = 'O repositório remoto tem novidades. Clique em Atualizar primeiro e depois publique novamente.';
+    } else if (errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.includes('authentication')) {
+      errorMessage = 'Erro de autenticação. Faça login novamente.';
+    } else if (errorMessage.includes('network') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ETIMEDOUT')) {
+      errorMessage = 'Erro de rede. Verifique sua conexão.';
+    }
+    this.sendOutput(`❌ Erro ao publicar: ${errorMessage}`);
+    const result = { success: false, error: errorMessage };
+    if (code) result.code = code;
+    return result;
+  }
+
+  /**
+   * Push to a branch using the unified publish flow (Task 6):
+   * lock → mandatory backup → commit-all → fetch (deepen on divergence) →
+   * merge local-wins → push (force:false, PUSH_REJECTED typed error) →
+   * best-effort pruning. Working tree is never reset.
+   *
+   * @param {string} projectPath - Path to the git repository
+   * @param {string} targetBranch - Target branch name
+   * @param {string|null} [commitMessage=null] - If provided, commit all changes before pushing
+   * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, cancelled?: boolean, error?: string, code?: string}>}
+   */
   async gitPushToBranch(projectPath, targetBranch, commitMessage = null) {
-    // Lock-first: preserve "already in progress" semantics (existing contract).
     if (!this.acquireGitLock()) {
       this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
-
-    let tempBranchCreated = false;
-    let tempBranch = null;
-    let backupBranch = null;
     try {
       this._gitCache = {};
-
       this.sendProgress({
         stage: 'checking',
         current: 0,
         total: commitMessage ? 6 : 2,
-        message: 'Verificando status do repositório...'
+        message: 'Verificando status do repositório...',
       });
 
       const [token, userConfigured] = await Promise.all([
         this.gitOps.getGitHubToken(),
-        this.gitOps.configureGitForUser(projectPath)
+        this.gitOps.configureGitForUser(projectPath),
       ]);
-
       if (!token) {
         this.sendOutput('❌ Autenticação GitHub necessária. Faça login novamente.');
         return { success: false, error: 'Autenticação GitHub necessária. Faça login novamente.' };
       }
-
       if (!userConfigured) {
         this.sendOutput('⚠️ Não foi possível configurar usuário git. Continuando com configuração existente...');
         this.logger.warn('Could not configure git user, proceeding with existing config');
       }
 
-      // Preflight: informational only for push — never hard-block. The body's
-      // own fetch/push will surface real auth/network errors. (Test-isolation:
-      // prior tests in the same file may leave fetch mocks rejected; treating
-      // that as a hard block would break otherwise-valid pushes.)
-      let firstPublishFromPreflight = false;
+      // Preflight stays informational only — the body's own fetch/push
+      // surfaces real auth/network errors.
       if (this.gitPreflight) {
         try {
           const preflight = await this.gitPreflight.runPreflightForPreview(null, projectPath);
           if (preflight.warnings && preflight.warnings.length > 0) {
             for (const w of preflight.warnings) this.sendOutput(`⚠️ ${w.message}`);
           }
-          firstPublishFromPreflight = !!preflight.firstPublish;
         } catch (preflightErr) {
           if (preflightErr && preflightErr.name === 'AbortError') {
             return { success: false, cancelled: true, message: 'Operation aborted' };
@@ -1155,245 +1499,20 @@ class GitHandlers {
       }
 
       const auth = { token };
+      const [authorName, authorEmail] = await Promise.all([
+        this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
+        this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
+      ]);
 
-      if (commitMessage) {
-        this.sendProgress({
-          stage: 'staging',
-          current: 1,
-          total: 6,
-          message: 'Preparando arquivos para commit...'
-        });
-
-        const [authorName, authorEmail] = await Promise.all([
-          this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then(v => v || 'documental'),
-          this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then(v => v || 'documental@app')
-        ]);
-        const author = { name: authorName, email: authorEmail };
-
-        this.sendProgress({
-          stage: 'committing',
-          current: 2,
-          total: 6,
-          message: 'Criando commit...'
-        });
-
-        await this._commitAll(projectPath, commitMessage, author);
-
-        if (this.isCancelRequested()) {
-          this.logger.info('Push operation cancelled after commit');
-          return { success: false, cancelled: true, message: 'Operation cancelled by user' };
-        }
-
-        const localSha = await this.git.resolveRef(projectPath, 'HEAD');
-
-        // firstPublish short-circuit: no remote branch yet → push directly.
-        if (firstPublishFromPreflight) {
-          this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
-        } else {
-          this.sendProgress({
-            stage: 'fetching',
-            current: 3,
-            total: 6,
-            message: `Buscando alterações remotas de '${targetBranch}'...`
-          });
-
-          tempBranchCreated = false;
-          tempBranch = `_push_${targetBranch}_${Date.now()}`;
-          try {
-            this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
-            await this._raceTimeout(
-              this.git.fetch(projectPath, {
-                remote: 'origin', ref: targetBranch,
-                singleBranch: true, auth,
-              }),
-              this.STEP_TIMEOUT_FETCH_MS,
-              `fetch origin/${targetBranch}`,
-            );
-            this._gitCache = {};
-
-            if (this.isCancelRequested()) {
-              return { success: false, cancelled: true, message: 'Operation cancelled by user' };
-            }
-
-            // Fast-forward detection: skip merge if local is ahead of remote.
-            // Vitest throws on accessing undefined mock exports — guard with try/catch.
-            let canFF = false;
-            try {
-              canFF = await this.git.canFastForward(projectPath, {
-                ref: `origin/${targetBranch}`,
-                target: 'HEAD',
-              });
-            } catch (_ffErr) { canFF = false; }
-            if (canFF) {
-              this.sendOutput('⚡ Modo rápido');
-            } else {
-              this.sendProgress({
-                stage: 'pulling',
-                current: 4,
-                total: 6,
-                message: 'Integrando alterações (suas alterações têm prioridade)...'
-              });
-
-              try { await this.git.deleteBranch(projectPath, tempBranch); } catch (_e) { /* not existent */ }
-              await this._raceTimeout(
-                this.git.checkout(projectPath, `origin/${targetBranch}`),
-                this.STEP_TIMEOUT_CHECKOUT_MS,
-                `checkout origin/${targetBranch}`,
-              );
-              await this.git.branch(projectPath, tempBranch, { checkout: true });
-              tempBranchCreated = true;
-
-              this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
-              try {
-                await this._raceTimeout(
-                  this.git.merge(projectPath, localSha, {
-                    ours: tempBranch,
-                    fastForward: false,
-                    ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-                    message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
-                    author,
-                  }),
-                  this.STEP_TIMEOUT_MERGE_MS,
-                  `merge publish ${targetBranch}`,
-                );
-              } catch (mergeErr) {
-                const isConflict = mergeErr.code === 'MergeConflictError' ||
-                  mergeErr.name === 'MergeConflictError' ||
-                  (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
-                if (isConflict) {
-                  this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
-                  const conflictFiles = Array.isArray(mergeErr.data)
-                    ? mergeErr.data
-                    : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
-                  for (const filepath of conflictFiles) {
-                    try {
-                      await resolveBinaryTheirs(this.git, projectPath, filepath, localSha);
-                    } catch (resolveErr) {
-                      this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
-                    }
-                  }
-                  await this.git.commit(projectPath, `Merge publish (binary resolved) — ${new Date().toISOString()}`, {
-                    author,
-                    parent: [tempBranch, localSha],
-                  });
-                } else {
-                  throw mergeErr;
-                }
-              }
-            }
-          } catch (fetchErr) {
-            if (!fetchErr.message.includes('Could not find') &&
-                !fetchErr.message.includes('not found') &&
-                !fetchErr.message.includes('404')) {
-              if (tempBranchCreated) {
-                try {
-                  await this.git.checkout(projectPath, targetBranch);
-                  await this.git.deleteBranch(projectPath, tempBranch);
-                  tempBranchCreated = false;
-                } catch (_e) { /* ignore cleanup */ }
-              }
-              throw fetchErr;
-            }
-            this.sendOutput('ℹ️ Branch remota não encontrada — criando nova branch.');
-          }
-        }
-      }
-
-      if (this.isCancelRequested()) {
-        this.logger.info('Push operation cancelled before push');
-        return { success: false, cancelled: true, message: 'Operation cancelled by user' };
-      }
-
-      this.sendProgress({
-        stage: 'pushing',
-        current: commitMessage ? 5 : 1,
-        total: commitMessage ? 6 : 2,
-        message: `Publicando na branch '${targetBranch}'...`
+      return await this._runBackupGuardedPublish(projectPath, targetBranch, {
+        commitMessage,
+        auth,
+        author: { name: authorName, email: authorEmail },
       });
-
-      this.sendOutput(`🚀 Publicando alterações na branch: ${targetBranch}...`);
-
-      const pushRef = tempBranchCreated ? tempBranch : targetBranch;
-      await this._raceTimeout(
-        this.git.push(projectPath, {
-          remote: 'origin', branch: pushRef, remoteRef: targetBranch,
-          force: false, ...(this.getAbortSignal() ? { signal: this.getAbortSignal() } : {}),
-          auth,
-        }),
-        this.STEP_TIMEOUT_PUSH_MS,
-        `push ${targetBranch}`,
-      );
-      this._gitCache = {};
-
-      this.sendProgress({
-        stage: 'complete',
-        current: commitMessage ? 6 : 2,
-        total: commitMessage ? 6 : 2,
-        message: 'Push concluído com sucesso!'
-      });
-
-      this.sendOutput(`✅ Push concluído com sucesso na branch: ${targetBranch}`);
-      this.logger.info(`Successfully pushed to branch: ${targetBranch}`);
-
-      this._gitCache = {};
-      if (tempBranchCreated) {
-        try {
-          const result = await this._safeResetToOrigin(
-            projectPath, `origin/${targetBranch}`, { author: { name: 'documental', email: 'documental@app' } }
-          );
-          backupBranch = result.backupBranch;
-          await this.git.deleteBranch(projectPath, tempBranch);
-          tempBranchCreated = false;
-        } catch (_e) {
-          this.logger.warn('Post-publish sync failed:', _e.message);
-        }
-      }
-      this._gitCache = {};
-
-      if (this.gitSafety) {
-        // Task 4: backups are RETAINED (7 days) — never deleted on success.
-        // Prune expired ones best-effort; failure must not fail the sync.
-        backupBranch = null;
-        try {
-          await this.gitSafety.pruneOldBackups(this._safetyOps(), require('fs'), projectPath);
-        } catch (_pruneErr) {
-          this.logger.warn('Backup pruning failed (best-effort):', _pruneErr.message);
-        }
-      }
-
-      return { success: true, pushed: true, branch: targetBranch };
-
     } catch (error) {
       this.logger.error('Error pushing to branch:', error);
-
-      let errorMessage = error.message || 'Erro desconhecido ao publicar';
-
-      if (error.message && error.message.includes('non-fast-forward')) {
-        errorMessage = 'Push rejeitado. Faça pull antes de publicar (non-fast-forward).';
-      } else if (error.message && (error.message.includes('401') || error.message.includes('403') || error.message.includes('authentication'))) {
-        errorMessage = 'Erro de autenticação. Faça login novamente.';
-      } else if (error.message && (error.message.includes('network') || error.message.includes('ECONNREFUSED') || error.message.includes('ETIMEDOUT'))) {
-        errorMessage = 'Erro de rede. Verifique sua conexão.';
-      }
-
-      this.sendOutput(`❌ Erro ao publicar: ${errorMessage}`);
-      return { success: false, error: errorMessage };
-
+      return this._publishErrorToResult(error);
     } finally {
-      if (tempBranchCreated) {
-        try {
-          this._gitCache = {};
-          try { await this.git.checkout(projectPath, targetBranch); }
-          catch (_e) {
-            try { await this.git.checkout(projectPath, targetBranch, { force: true }); }
-            catch (_e2) { /* ignore */ }
-          }
-          try {
-            await this._safeResetToOrigin(projectPath, `origin/${targetBranch}`);
-          } catch (_e2) { /* origin ref may not exist */ }
-          try { await this.git.deleteBranch(projectPath, tempBranch); } catch (_e3) { /* ignore */ }
-        } catch (_e) { /* best effort */ }
-      }
       this._gitCache = {};
       this.releaseGitLock();
     }
@@ -1521,24 +1640,26 @@ class GitHandlers {
   }
 
   /**
-   * Publish local changes to the preview branch.
+   * Publish local changes to the preview branch (Task 6 rewrite).
    *
-   * Workflow (with retry on non-fast-forward up to MAX_PUBLISH_RETRIES):
-   *  1. Ensure on preview branch; commit local changes (if any).
-   *  2. Fetch origin/preview shallow.
-   *  3. Create temp branch `publish-preview` from origin/preview.
-   *  4. Merge local commit with theirsMergeDriver (publisher wins conflicts).
-   *     Binary fallback via resolveBinaryTheirs on MergeConflictError.
-   *  5. Push temp branch HEAD to remote preview (NEVER force).
-   *
-   * Temp branch is always cleaned up in finally.
+   * Unified with gitPushToBranch into _runBackupGuardedPublish:
+   *  1. Lock + mandatory blocking backup (withMandatoryBackup, Task 5);
+   *     a missing upstream counts as "everything unpushed".
+   *  2. _commitAll — commit-first, always before fetch/merge/push.
+   *  3. Shallow fetch; deepen when diverged so a merge-base exists.
+   *  4. Merge origin/preview into the working preview branch with
+   *     oursMergeDriver (LOCAL wins conflicting hunks); binary conflicts
+   *     fall back to resolveBinaryOurs.
+   *  5. Push force:false; rejection → typed PUSH_REJECTED error guiding
+   *     the user to "Atualizar primeiro".
+   *  6. Success: NO hard reset (the merge already synced), NO backup
+   *     deletion — pruneOldBackups runs best-effort (7-day retention).
    *
    * @param {number|string} projectId - Project ID (resolved to working directory).
    * @param {string} commitMessage - Commit message for local changes.
-   * @returns {Promise<{success: boolean, branch?: string, commitSha?: string, cancelled?: boolean, error?: string}>}
+   * @returns {Promise<{success: boolean, branch?: string, commitSha?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
   async gitPublishPreview(projectId, commitMessage) {
-    const fs = require('fs');
     let projectPath;
     try {
       projectPath = await this.getProjectPath(projectId);
@@ -1562,8 +1683,7 @@ class GitHandlers {
       return { success: false, error: 'GitHub authentication required' };
     }
 
-    // Pre-lock: preflight (block on hard errors; firstPublish short-circuits merge).
-    let firstPublishFromPreflight = false;
+    // Pre-lock: preflight (hard errors block; warnings are surfaced only).
     if (this.gitPreflight) {
       try {
         const preflight = await this.gitPreflight.runPreflightForPreview(projectId, projectPath);
@@ -1578,7 +1698,6 @@ class GitHandlers {
           this.sendOutput(`❌ ${msg}`);
           return { success: false, error: msg, code: preflight.errors[0] && preflight.errors[0].code };
         }
-        firstPublishFromPreflight = !!preflight.firstPublish;
       } catch (preflightErr) {
         if (preflightErr && preflightErr.name === 'AbortError') {
           return { success: false, cancelled: true, message: 'Operation aborted' };
@@ -1591,19 +1710,16 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
 
-    let tempBranchCreated = false;
-    let originalBranch = null;
-    let backupBranch = null;
     try {
-      const signal = this.getAbortSignal();
-      const auth = { token };
-
       if (!userConfigured) {
         this.logger.warn('Could not configure git user, proceeding with existing config');
       }
 
-      originalBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
-      if (originalBranch !== BRANCH_PREVIEW) {
+      // Publish ALWAYS lands on the preview working branch (Task 6 flow:
+      // commit-first + merge LOCAL-wins; see _publishCore). Dirty files
+      // carry over the checkout and are committed immediately after.
+      const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
+      if (current !== BRANCH_PREVIEW) {
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
           this.git.checkout(projectPath, BRANCH_PREVIEW),
@@ -1612,197 +1728,21 @@ class GitHandlers {
         );
       }
 
-      this.sendOutput('📝 Preparando commit...');
       const [authorName, authorEmail] = await Promise.all([
         this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
         this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
-      const author = { name: authorName, email: authorEmail };
-      let localSha = await this._commitAll(projectPath, commitMessage, author).catch((e) => {
-        throw e;
+
+      return await this._runBackupGuardedPublish(projectPath, BRANCH_PREVIEW, {
+        commitMessage,
+        auth: { token },
+        author: { name: authorName, email: authorEmail },
       });
-      if (!localSha) {
-        localSha = await this.git.resolveRef(projectPath, 'HEAD');
-        this.sendOutput('ℹ️ Nenhuma alteração nova; usando HEAD atual.');
-      }
-
-      // firstPublish short-circuit: no remote preview yet → push directly.
-      if (firstPublishFromPreflight) {
-        this.sendOutput('ℹ️ Branch preview não existe no remoto — criando.');
-        this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
-        await this._raceTimeout(
-          this.git.push(projectPath, {
-            remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
-            force: false, ...(signal ? { signal } : {}), auth,
-          }),
-          this.STEP_TIMEOUT_PUSH_MS,
-          `push ${BRANCH_PREVIEW}`,
-        );
-        this._gitCache = {};
-        this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
-        return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
-      }
-
-      let lastError = null;
-      for (let attempt = 1; attempt <= MAX_PUBLISH_RETRIES; attempt++) {
-        try {
-          this.sendOutput(`📥 Buscando origin/${BRANCH_PREVIEW}...`);
-          await this._raceTimeout(
-            this.git.fetch(projectPath, {
-              remote: 'origin', ref: BRANCH_PREVIEW,
-              singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth,
-            }),
-            this.STEP_TIMEOUT_FETCH_MS,
-            `fetch origin/${BRANCH_PREVIEW}`,
-          );
-          this._gitCache = {};
-
-          // Fast-forward detection: skip merge if local is ahead of remote.
-          // Vitest throws on accessing undefined mock exports — guard with try/catch.
-          let canFF = false;
-          try {
-            const originSha = await this.git.resolveRef(projectPath, `origin/${BRANCH_PREVIEW}`, { cache: this._gitCache });
-            canFF = await this.git.canFastForward(projectPath, {
-              ref: `origin/${BRANCH_PREVIEW}`, target: localSha,
-            });
-            void originSha;
-          } catch (_ffErr) { canFF = false; }
-          if (canFF) {
-            this.sendOutput('⚡ Modo rápido');
-            this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
-            await this._raceTimeout(
-              this.git.push(projectPath, {
-                remote: 'origin', branch: BRANCH_PREVIEW, remoteRef: BRANCH_PREVIEW,
-                force: false, ...(signal ? { signal } : {}), auth,
-              }),
-              this.STEP_TIMEOUT_PUSH_MS,
-              `push ${BRANCH_PREVIEW}`,
-            );
-            this._gitCache = {};
-            this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
-            return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
-          }
-
-          try { await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH); } catch (_e) { /* not existent — ok */ }
-          await this._raceTimeout(
-            this.git.checkout(projectPath, `origin/${BRANCH_PREVIEW}`),
-            this.STEP_TIMEOUT_CHECKOUT_MS,
-            `checkout origin/${BRANCH_PREVIEW}`,
-          );
-          await this.git.branch(projectPath, TEMP_PUBLISH_BRANCH, { checkout: true });
-          tempBranchCreated = true;
-
-          this.sendOutput('🔀 Mesclando alterações (estratégia: theirs)...');
-          try {
-            await this._raceTimeout(
-              this.git.merge(projectPath, localSha, {
-                ours: TEMP_PUBLISH_BRANCH,
-                fastForward: false,
-                ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-                message: `Merge publish (preview) — ${new Date().toISOString()}`,
-                author,
-              }),
-              this.STEP_TIMEOUT_MERGE_MS,
-              `merge publish ${BRANCH_PREVIEW}`,
-            );
-          } catch (mergeErr) {
-            const isConflict = mergeErr.code === 'MergeConflictError' ||
-              mergeErr.name === 'MergeConflictError' ||
-              (mergeErr.cause && (mergeErr.cause.code === 'MergeConflictError' || mergeErr.cause.name === 'MergeConflictError'));
-            if (isConflict) {
-              this.sendOutput('⚠️ Conflito binário detectado — usando versão do publicador.');
-              const conflictFiles = Array.isArray(mergeErr.data)
-                ? mergeErr.data
-                : (mergeErr.cause && Array.isArray(mergeErr.cause.data) ? mergeErr.cause.data : []);
-              for (const filepath of conflictFiles) {
-                try {
-                  await resolveBinaryTheirs(this.git, projectPath, filepath, localSha);
-                } catch (resolveErr) {
-                  this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
-                }
-              }
-              await this.git.commit(projectPath, `Merge publish (binary resolved) — ${new Date().toISOString()}`, {
-                author,
-                parent: [TEMP_PUBLISH_BRANCH, localSha],
-              });
-            } else {
-              throw mergeErr;
-            }
-          }
-
-          this.sendOutput(`🚀 Publicando em ${BRANCH_PREVIEW}...`);
-          await this._raceTimeout(
-            this.git.push(projectPath, {
-              remote: 'origin', branch: TEMP_PUBLISH_BRANCH, remoteRef: BRANCH_PREVIEW,
-              force: false, ...(signal ? { signal } : {}), auth,
-            }),
-            this.STEP_TIMEOUT_PUSH_MS,
-            `push ${BRANCH_PREVIEW}`,
-          );
-          this._gitCache = {};
-
-          this.sendOutput(`✅ Publicado em ${BRANCH_PREVIEW}`);
-
-          // Backup any uncommitted/unpushed state before the post-publish cleanup
-          // deletes the temp branch.
-          if (this.gitSafety) {
-            try {
-              const result = await this.gitSafety._safeResetOrCheckout(
-                this._safetyOps(), fs, projectPath, `origin/${BRANCH_PREVIEW}`, { author }
-              );
-              backupBranch = result.backupBranch;
-            } catch (_safeErr) { /* best-effort */ }
-          }
-
-          if (backupBranch && this.gitSafety) {
-            await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
-            backupBranch = null;
-          }
-
-          return { success: true, branch: BRANCH_PREVIEW, commitSha: localSha };
-        } catch (attemptErr) {
-          lastError = attemptErr;
-          const msg = attemptErr.message || '';
-          const attemptCode = attemptErr.code || (attemptErr.cause && attemptErr.cause.code);
-          if (msg.includes('non-fast-forward') || msg.includes('fetch first') || attemptCode === 'PushRejectedError') {
-            this.sendOutput(`⚠️ Push rejeitado (tentativa ${attempt}/${MAX_PUBLISH_RETRIES}). Re-tentando...`);
-            if (tempBranchCreated) {
-              try {
-                await this.git.checkout(projectPath, BRANCH_PREVIEW);
-                await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH);
-              } catch (_e) { /* ignore cleanup errors */ }
-              tempBranchCreated = false;
-            }
-            continue;
-          }
-          throw attemptErr;
-        }
-      }
-      throw lastError || new Error('Publish failed after retries');
     } catch (error) {
-      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-        return { success: false, cancelled: true, message: 'Operation aborted' };
-      }
       this.logger.error('Error in gitPublishPreview:', error);
-      this.sendOutput(`❌ Erro ao publicar: ${error.message}`);
-      return { success: false, error: error.message };
+      return this._publishErrorToResult(error);
     } finally {
-      try {
-        if (tempBranchCreated) {
-          try {
-            const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
-            if (current === TEMP_PUBLISH_BRANCH) {
-              await this.git.checkout(projectPath, BRANCH_PREVIEW);
-            }
-            await this.git.deleteBranch(projectPath, TEMP_PUBLISH_BRANCH);
-          } catch (_e) { /* ignore cleanup errors */ }
-        } else if (originalBranch && originalBranch !== BRANCH_PREVIEW) {
-          try { await this.git.checkout(projectPath, BRANCH_PREVIEW); } catch (_e) { /* ignore */ }
-        }
-        if (backupBranch && this.gitSafety) {
-          await this.gitSafety.cleanupBackupBranch(this._safetyOps(), fs, projectPath, backupBranch);
-        }
-      } catch (_e) { /* best-effort cleanup */ }
+      this._gitCache = {};
       this.releaseGitLock();
     }
   }
@@ -2364,4 +2304,4 @@ class GitHandlers {
   }
 }
 
-module.exports = { GitHandlers };
+module.exports = { GitHandlers, GitFlowError };

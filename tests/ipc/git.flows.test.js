@@ -65,8 +65,10 @@ vi.mock('../../src/ipc/gitOperations.js', () => ({
   })),
 }));
 
-// Mock the merge driver so resolveBinaryTheirs is a controllable spy
+// Mock the merge drivers so binary fallbacks are controllable spies
 // (avoids touching the real filesystem for binary fallback writes).
+// Both directions are provided — the publish flow uses OURS (local wins),
+// publish-main uses THEIRS (preview wins).
 vi.mock('../../src/ipc/gitMergeDriver.js', () => ({
   theirsMergeDriver: vi.fn(({ contents }) => {
     if (contents[2] === undefined || contents[2] === null) {
@@ -75,6 +77,13 @@ vi.mock('../../src/ipc/gitMergeDriver.js', () => ({
     return { cleanMerge: true, mergedText: contents[2] };
   }),
   resolveBinaryTheirs: vi.fn().mockResolvedValue(undefined),
+  oursMergeDriver: vi.fn(({ contents }) => {
+    if (contents[1] === undefined || contents[1] === null) {
+      return { cleanMerge: false };
+    }
+    return { cleanMerge: true, mergedText: contents[1] };
+  }),
+  resolveBinaryOurs: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { GitHandlers } from '../../src/ipc/git.js';
@@ -286,144 +295,149 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
         });
   });
 
-  // ─── gitPublishPreview ─────────────────────────────────────────────────
+  // ─── gitPublishPreview (Task 6: commit-first + merge LOCAL-wins) ───────
   describe('gitPublishPreview', () => {
     beforeEach(() => {
-      // The publish-preview flow needs a token to proceed.
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
+      // Divergence fixture: local HEAD ≠ origin/preview (merge path).
+      git.resolveRef.mockImplementation(async ({ ref }) => {
+        if (ref === 'refs/remotes/origin/preview' || ref === 'origin/preview') {
+          return 'origin-sha-1';
+        }
+        return 'local-head-sha';
+      });
     });
 
-    it('publishes text changes via mergeDriver theirs', async () => {
-          // currentBranch returns preview, _commitAll commits (returns sha).
-          git.currentBranch.mockResolvedValue('preview');
-          git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
-          git.commit.mockResolvedValue('localSha001');
-          git.fetch.mockResolvedValue({});
-          git.branch.mockResolvedValue(undefined);
-          git.merge.mockResolvedValue(undefined); // no conflict
-          git.push.mockResolvedValue(undefined);
+    it('merges origin/preview into the working branch with the OURS driver (local wins)', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
+      git.commit.mockResolvedValue('localSha001');
+      git.fetch.mockResolvedValue({});
+      git.merge.mockResolvedValue(undefined); // no conflict
+      git.push.mockResolvedValue(undefined);
 
-          const result = await handlers.gitPublishPreview(1, 'publish message');
+      const result = await handlers.gitPublishPreview(1, 'publish message');
 
-          expect(result.success).toBe(true);
-          expect(result.branch).toBe('preview');
-          expect(result.commitSha).toBeDefined();
+      expect(result.success).toBe(true);
+      expect(result.branch).toBe('preview');
+      expect(result.commitSha).toBeDefined();
 
-          // every push call must have force:false
-          const pushCalls = git.push.mock.calls;
-          expect(pushCalls.length).toBeGreaterThan(0);
-          for (const c of pushCalls) {
-            expect(c[0].force).toBe(false);
-            expect(c[0].remoteRef).toBe('preview');
-          }
+      // merge runs ON the working branch with oursMergeDriver wired
+      const mergeCalls = git.merge.mock.calls;
+      expect(mergeCalls.length).toBe(1);
+      expect(mergeCalls[0][0]).toMatchObject({
+        fastForward: false,
+        ours: 'preview',
+        theirs: 'origin/preview',
+      });
+      expect(mergeCalls[0][0].mergeDriver).toEqual(expect.any(Function));
 
-          // merge was invoked (theirs merge driver wired up)
-          const mergeCalls = git.merge.mock.calls;
-          expect(mergeCalls.length).toBe(1);
-          expect(mergeCalls[0][0]).toMatchObject({
-            fastForward: false,
-            ours: 'publish-preview',
-          });
-          expect(mergeCalls[0][0].mergeDriver).toEqual(expect.any(Function));
-        });
+      // every push call must be remote origin, target preview, non-forced
+      const pushCalls = git.push.mock.calls;
+      expect(pushCalls.length).toBeGreaterThan(0);
+      for (const c of pushCalls) {
+        expect(c[0].force).toBe(false);
+        expect(c[0].remoteRef).toBe('preview');
+        expect(c[0].remote).toBe('origin');
+      }
 
-        it('handles binary conflict with fallback resolveBinaryTheirs', async () => {
-          git.currentBranch.mockResolvedValue('preview');
-          git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
-          git.fetch.mockResolvedValue({});
-          git.branch.mockResolvedValue(undefined);
+      // NO hard reset / temp-branch machinery after the push
+      expect(git.writeRef).not.toHaveBeenCalled();
+      expect(git.branch).not.toHaveBeenCalledWith(
+        '/test/project', 'publish-preview', expect.anything()
+      );
+    });
 
-          const conflictErr = new Error('merge conflict');
-          conflictErr.code = 'MergeConflictError';
-          conflictErr.name = 'MergeConflictError';
-          conflictErr.data = ['image.png'];
-          git.merge.mockRejectedValueOnce(conflictErr);
+    it('handles binary conflict with fallback resolveBinaryOurs (local version)', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
+      git.commit.mockResolvedValue('localSha002');
+      git.fetch.mockResolvedValue({});
 
-          git.commit
-            .mockResolvedValueOnce('localSha002')
-            .mockResolvedValueOnce('binaryCommit');
-          git.push.mockResolvedValue(undefined);
+      const conflictErr = new Error('merge conflict');
+      conflictErr.code = 'MergeConflictError';
+      conflictErr.name = 'MergeConflictError';
+      conflictErr.data = ['image.png'];
+      git.merge.mockRejectedValueOnce(conflictErr);
 
-          const result = await handlers.gitPublishPreview(1, 'binary publish');
+      git.readBlob.mockResolvedValue({ blob: new Uint8Array([1, 2, 3]) });
+      git.push.mockResolvedValue(undefined);
 
-          expect(result.success).toBe(true);
-          expect(result.commitSha).toBe('localSha002');
+      const result = await handlers.gitPublishPreview(1, 'binary publish');
 
-          const binaryCommitCall = git.commit.mock.calls.find(
-            (c) =>
-              c[0].parent &&
-              c[0].parent.includes('publish-preview') &&
-              Array.isArray(c[0].parent) &&
-              c[0].parent.length === 2
-          );
-          expect(binaryCommitCall).toBeDefined();
-          expect(binaryCommitCall[0].message).toMatch(/binary resolved/);
+      expect(result.success).toBe(true);
 
-          for (const c of git.push.mock.calls) {
-            expect(c[0].force).toBe(false);
-          }
-        });
+      // binary fallback read the LOCAL blob (ours) for the conflict file
+      const readBlobCall = git.readBlob.mock.calls.find(
+        (c) => c[0] && c[0].filepath === 'image.png'
+      );
+      expect(readBlobCall).toBeDefined();
 
-        it('cleans up publish-preview branch in finally', async () => {
-          git.currentBranch.mockResolvedValue('preview');
-          git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
-          git.commit.mockResolvedValue('localSha003');
-          git.fetch.mockResolvedValue({});
-          git.branch.mockResolvedValue(undefined);
-          git.merge.mockResolvedValue(undefined);
-          git.push.mockResolvedValue(undefined);
+      // the manual merge commit carries both parents
+      const binaryCommitCall = git.commit.mock.calls.find(
+        (c) => c[0].parent && Array.isArray(c[0].parent) && c[0].parent.length === 2
+      );
+      expect(binaryCommitCall).toBeDefined();
+      expect(binaryCommitCall[0].message).toMatch(/binary resolved/);
 
-          await handlers.gitPublishPreview(1, 'cleanup test');
+      for (const c of git.push.mock.calls) {
+        expect(c[0].force).toBe(false);
+      }
+    });
 
-          // The finally cleanup deletes the temp branch when it was created.
-          expect(git.deleteBranch).toHaveBeenCalledWith(
-            expect.objectContaining({ ref: 'publish-preview' })
-          );
-        });
+    it('materializes the merged tree with a post-merge checkout of the working branch', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
+      git.commit.mockResolvedValue('localSha003');
+      git.fetch.mockResolvedValue({});
+      git.merge.mockResolvedValue(undefined);
+      git.push.mockResolvedValue(undefined);
 
-        it('retries on non-fast-forward up to MAX_PUBLISH_RETRIES', async () => {
-          // MAX_PUBLISH_RETRIES === 2 — push rejects twice (NFF), succeeds on 3rd
-          // requires extending the loop; here we emulate one rejection then success.
-          git.currentBranch.mockResolvedValue('preview');
-          git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
-          git.commit.mockResolvedValue('localSha004');
-          git.fetch.mockResolvedValue({});
-          git.branch.mockResolvedValue(undefined);
-          git.merge.mockResolvedValue(undefined);
+      await handlers.gitPublishPreview(1, 'materialize test');
 
-          const nff = new Error('non-fast-forward');
-          git.push
-            .mockRejectedValueOnce(nff)
-            .mockResolvedValueOnce({}); // second attempt succeeds
+      // iso-git merge does NOT touch the working tree — the flow must
+      // checkout the branch (force, backup-guarded) after the merge.
+      const checkoutCalls = git.checkout.mock.calls.filter(
+        (c) => c[0] && c[0].ref === 'preview'
+      );
+      expect(checkoutCalls.length).toBeGreaterThan(0);
+    });
 
-          const result = await handlers.gitPublishPreview(1, 'retry test');
+    it('returns typed PUSH_REJECTED (no retry) when the push is rejected', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
+      git.commit.mockResolvedValue('localSha004');
+      git.fetch.mockResolvedValue({});
+      git.merge.mockResolvedValue(undefined);
 
-          expect(result.success).toBe(true);
-          // push was attempted at least twice (first rejected, second ok)
-          expect(git.push.mock.calls.length).toBeGreaterThanOrEqual(2);
-          // all push calls are non-forced
-          for (const c of git.push.mock.calls) {
-            expect(c[0].force).toBe(false);
-          }
-        });
+      const nff = new Error('non-fast-forward');
+      git.push.mockRejectedValue(nff);
 
-        it('never uses force push', async () => {
-          git.currentBranch.mockResolvedValue('preview');
-          git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
-          git.commit.mockResolvedValue('localSha005');
-          git.fetch.mockResolvedValue({});
-          git.branch.mockResolvedValue(undefined);
-          git.merge.mockResolvedValue(undefined);
-          git.push.mockResolvedValue(undefined);
+      const result = await handlers.gitPublishPreview(1, 'rejected test');
 
-          await handlers.gitPublishPreview(1, 'force invariant');
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('PUSH_REJECTED');
+      expect(result.error).toMatch(/atualiz/i);
+      // single attempt — the renderer guides the user to update first
+      expect(git.push.mock.calls.length).toBe(1);
+    });
 
-          expect(git.push).toHaveBeenCalled();
-          for (const c of git.push.mock.calls) {
-            expect(c[0].force).toBe(false);
-          }
-        });
+    it('never uses force push', async () => {
+      git.currentBranch.mockResolvedValue('preview');
+      git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
+      git.commit.mockResolvedValue('localSha005');
+      git.fetch.mockResolvedValue({});
+      git.merge.mockResolvedValue(undefined);
+      git.push.mockResolvedValue(undefined);
+
+      await handlers.gitPublishPreview(1, 'force invariant');
+
+      expect(git.push).toHaveBeenCalled();
+      for (const c of git.push.mock.calls) {
+        expect(c[0].force).toBe(false);
+      }
+    });
   });
 
   // ─── gitPublishMain ────────────────────────────────────────────────────

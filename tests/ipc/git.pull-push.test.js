@@ -18,6 +18,24 @@ vi.mock('isomorphic-git', () => ({
   getConfig: vi.fn(),
   listRemotes: vi.fn(),
   listServerRefs: vi.fn(),
+  // Task 6 publish surface (backup assessment + commit-first flow)
+  statusMatrix: vi.fn(),
+  resolveRef: vi.fn(),
+  writeRef: vi.fn(),
+  add: vi.fn(),
+  remove: vi.fn(),
+  commit: vi.fn(),
+  branch: vi.fn(),
+  deleteBranch: vi.fn(),
+  merge: vi.fn(),
+  fastForward: vi.fn(),
+  canFastForward: vi.fn(),
+  readBlob: vi.fn(),
+  readCommit: vi.fn(),
+  listBranches: vi.fn(),
+  listRefs: vi.fn(),
+  setConfig: vi.fn(),
+  isDescendent: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('isomorphic-git/http/node', () => ({
@@ -145,6 +163,20 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
   });
 
   describe('gitPushToBranch', () => {
+    beforeEach(async () => {
+      const git = await import('isomorphic-git');
+      git.currentBranch.mockResolvedValue('main');
+      git.statusMatrix.mockResolvedValue([]); // clean
+      git.resolveRef.mockResolvedValue('same-sha');
+      git.fetch.mockResolvedValue({});
+      git.checkout.mockResolvedValue(undefined);
+      git.push.mockResolvedValue({});
+      git.commit.mockResolvedValue('sha');
+      git.branch.mockResolvedValue(undefined);
+      git.merge.mockResolvedValue(undefined);
+      git.getConfig.mockResolvedValue('Test User');
+    });
+
     it('calls getGitHubToken() to obtain auth token', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue(null);
       await handlers.gitPushToBranch('/test/path', 'main').catch(() => {});
@@ -265,6 +297,10 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(false);
       const git = await import('isomorphic-git');
+      git.currentBranch.mockResolvedValue('main');
+      git.statusMatrix.mockResolvedValue([]);
+      git.resolveRef.mockResolvedValue('same-sha');
+      git.fetch.mockResolvedValue({});
       git.push.mockResolvedValue({});
       const result = await handlers.gitPushToBranch('/test/path', 'main');
       expect(result.success).toBe(true);
