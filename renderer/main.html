@@ -192,6 +192,7 @@ clearingCache: false,
           finished: false,
           success: false,
           error: null,
+          errorCode: null,
           binariesResolved: 0,
           cancelable: true,
           preflightRunning: false,
@@ -206,13 +207,11 @@ clearingCache: false,
       publishTargetBranch: 'preview',
       commitPrefix: '',
       userCommitSuffix: '',
-      // Discard-local confirmation modal (before refresh with force)
-      discardModalOpen: false,
-      pendingRefresh: null,
-      // Refresh flow: confirmation + unpushed-changes detection
+      // Refresh flow: confirmation modal with informative (non-blocking)
+      // notice when the working tree has uncommitted changes — they are
+      // auto-committed as WIP by the backend (Task 6/7), never discarded.
       refreshConfirmModalOpen: false,
-      unpushedModalOpen: false,
-      unpushedDiscardConfirmOpen: false,
+      refreshDirtyNotice: false,
       pendingRefreshProjectId: null,
      devServerUrl: 'https://documental.xyz/', // Default fallback
     viewerScreenshot: null,
@@ -233,7 +232,7 @@ clearingCache: false,
         return this.devServerUrl || sessionStorage.getItem('devServerUrl') || this.baseURL;
     },
     get isAnyOverlayOpen() {
-        return this.menuOpen || this.publishSetupModalOpen || this.discardModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen || this.unpushedModalOpen || this.unpushedDiscardConfirmOpen;
+        return this.menuOpen || this.publishSetupModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -750,12 +749,14 @@ clearingCache: false,
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
         this.gitExecution.fastPath = false;
+        this.gitExecution.errorCode = null;
     },
     finishGitExecModal(result) {
         this.gitExecution.inProgress = false;
         this.gitExecution.finished = true;
         this.gitExecution.currentStep = this.gitExecution.totalSteps;
         this.gitExecution.success = result.success;
+        this.gitExecution.errorCode = result.code || null;
         if (!result.success) {
             this.gitExecution.error = this.translateGitExecError(result);
         }
@@ -770,6 +771,7 @@ clearingCache: false,
         this.gitExecution.modalOpen = false;
         this.gitExecution.operationType = null;
         this.gitExecution.error = null;
+        this.gitExecution.errorCode = null;
         this.gitExecution.finished = false;
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
@@ -779,7 +781,12 @@ clearingCache: false,
         window.electronAPI.cancelGitOperation();
     },
     translateGitExecError(result) {
-        if (result.code === 'DIRTY_LOCAL') return __t('main.discard_local_desc');
+        // Typed error codes (Task 6-8 backend contract). PUSH_REJECTED gets
+        // a dedicated retry action button in the modal (see retryGitExecWithRefresh).
+        if (result.code === 'PUSH_REJECTED') return __t('main.git_exec_error_push_rejected');
+        if (result.code === 'NO_UPSTREAM') return __t('main.git_exec_error_no_upstream');
+        if (result.code === 'BACKUP_FAILED') return __t('main.git_exec_error_backup_failed');
+        if (result.code === 'STATUS_MATRIX_FAILED') return __t('main.git_exec_error_status_matrix');
         if (result.code === 'PUSH_FORBIDDEN') return __t('main.git_exec_error_main_permission');
         if (result.code === 'PREVIEW_NOT_AHEAD') return __t('main.git_exec_error_preview_not_ahead');
         if (result.code === 'MAIN_MISSING') return __t('main.git_exec_error_main_missing');
@@ -832,55 +839,40 @@ clearingCache: false,
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         this.pendingRefreshProjectId = projectId;
+        // Non-blocking informative notice: dirty tree is auto-committed as
+        // WIP by the backend — nothing is ever discarded anymore (Task 7).
+        this.refreshDirtyNotice = false;
+        try {
+            const status = await window.electronAPI.checkGitStatus(projectId);
+            this.refreshDirtyNotice = !!(status && status.isDirty);
+        } catch (e) {
+            this.refreshDirtyNotice = false;
+        }
         this.refreshConfirmModalOpen = true;
     },
     async confirmRefresh() {
         this.refreshConfirmModalOpen = false;
+        this.refreshDirtyNotice = false;
         const projectId = this.pendingRefreshProjectId;
         if (!projectId) return;
-        const status = await window.electronAPI.checkGitStatus(projectId);
-        if (status.isDirty) {
-            this.pendingRefresh = { projectId };
-            this.discardModalOpen = true;
-            return;
-        }
-        const unpushed = await window.electronAPI.checkUnpushed(projectId);
-        if (unpushed.hasUnpushed) {
-            this.unpushedModalOpen = true;
-            return;
-        }
-        await this.executeRefresh(projectId, false);
+        await this.executeRefresh(projectId);
         this.pendingRefreshProjectId = null;
     },
-    unpushedChooseDiscard() {
-        this.unpushedModalOpen = false;
-        this.unpushedDiscardConfirmOpen = true;
+    // Retry action for typed PUSH_REJECTED failures: refresh pulls the remote
+    // updates (local-wins merge), so the user can re-publish afterwards.
+    async retryGitExecWithRefresh() {
+        const projectId = this.pendingRefreshProjectId || sessionStorage.getItem('currentProjectId');
+        if (!projectId) return;
+        this.pendingRefreshProjectId = projectId;
+        await this.executeRefresh(projectId);
     },
-    async confirmDiscardUnpushedAndRefresh() {
-        this.unpushedDiscardConfirmOpen = false;
-        await this.executeRefresh(this.pendingRefreshProjectId, true);
-        this.pendingRefreshProjectId = null;
-    },
-    unpushedChoosePublishFirst() {
-        this.unpushedModalOpen = false;
-        this.pendingRefreshProjectId = null;
-        this.openPublishSetupModal();
-    },
-    unpushedChooseCancel() {
-        this.unpushedModalOpen = false;
-        this.pendingRefreshProjectId = null;
-    },
-    async confirmDiscardAndRefresh() {
-        this.discardModalOpen = false;
-        if (this.pendingRefresh) {
-            await this.executeRefresh(this.pendingRefresh.projectId, true);
-            this.pendingRefresh = null;
-        }
-    },
-    async executeRefresh(projectId, force) {
+    async executeRefresh(projectId) {
         this.openGitExecModal('refresh', 3);
         try {
-            const result = await window.electronAPI.refreshProject(projectId, force);
+            // No `force` anymore — refresh is always safe (Tasks 6-8):
+            // uncommitted changes are auto-committed (WIP) and local commits
+            // are preserved via the local-wins merge.
+            const result = await window.electronAPI.refreshProject(projectId);
             this.finishGitExecModal(result);
         } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
@@ -2092,6 +2084,12 @@ clearingCache: false,
               :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : 'bg-red-600 hover:bg-red-500'"
                class="px-4 py-2 text-white rounded-md text-sm font-medium"
                x-text="$store.i18n.t('main.git_exec_close_btn')"></button>
+      <!-- Guided recovery for typed PUSH_REJECTED: refresh pulls remote updates -->
+      <button x-show="gitExecution.finished && !gitExecution.success && gitExecution.errorCode === 'PUSH_REJECTED'" @click="retryGitExecWithRefresh()"
+              class="px-4 py-2 bg-accent-orange hover:bg-orange-500 text-white rounded-md text-sm font-medium flex items-center gap-2">
+        <span class="material-symbols-outlined text-sm">refresh</span>
+        <span x-text="$store.i18n.t('main.git_exec_retry_refresh_btn')"></span>
+      </button>
     </div>
   </div>
 </div>
@@ -2150,22 +2148,6 @@ clearingCache: false,
   </div>
 </div>
 
-<!-- Discard Local Confirmation Modal -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="discardModalOpen">
-  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <h3 class="text-lg font-medium text-text-dark mb-2" x-text="$store.i18n.t('main.discard_local_title')"></h3>
-    <p class="text-sm text-muted-dark mb-4" x-text="$store.i18n.t('main.discard_local_desc')"></p>
-    <div class="flex justify-end gap-2">
-      <button @click="discardModalOpen = false; pendingRefresh = null"
-              class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
-              x-text="$store.i18n.t('common.cancel')"></button>
-      <button @click="confirmDiscardAndRefresh()"
-              class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-md text-sm font-medium"
-              x-text="$store.i18n.t('main.discard_local_btn')"></button>
-    </div>
-  </div>
-</div>
-
 <!-- Refresh Confirmation Modal -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="refreshConfirmModalOpen">
   <div @click.outside="refreshConfirmModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
@@ -2176,53 +2158,14 @@ clearingCache: false,
       <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.refresh_confirm_title')"></h3>
     </div>
     <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.refresh_confirm_desc')"></p>
+    <!-- Informative, non-blocking notice: dirty tree is auto-committed (WIP) by the backend -->
+    <div x-show="refreshDirtyNotice" class="mb-6 p-3 rounded-md flex items-start gap-2" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);">
+      <span class="material-symbols-outlined text-lg flex-shrink-0 text-primary">info</span>
+      <p class="text-sm text-text-dark" x-text="$store.i18n.t('main.refresh_dirty_notice')"></p>
+    </div>
     <div class="flex justify-end gap-2">
       <button @click="refreshConfirmModalOpen = false" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('common.cancel')"></button>
       <button @click="confirmRefresh()" class="px-4 py-2 bg-accent-orange hover:bg-orange-500 text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('main.refresh_confirm_btn')"></button>
-    </div>
-  </div>
-</div>
-
-<!-- Unpushed Changes Modal -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="unpushedModalOpen">
-  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <div class="flex items-center gap-3 mb-4">
-      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500 bg-opacity-20 flex items-center justify-center">
-        <span class="material-symbols-outlined text-yellow-500">warning</span>
-      </div>
-      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_title')"></h3>
-    </div>
-    <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.unpushed_desc')"></p>
-    <div class="flex flex-col gap-2">
-      <button @click="unpushedChoosePublishFirst()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-symbols-outlined text-sm">publish</span>
-        <span x-text="$store.i18n.t('main.unpushed_publish_first_btn')"></span>
-      </button>
-      <button @click="unpushedChooseDiscard()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-symbols-outlined text-sm">delete</span>
-        <span x-text="$store.i18n.t('main.unpushed_discard_btn')"></span>
-      </button>
-      <button @click="unpushedChooseCancel()" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium text-left flex items-center gap-2">
-        <span class="material-symbols-outlined text-sm">close</span>
-        <span x-text="$store.i18n.t('main.unpushed_cancel_btn')"></span>
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- Discard Unpushed Confirmation Modal -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="unpushedDiscardConfirmOpen">
-  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <div class="flex items-center gap-3 mb-4">
-      <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-500 bg-opacity-20 flex items-center justify-center">
-        <span class="material-symbols-outlined text-red-500">dangerous</span>
-      </div>
-      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.unpushed_discard_confirm_title')"></h3>
-    </div>
-    <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.unpushed_discard_confirm_desc')"></p>
-    <div class="flex justify-end gap-2">
-      <button @click="unpushedDiscardConfirmOpen = false; unpushedModalOpen = true" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('common.cancel')"></button>
-      <button @click="confirmDiscardUnpushedAndRefresh()" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium" x-text="$store.i18n.t('main.unpushed_discard_confirm_btn')"></button>
     </div>
   </div>
 </div>
