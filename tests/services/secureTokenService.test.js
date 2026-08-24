@@ -140,14 +140,14 @@ describe('SecureTokenService', () => {
       expect(mockFs.writeFile).not.toHaveBeenCalled();
     });
 
-    it('should return false when safeStorage encryption is unavailable', async () => {
+    it('should fall back to machine-key encryption when safeStorage is unavailable', async () => {
       mockSafeStorage.isEncryptionAvailable.mockReturnValue(false);
 
       const result = await service.storeToken(VALID_CLASSIC_TOKEN);
 
-      expect(result).toBe(false);
+      expect(result).toBe(true);
       expect(mockSafeStorage.encryptString).not.toHaveBeenCalled();
-      expect(mockFs.writeFile).not.toHaveBeenCalled();
+      expect(mockFs.writeFile).toHaveBeenCalledTimes(1);
     });
 
     it('should return false when writeFile throws', async () => {
