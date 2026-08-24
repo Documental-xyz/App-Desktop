@@ -27,6 +27,8 @@ import path from 'path';
 
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
+import { GitService } from '../../src/git/GitService.js';
+import { providerFactory } from '../git-providers/harness.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -42,9 +44,16 @@ function makeHandlers(projectPath) {
         callback(null, { id: 1, projectPath, repoFolderName: null }),
     }),
   };
+  // Pinned to isomorphic-git: these are the iso-git integration suites
+  // (Tasks 6-8); dual-provider parity lives in tests/git/parity-suite.test.js
+  // (describe.each by provider). Without pinning, GIT_PROVIDER=dugite would
+  // silently re-bind these suites to DugiteProvider.
   const handlers = new GitHandlers({
     logger: makeLogger(),
     databaseManager,
+    gitService: new GitService({
+      provider: providerFactory('isomorphic-git')(),
+    }),
   });
   vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
   vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
