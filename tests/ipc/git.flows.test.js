@@ -150,6 +150,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
     vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
     vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
+    vi.spyOn(handlers.gitOps, 'getGitHubUserInfo').mockResolvedValue({ login: 'tester' });
 
     // Sensible default resolves so individual tests only override what they need.
     git.currentBranch.mockResolvedValue('preview');
@@ -208,8 +209,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(resolveCall).toBeDefined();
         });
 
-        it('throws DIRTY_LOCAL when dirty and force=false', async () => {
-          git.currentBranch.mockResolvedValue('working'); // not on preview → dirty check runs
+        it('auto-commits a dirty tree as WIP instead of blocking (DIRTY_LOCAL is GONE)', async () => {
+          git.currentBranch.mockResolvedValue('preview');
           // Dirty matrix: one file not [1,1,1]
           git.statusMatrix.mockResolvedValue([
             ['clean.txt', 1, 1, 1],
@@ -218,32 +219,37 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
           const result = await handlers.gitRefresh(1, false);
 
-          expect(result.success).toBe(false);
-          expect(result.code).toBe('DIRTY_LOCAL');
-          expect(Array.isArray(result.files)).toBe(true);
-          expect(result.files).toContain('dirty.txt');
-
-          // resolveRef must NOT have been called on a dirty abort
-          expect(git.resolveRef).not.toHaveBeenCalled();
+          // Dirty tree no longer blocks: it is committed as WIP (Task 7 —
+          // the "discard changes" option is gone).
+          expect(result.success).toBe(true);
+          expect(result.code).toBeUndefined();
+          const wipCommit = git.commit.mock.calls.find(
+            (c) => typeof c[0]?.message === 'string' && c[0].message.startsWith('WIP by tester at')
+          );
+          expect(wipCommit).toBeDefined();
         });
 
-        it('resets with force=true even when dirty', async () => {
+        it('force=true no longer hard-resets — merge-based refresh, no writeRef to the branch', async () => {
           git.currentBranch.mockResolvedValue('working');
           git.statusMatrix.mockResolvedValue([['dirty.txt', 1, 2, 1]]);
           git.checkout.mockResolvedValue(undefined);
           git.fetch.mockResolvedValue({});
           git.resolveRef.mockResolvedValue('fake-commit-oid');
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
 
           const result = await handlers.gitRefresh(1, true);
 
           expect(result.success).toBe(true);
-          // switched to preview first, then fetched + hard reset
           expect(git.checkout).toHaveBeenCalledWith(
             expect.objectContaining({ ref: 'preview' })
           );
           expect(git.resolveRef).toHaveBeenCalled();
+          // NO hard reset on any refresh path (Task 7): the branch ref is
+          // never force-written.
+          const branchWrite = git.writeRef.mock.calls.find(
+            (c) => c[0] && String(c[0].ref || '').startsWith('refs/heads/preview')
+          );
+          expect(branchWrite).toBeUndefined();
         });
 
         it('releases lock on success, error, and cancel paths', async () => {
@@ -290,8 +296,12 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
           expect(result.success).toBe(false);
           expect(result.cancelled).toBe(true);
-          // hard reset must NOT have run after an aborted fetch
-          expect(git.resolveRef).not.toHaveBeenCalled();
+          // no merge / no worktree materialization after an aborted fetch
+          expect(git.merge).not.toHaveBeenCalled();
+          const forceCheckout = git.checkout.mock.calls.find(
+            (c) => c[0] && c[0].force === true
+          );
+          expect(forceCheckout).toBeUndefined();
         });
   });
 
@@ -744,8 +754,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
   });
 
   // ─── gitRefresh data-loss safety wrapper (Wave 1-3 regression) ────────
-  describe('gitRefresh — safe-checkout (backup on unpushed state)', () => {
-    it('routes through gitSafety._safeResetOrCheckout instead of _hardResetBranch directly', async () => {
+  describe('gitRefresh — merge-based sync (Task 7: no reset on any path)', () => {
+    it('merges origin/preview LOCAL-wins instead of routing through _safeResetOrCheckout', async () => {
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([]);
       git.fetch.mockResolvedValue({});
@@ -766,14 +776,19 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       const result = await handlers.gitRefresh(1);
 
       expect(result.success).toBe(true);
-      expect(safeSpy).toHaveBeenCalledTimes(1);
-      // Task 5: the raw _hardResetBranch fallback was REMOVED entirely —
-      // every destructive reset routes through the backup-guarded path.
+      // Task 7: refresh NEVER resets — divergent state is merged.
+      expect(safeSpy).not.toHaveBeenCalled();
+      const mergeCall = git.merge.mock.calls.find(
+        (c) => c[0] && c[0].theirs === 'origin/preview'
+      );
+      expect(mergeCall).toBeDefined();
+      expect(mergeCall[0]).toMatchObject({ ours: 'preview', fastForward: false });
+      // Task 5 regression guards (still true): no raw hard-reset helper.
       expect('_hardResetBranch' in handlers).toBe(false);
       expect(typeof handlers._safeResetToOrigin).toBe('function');
     });
 
-    it('still completes refresh when gitSafety._safeResetOrCheckout creates a backup', async () => {
+    it('wraps the merge core in the mandatory backup when local has unpushed work', async () => {
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([]);
       git.fetch.mockResolvedValue({});
@@ -787,30 +802,37 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.checkout.mockResolvedValue(undefined);
       git.branch.mockResolvedValue(undefined);
 
-      vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout').mockResolvedValue({
-        backupBranch: 'backup/preview-abc-1700000000000',
-      });
+      const backupSpy = vi
+        .spyOn(handlers.gitSafety, 'withMandatoryBackup')
+        .mockImplementation(async (_ops, _fs, _dir, operation) => ({
+          backupBranch: 'backup/preview-abc-1700000000000',
+          result: await operation(),
+        }));
 
       const result = await handlers.gitRefresh(1);
 
       expect(result.success).toBe(true);
       expect(result.branch).toBe('preview');
+      expect(backupSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('propagates backup failure as a non-success result (aborts destructive op)', async () => {
+    it('propagates backup failure as a typed non-success result (aborts before any mutation)', async () => {
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([]);
       git.fetch.mockResolvedValue({});
       git.resolveRef.mockResolvedValue('sha');
 
-      vi.spyOn(handlers.gitSafety, '_safeResetOrCheckout').mockRejectedValue(
-        new Error('backup creation failed')
+      const { GitSafetyError } = await import('../../src/ipc/gitSafety.js');
+      vi.spyOn(handlers.gitSafety, 'withMandatoryBackup').mockRejectedValue(
+        new GitSafetyError('BACKUP_FAILED', 'Backup obrigatório falhou — operação abortada para proteger seus dados (backup creation failed)')
       );
 
       const result = await handlers.gitRefresh(1);
 
       expect(result.success).toBe(false);
+      expect(result.code).toBe('BACKUP_FAILED');
       expect(result.error).toMatch(/backup creation failed/);
+      expect(git.merge).not.toHaveBeenCalled();
       expect(handlers.gitOperationInProgress).toBe(false);
     });
   });
