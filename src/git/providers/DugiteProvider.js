@@ -1059,6 +1059,77 @@ class DugiteProvider {
   }
 
   /**
+   * Compute merge base(s) of two commit OIDs: `git merge-base <a> <b>`.
+   * Returns [] when the histories are unrelated (exit 1 = no base —
+   * the "not found" answer, not an error). Read-only.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string[]} oids - Commit OIDs (two expected; extra ones use
+   *   the git merge-base multi-oid octopus semantics)
+   * @returns {Promise<string[]>}
+   */
+  async mergeBase(path, oids) {
+    const list = Array.isArray(oids) ? oids : [oids];
+    const result = await exec(['merge-base', ...list], path, { env: {} });
+    if (result.exitCode === 1) {
+      return []; // git merge-base exits 1 when there is no common ancestor
+    }
+    if (result.exitCode !== 0) {
+      throw new GitError({
+        operation: 'mergeBase',
+        provider: PROVIDER_NAME,
+        exitCode: result.exitCode,
+        stderr: result.stderr || result.stdout,
+      });
+    }
+    return String(result.stdout || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  }
+
+  /**
+   * DRY-RUN a merge: `git merge-tree --write-tree <ours> <theirs>`.
+   * The write-tree mode performs the merge entirely in the object
+   * database and writes ONE tree object — it NEVER touches the working
+   * tree, the index, or any ref (the choice documented for the
+   * conflict-detection foundation of the conflict-strategy-modal plan,
+   * Task 1). Exit 0 = clean merge, exit 1 = conflicts; conflicted
+   * paths are reported ls-files-style (`<mode> <oid> <stage>\t<path>`)
+   * after the tree OID line.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} oursRef - Our side (commit-ish)
+   * @param {string} theirsRef - Their side (commit-ish)
+   * @returns {Promise<{clean: boolean, treeOid: string, files: string[]}>}
+   */
+  async mergeTree(path, oursRef, theirsRef) {
+    const result = await exec(
+      ['merge-tree', '--write-tree', oursRef, theirsRef],
+      path,
+      { env: {} }
+    );
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      throw new GitError({
+        operation: 'mergeTree',
+        provider: PROVIDER_NAME,
+        exitCode: result.exitCode,
+        stderr: result.stderr || result.stdout,
+      });
+    }
+    const lines = String(result.stdout || '').split('\n');
+    const files = new Set();
+    for (const line of lines.slice(1)) {
+      const m = line.match(/^\d{6} [0-9a-f]{40} \d\t(.+)$/);
+      if (m) {
+        files.add(m[1]);
+      }
+    }
+    return {
+      clean: result.exitCode === 0,
+      treeOid: (lines[0] || '').trim(),
+      files: [...files].sort(),
+    };
+  }
+
+  /**
    * Read a config value from the REPO-LOCAL config only (`--local` —
    * parity with iso-git, which reads .git/config and never the global
    * config). Returns null when unset (exit code 1 is "not found", not

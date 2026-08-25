@@ -721,6 +721,76 @@ class IsomorphicGitProvider {
   }
 
   /**
+   * Compute merge base(s) of two or more commit OIDs. iso-git 1.38.4
+   * exports NO public mergeBase — this walks commit parents via the
+   * read-only readCommit op, collecting the ancestor set of each side,
+   * and returns the common ancestors in BFS order from `oids[0]` (the
+   * first common ancestor found is a valid base for diff3 detection;
+   * non-minimal under criss-cross histories — same caveat as the
+   * engine's internal _findMergeBase, learnings F3-D1). Read-only.
+   * Returns [] for unrelated histories.
+   *
+   * @param {string} path - Local repository directory
+   * @param {string[]} oids - Commit OIDs to intersect
+   * @returns {Promise<string[]>}
+   */
+  async mergeBase(path, oids) {
+    const list = Array.isArray(oids) ? oids : [oids];
+    return wrap(this, 'mergeBase', async (git) => {
+      if (typeof git.mergeBase === 'function') {
+        return git.mergeBase({ fs, dir: path, oids: list });
+      }
+      /** @type {Map<string, Set<string>>} oid → ancestor set (incl. self) */
+      const ancestorSets = new Map();
+      const collect = async (start) => {
+        if (ancestorSets.has(start)) {
+          return ancestorSets.get(start);
+        }
+        const seen = new Set([start]);
+        const queue = [start];
+        while (queue.length > 0) {
+          const oid = queue.shift();
+          const { commit } = await git.readCommit({ fs, dir: path, oid });
+          for (const parent of commit.parent) {
+            if (!seen.has(parent)) {
+              seen.add(parent);
+              queue.push(parent);
+            }
+          }
+        }
+        ancestorSets.set(start, seen);
+        return seen;
+      };
+      // BFS from oids[0] preserves discovery order → the first common
+      // ancestor found is returned first.
+      const primary = await collect(list[0]);
+      const others = await Promise.all(list.slice(1).map(collect));
+      const common = [];
+      for (const oid of primary) {
+        if (others.every((set) => set.has(oid))) {
+          common.push(oid);
+        }
+      }
+      return common;
+    });
+  }
+
+  /**
+   * Read a tree object. Wraps iso-git's `readTree` — RAW
+   * `{oid, tree: [{mode, path, type, oid}]}` output (entries of the
+   * ONE tree level; callers recurse into `type: 'tree'` entries).
+   * Read-only; accepts a tree OID (resolve commits to `.commit.tree`
+   * via readCommit first).
+   *
+   * @param {string} path - Local repository directory
+   * @param {string} oid - Tree OID
+   * @returns {Promise<{oid: string, tree: Array<{mode: string, path: string, type: string, oid: string}>}>}
+   */
+  async readTree(path, oid) {
+    return wrap(this, 'readTree', (git) => git.readTree({ fs, dir: path, oid }));
+  }
+
+  /**
    * Read a config value (moved from git.js:808-813 `remote.origin.url` with
    * cache, gitOperations.js:625, projects.js:270). Returns `undefined` when
    * unset (iso-git behavior — no defaults injected).
