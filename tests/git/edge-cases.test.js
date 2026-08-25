@@ -125,7 +125,7 @@ describe.each(providersUnderTest())('edge cases [%s]', (providerName) => {
     });
     afterEach(() => pair.dispose());
 
-    it('refresh keeps the LOCAL (already committed) version, remote in history', async (ctx) => {
+    it('refresh: pending, MERGE_LOCAL resume keeps the LOCAL (committed) version, remote in history', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (committed-WIP refresh)');
       // BOTH sides commit a conflicting edit of line2.
       await makeDivergent(pair, {
@@ -137,7 +137,11 @@ describe.each(providersUnderTest())('edge cases [%s]', (providerName) => {
 
       const result = await handlers.gitRefresh(1);
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('CONFLICT_PENDING');
+
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
       const aMd = await pair.local.readFile('a.md');
       expect(aMd).toContain('line2-LOCAL');
       expect(aMd).not.toContain('line2-REMOTE');
@@ -158,9 +162,11 @@ describe.each(providersUnderTest())('edge cases [%s]', (providerName) => {
 
     it('second operation is refused; backup restores the tree; backup retained', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (lock-timeout recovery fixture)');
+      // NON-conflicting divergence (remote adds a file): a conflicting one
+      // would now pause as CONFLICT_PENDING before ever reaching the merge.
       await makeDivergent(pair, {
-        remoteFiles: { 'a.md': 'line1\nline2-REMOTE\nline3\n' },
-        remoteMessage: 'remote: edit line2',
+        remoteFiles: { 'c.md': 'remote content\n' },
+        remoteMessage: 'remote: add c.md',
       });
       makeDirty(pair.local, { 'a.md': 'line1\nline2-LOCAL\nline3\n' });
 
@@ -217,9 +223,11 @@ describe.each(providersUnderTest())('edge cases [%s]', (providerName) => {
 
     it('returns cancelled, retains the backup, leaves a recoverable state', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (cancel mid-merge fixture)');
+      // NON-conflicting divergence so the flow reaches the merge (a real
+      // conflict now pauses as CONFLICT_PENDING before the merge step).
       await makeDivergent(pair, {
-        remoteFiles: { 'a.md': 'line1\nline2-REMOTE\nline3\n' },
-        remoteMessage: 'remote: edit line2',
+        remoteFiles: { 'c.md': 'remote content\n' },
+        remoteMessage: 'remote: add c.md',
       });
       makeDirty(pair.local, { 'a.md': 'line1\nline2-LOCAL\nline3\n' });
 

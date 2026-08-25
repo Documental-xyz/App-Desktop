@@ -126,7 +126,7 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
       expect((await branchNames(handlers, pair.local.dir)).some((n) => n.startsWith('backup/'))).toBe(true);
     });
 
-    it('conflicting line: LOCAL wins the hunk, remote-only files integrated', async (ctx) => {
+    it('conflicting line: pending, MERGE_LOCAL resume keeps the hunk, remote-only files integrated', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (conflicting publish)');
       await makeDivergent(pair, {
         remoteFiles: { 'a.md': A_MD_REMOTE_CONFLICT, 'new-remote.md': 'from remote\n' },
@@ -136,7 +136,13 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
 
       const result = await handlers.gitPublishPreview(1, 'local: conflicting edit');
 
-      expect(result.success).toBe(true);
+      // Task 3 (conflict-strategy-modal): REAL conflict → typed pending.
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('CONFLICT_PENDING');
+      expect(result.flow).toBe('publish');
+
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
       const aMd = await pair.local.readFile('a.md');
       expect(aMd).toContain('line5-LOCAL');
       expect(aMd).not.toContain('line5-REMOTE');
@@ -205,7 +211,7 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
       expect(handlers.gitOperationInProgress).toBe(false);
     });
 
-    it('same-line conflict: LOCAL wins, remote preserved in history', async (ctx) => {
+    it('same-line conflict: pending, MERGE_LOCAL resume keeps LOCAL, remote in history', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (conflicting refresh)');
       await makeDivergent(pair, {
         remoteFiles: { 'b.md': 'line1\nline2-REMOTE\nline3\n' },
@@ -215,7 +221,12 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
 
       const result = await handlers.gitRefresh(1);
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('CONFLICT_PENDING');
+      expect(result.flow).toBe('refresh');
+
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
       const bMd = await pair.local.readFile('b.md');
       expect(bMd).toContain('line2-LOCAL');
       expect(bMd).not.toContain('line2-REMOTE');
@@ -269,11 +280,19 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
       makeDirty(pair.local, { 'local-note.md': 'unpublished WIP\n' });
     }
 
+    // Conflict fixture → pending → resume (MERGE_REMOTE = preview wins,
+    // the historical promote semantics).
+    async function publishMainResolved() {
+      const pending = await handlers.gitPublishMain(1);
+      expect(pending.code).toBe('CONFLICT_PENDING');
+      return handlers.gitResolveConflict(pending.resumeToken, 'MERGE_REMOTE');
+    }
+
     it('ANTI-INVERSION: preview wins on origin/main (opposite of refresh)', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (publish-main anti-inversion)');
       await setupPromotable();
 
-      const result = await handlers.gitPublishMain(1);
+      const result = await publishMainResolved();
 
       expect(result.success).toBe(true);
       // Round-trip through the REAL remote (checkout origin/main — the
@@ -290,7 +309,7 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (publish-main post-success)');
       await setupPromotable();
 
-      const result = await handlers.gitPublishMain(1);
+      const result = await publishMainResolved();
 
       expect(result.success).toBe(true);
       expect(result.branch).toBe('preview');
@@ -310,7 +329,7 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
         Object.assign(new Error('push rejected: non-fast-forward'), { code: 'PushRejectedError' })
       );
 
-      const result = await handlers.gitPublishMain(1);
+      const result = await publishMainResolved();
 
       expect(result.success).toBe(false);
       expect(result.code).toBe('PUSH_REJECTED');
@@ -350,23 +369,31 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
       }
     }
 
-    it('publish: LOCAL bytes win the binary conflict, byte-identical', async (ctx) => {
+    it('publish: pending, MERGE_LOCAL resume keeps LOCAL bytes, byte-identical', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (binary publish)');
       await binaryFixture({ dirtyLocal: true });
 
       const result = await handlers.gitPublishPreview(1, 'local: binary edit');
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('CONFLICT_PENDING');
+
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
       expect(Buffer.compare(await pair.local.readBytes('asset.bin'), binaryLocal)).toBe(0);
     });
 
-    it('refresh: LOCAL bytes win the binary conflict, byte-identical', async (ctx) => {
+    it('refresh: pending, MERGE_LOCAL resume keeps LOCAL bytes, byte-identical', async (ctx) => {
       gateOnCapability(ctx, divergentGateOpen, 'T10-D1/T10-D2 (binary refresh)');
       await binaryFixture({ dirtyLocal: true });
 
       const result = await handlers.gitRefresh(1);
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.code).toBe('CONFLICT_PENDING');
+
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
       expect(Buffer.compare(await pair.local.readBytes('asset.bin'), binaryLocal)).toBe(0);
     });
   });

@@ -62,7 +62,13 @@ const { GitPreflight: _GitPreflightClass } = (() => {
 // Resilient import: merge drivers + binary fallbacks.
 // - oursMergeDriver/resolveBinaryOurs: publish/refresh direction (LOCAL wins)
 // - theirsMergeDriver/resolveBinaryTheirs: cross-branch publish + publish-main
-const { theirsMergeDriver, resolveBinaryTheirs, oursMergeDriver, resolveBinaryOurs } = (() => {
+// - fullLocalMergeDriver/fullRemoteMergeDriver: conflict-modal strategies
+const {
+  theirsMergeDriver, resolveBinaryTheirs,
+  oursMergeDriver, resolveBinaryOurs,
+  fullLocalMergeDriver, resolveBinaryFullLocal,
+  fullRemoteMergeDriver, resolveBinaryFullRemote,
+} = (() => {
   try {
     return require('./gitMergeDriver.js');
   } catch (_e) {
@@ -71,9 +77,44 @@ const { theirsMergeDriver, resolveBinaryTheirs, oursMergeDriver, resolveBinaryOu
       resolveBinaryTheirs: null,
       oursMergeDriver: null,
       resolveBinaryOurs: null,
+      fullLocalMergeDriver: null,
+      resolveBinaryFullLocal: null,
+      fullRemoteMergeDriver: null,
+      resolveBinaryFullRemote: null,
     };
   }
 })();
+
+// Resilient import: pre-merge conflict detection (conflict-strategy-modal Task 1).
+const { detectMergeConflicts: _detectMergeConflicts } = (() => {
+  try {
+    return require('./gitConflictDetect.js');
+  } catch (_e) {
+    return { detectMergeConflicts: null };
+  }
+})();
+
+/**
+ * Conflict-strategy roundtrip (conflict-strategy-modal Task 3).
+ *
+ * The 4 product strategies offered by the modal. Context mapping:
+ *  - publish/refresh: OURS = the local working branch, THEIRS = origin
+ *    (remote). MERGE_LOCAL = keep local conflicting hunks (por-hunk),
+ *    MERGE_REMOTE = keep remote conflicting hunks (por-hunk), FULL_* =
+ *    same winner, declared as the "total" product intention.
+ *  - publish-main: OURS = main, THEIRS = preview (the side being
+ *    promoted). MERGE_LOCAL keeps MAIN, MERGE_REMOTE keeps PREVIEW.
+ *  - cross-branch publish (pushToBranch from another branch): the LOCAL
+ *    commits are the THEIRS side of the merge — the mapping is flipped
+ *    automatically (_conflictDriverFor).
+ *
+ * @readonly
+ * @type {string[]}
+ */
+const CONFLICT_STRATEGIES = ['MERGE_LOCAL', 'MERGE_REMOTE', 'FULL_LOCAL', 'FULL_REMOTE'];
+
+/** Validity window of a conflict resumeToken (15 minutes). */
+const RESUME_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Typed error for git FLOW failures (Task 6). Mirrors the GitSafetyError
@@ -168,6 +209,13 @@ class GitHandlers {
     this._gitModuleCache = null;
     this._httpModuleCache = null;
     this.cancelRequested = false;
+    /**
+     * In-memory registry of pending conflict decisions (Task 3).
+     * Key: resumeToken (crypto-random hex). Value: flow resume context
+     * + expiry. Never persisted — a forged/foreign token cannot exist.
+     * @type {Map<string, object>}
+     */
+    this._pendingConflicts = new Map();
     this.gitSafety = _GitSafetyClass ? new _GitSafetyClass({ logger }) : null;
     this.gitPreflight = _GitPreflightClass
       ? new _GitPreflightClass({ logger, gitOps: this.gitOps, databaseManager, getGit: () => this._getGit() })
@@ -1135,7 +1183,7 @@ class GitHandlers {
    * @param {string|null} [commitMessage=null] - If provided, commit all changes before pushing
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, error?: string}>}
    */
-  async _publishCore(projectPath, targetBranch, { localSha, auth, signal, author }) {
+  async _publishCore(projectPath, targetBranch, { localSha, auth, signal, author, conflictStrategy }) {
     const originalBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
     const onWorkingBranch = originalBranch === targetBranch;
 
@@ -1242,16 +1290,38 @@ class GitHandlers {
           //  - working-branch publish: ours = LOCAL commits → oursMergeDriver
           //  - cross-branch publish:   ours = target(remote state), theirs =
           //    the local commits → theirsMergeDriver keeps LOCAL winning
-          this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
           const theirRef = onWorkingBranch ? `origin/${targetBranch}` : originalBranch;
+
+          // Task 3: on the auto path, ask the user BEFORE merging a real
+          // conflict; on resume (conflictStrategy set), merge with the
+          // user-chosen driver instead.
+          if (!conflictStrategy) {
+            const gate = await this._conflictGate(projectPath, theirRef);
+            if (gate) {
+              if (!onWorkingBranch && originalBranch) {
+                try {
+                  await this.git.checkout(projectPath, originalBranch);
+                  this._gitCache = {};
+                } catch (_e) { /* best-effort return to the working branch */ }
+              }
+              return { conflictPending: gate };
+            }
+          }
+          const strat = conflictStrategy
+            ? this._conflictDriverFor(conflictStrategy, onWorkingBranch)
+            : null;
+
+          this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
           try {
             await this._raceTimeout(
               this.git.merge(projectPath, theirRef, {
                 ours: targetBranch,
                 fastForward: false,
-                ...(onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {}),
-                ...(!onWorkingBranch && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-                message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
+                ...(strat
+                  ? { mergeDriver: strat.driver }
+                  : (onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
+                ...(!onWorkingBranch && !strat && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+                message: `Merge publish${conflictStrategy ? ` (${conflictStrategy})` : ''} (${targetBranch}) — ${new Date().toISOString()}`,
                 author,
               }),
               this.STEP_TIMEOUT_MERGE_MS,
@@ -1274,9 +1344,27 @@ class GitHandlers {
                 throw mergeErr;
               }
               this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+              // Strategy resume: binary bytes come from the winning side of
+              // the chosen strategy; auto path keeps the historical
+              // LOCAL-wins direction.
+              const binaryOidFor = async () => {
+                if (!strat) {
+                  return headBeforeMerge;
+                }
+                if (strat.side === 'ours') {
+                  return onWorkingBranch ? headBeforeMerge : originOid;
+                }
+                return onWorkingBranch
+                  ? originOid
+                  : this.git.resolveRef(projectPath, originalBranch);
+              };
+              const binaryFn = strat ? strat.binary : null;
+              const binaryOid = await binaryOidFor();
               for (const filepath of conflictFiles) {
                 try {
-                  if (onWorkingBranch) {
+                  if (binaryFn) {
+                    await binaryFn(this.git, projectPath, filepath, binaryOid);
+                  } else if (onWorkingBranch) {
                     await resolveBinaryOurs(this.git, projectPath, filepath, headBeforeMerge);
                   } else {
                     await resolveBinaryTheirs(this.git, projectPath, filepath, headBeforeMerge);
@@ -1391,6 +1479,124 @@ class GitHandlers {
   }
 
   /**
+   * Raw provider behind the GitService facade. gitConflictDetect dispatches
+   * on provider CAPABILITIES (mergeTree/readTree/mergeBase), so it needs the
+   * provider itself, not the facade.
+   * @returns {object} GitProvider instance
+   */
+  _gitProvider() {
+    const svc = this.git;
+    return typeof svc._resolve === 'function' ? svc._resolve() : svc;
+  }
+
+  /**
+   * Pre-merge conflict gate (Task 3). Runs detectMergeConflicts (zero
+   * mutation — see gitConflictDetect.js) right before a flow would merge.
+   *
+   * Fail-open: if detection itself throws (unexpected repo shape), the flow
+   * falls through to the historical auto-resolution behavior instead of
+   * blocking the user.
+   *
+   * @param {string} projectPath
+   * @param {string} theirRef - ref that would be merged into HEAD
+   * @returns {Promise<{files: string[], ours: string, theirs: string, mergeBase: string|null}|null>}
+   *   pending payload when a REAL conflict exists, null otherwise
+   */
+  async _conflictGate(projectPath, theirRef) {
+    if (!_detectMergeConflicts) {
+      return null;
+    }
+    let detect;
+    try {
+      detect = await _detectMergeConflicts(
+        { provider: this._gitProvider(), repoPath: projectPath },
+        theirRef,
+      );
+    } catch (err) {
+      this.logger.warn(`Conflict detection failed (fail-open to auto merge): ${err.message}`);
+      return null;
+    }
+    if (!detect || !detect.hasConflicts) {
+      return null;
+    }
+    return { files: detect.files, ours: detect.ours, theirs: detect.theirs, mergeBase: detect.mergeBase };
+  }
+
+  /**
+   * Driver/binary-resolver pair for a user-chosen conflict strategy.
+   *
+   * `localIsOurs` tells which MERGE side holds the "local" content:
+   *  - refresh / working-branch publish / publish-main(ours=main →
+   *    "local" = our side): true
+   *  - cross-branch publish (ours = target/remote state, theirs = the
+   *    local commits): false — the mapping flips so MERGE_LOCAL still
+   *    means "the user's local edits win".
+   *
+   * @param {string} strategy - one of CONFLICT_STRATEGIES
+   * @param {boolean} [localIsOurs=true]
+   * @returns {{driver: Function, binary: Function, side: 'ours'|'theirs'}}
+   */
+  _conflictDriverFor(strategy, localIsOurs = true) {
+    const wantLocal = strategy === 'MERGE_LOCAL' || strategy === 'FULL_LOCAL';
+    const oursFamilyWins = wantLocal === localIsOurs;
+    const full = strategy === 'FULL_LOCAL' || strategy === 'FULL_REMOTE';
+    if (oursFamilyWins) {
+      return {
+        driver: full ? fullLocalMergeDriver : oursMergeDriver,
+        binary: full ? resolveBinaryFullLocal : resolveBinaryOurs,
+        side: 'ours',
+      };
+    }
+    return {
+      driver: full ? fullRemoteMergeDriver : theirsMergeDriver,
+      binary: full ? resolveBinaryFullRemote : resolveBinaryTheirs,
+      side: 'theirs',
+    };
+  }
+
+  /**
+   * Mint a single-use resumeToken for a pending conflict and build the typed
+   * CONFLICT_PENDING IPC result consumed by the Task 4 modal.
+   *
+   * Result shape (STABLE contract — renderer depends on it):
+   *   {
+   *     success: false,
+   *     code: 'CONFLICT_PENDING',
+   *     flow: 'publish' | 'refresh' | 'publish-main',
+   *     files: string[],               // conflicted paths ([] = unrelated histories)
+   *     strategies: string[],          // always the 4 CONFLICT_STRATEGIES
+   *     resumeToken: string,           // single-use, 15min TTL
+   *     expiresAt: number,             // epoch ms
+   *     error: string,                 // user-facing message
+   *     detail: { ours, theirs, mergeBase },
+   *   }
+   *
+   * @param {string} projectPath
+   * @param {'publish'|'refresh'|'publish-main'} flow
+   * @param {{files: string[], ours: string, theirs: string, mergeBase: string|null}} pending
+   * @param {object} resumeCtx - { auth, author, who?, targetBranch? } to re-run the flow
+   * @returns {object} typed IPC result
+   */
+  _mintConflictPending(projectPath, flow, pending, resumeCtx) {
+    const token = require('crypto').randomBytes(16).toString('hex');
+    const expiresAt = Date.now() + RESUME_TOKEN_TTL_MS;
+    this._pendingConflicts.set(token, { ...resumeCtx, projectPath, flow, createdAt: Date.now(), expiresAt });
+    this.logger.info(`⛔ Conflito real no fluxo ${flow} (${pending.files.length} arquivo(s)) — aguardando decisão do usuário`);
+    this.sendOutput('⚠️ Conflito de mesclagem detectado — escolha como resolver para continuar.');
+    return {
+      success: false,
+      code: 'CONFLICT_PENDING',
+      flow,
+      files: pending.files,
+      strategies: [...CONFLICT_STRATEGIES],
+      resumeToken: token,
+      expiresAt,
+      detail: { ours: pending.ours, theirs: pending.theirs, mergeBase: pending.mergeBase },
+      error: 'Conflito de mesclagem detectado. Escolha uma estratégia para continuar (as duas versões ficam no histórico).',
+    };
+  }
+
+  /**
    * Wrap object-style ops so a MISSING `refs/remotes/origin/<branch>` resolves
    * to a sentinel OID instead of throwing. gitSafety's assessment maps a
    * throwing resolveRef to hasUnpushed=false; per the plan a missing upstream
@@ -1426,7 +1632,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, error?: string}>}
    */
-  async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author }) {
+  async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author, conflictStrategy }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — publicação recusada (backup obrigatório)');
@@ -1450,9 +1656,16 @@ class GitHandlers {
         auth,
         signal: this.getAbortSignal(),
         author,
+        conflictStrategy,
       }),
       { branch: targetBranch }
     );
+
+    if (result && result.conflictPending) {
+      return this._mintConflictPending(projectPath, 'publish', result.conflictPending, {
+        targetBranch, auth, author,
+      });
+    }
 
     if (result && result.cancelled) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
@@ -1692,7 +1905,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _runRefreshFlow(projectPath, { auth, author, who }) {
+  async _runRefreshFlow(projectPath, { auth, author, who, conflictStrategy }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — atualização recusada (backup obrigatório)');
@@ -1713,9 +1926,16 @@ class GitHandlers {
         auth,
         signal: this.getAbortSignal(),
         author,
+        conflictStrategy,
       }),
       { branch: BRANCH_PREVIEW, author }
     );
+
+    if (result && result.conflictPending) {
+      return this._mintConflictPending(projectPath, 'refresh', result.conflictPending, {
+        auth, author, who,
+      });
+    }
 
     if (result && result.cancelled) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
@@ -1738,7 +1958,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _refreshCore(projectPath, { auth, signal, author }) {
+  async _refreshCore(projectPath, { auth, signal, author, conflictStrategy }) {
     const headBefore = await this.git.resolveRef(projectPath, 'HEAD');
 
     if (this.isCancelRequested()) {
@@ -1818,14 +2038,28 @@ class GitHandlers {
     // INTO the local working branch → ours = LOCAL commits →
     // oursMergeDriver keeps LOCAL winning conflicting hunks while remote
     // non-conflicting changes are integrated.
+    //
+    // Task 3: on the auto path, a REAL conflict pauses the flow for a user
+    // decision (CONFLICT_PENDING); on resume (conflictStrategy set), the
+    // user-chosen driver decides the conflicting hunks.
+    if (!conflictStrategy) {
+      const gate = await this._conflictGate(projectPath, `origin/${BRANCH_PREVIEW}`);
+      if (gate) {
+        return { conflictPending: gate };
+      }
+    }
+    const strat = conflictStrategy ? this._conflictDriverFor(conflictStrategy) : null;
+
     this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
     try {
       await this._raceTimeout(
         this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
           ours: BRANCH_PREVIEW,
           fastForward: false,
-          ...(oursMergeDriver ? { mergeDriver: oursMergeDriver } : {}),
-          message: `Merge refresh (origin/${BRANCH_PREVIEW}) — ${new Date().toISOString()}`,
+          ...(strat
+            ? { mergeDriver: strat.driver }
+            : (oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
+          message: `Merge refresh${conflictStrategy ? ` (${conflictStrategy})` : ''} (origin/${BRANCH_PREVIEW}) — ${new Date().toISOString()}`,
           author,
         }),
         this.STEP_TIMEOUT_MERGE_MS,
@@ -1837,9 +2071,11 @@ class GitHandlers {
         throw mergeErr;
       }
       this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+      const binaryFn = strat ? strat.binary : resolveBinaryOurs;
+      const binaryOid = strat && strat.side === 'theirs' ? originOid : headBefore;
       for (const filepath of conflictFiles) {
         try {
-          await resolveBinaryOurs(this.git, projectPath, filepath, headBefore);
+          await binaryFn(this.git, projectPath, filepath, binaryOid);
         } catch (resolveErr) {
           this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
         }
@@ -2116,7 +2352,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _runPublishMainFlow(projectPath, { auth, author, who }) {
+  async _runPublishMainFlow(projectPath, { auth, author, who, conflictStrategy }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — publicação em main recusada (backup obrigatório)');
@@ -2137,9 +2373,16 @@ class GitHandlers {
         auth,
         signal: this.getAbortSignal(),
         author,
+        conflictStrategy,
       }),
       { branch: BRANCH_PREVIEW, author }
     );
+
+    if (result && result.conflictPending) {
+      return this._mintConflictPending(projectPath, 'publish-main', result.conflictPending, {
+        auth, author, who,
+      });
+    }
 
     if (result && result.cancelled) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
@@ -2169,7 +2412,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _publishMainCore(projectPath, { auth, signal, author }) {
+  async _publishMainCore(projectPath, { auth, signal, author, conflictStrategy }) {
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
@@ -2242,14 +2485,36 @@ class GitHandlers {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
 
+    // Task 3: preview/main conflict mapping — ours = MAIN, theirs =
+    // PREVIEW. MERGE_LOCAL keeps MAIN, MERGE_REMOTE keeps PREVIEW (the
+    // historical auto winner). Real conflict on the auto path pauses the
+    // flow for a user decision.
+    if (!conflictStrategy) {
+      const gate = await this._conflictGate(projectPath, `origin/${BRANCH_PREVIEW}`);
+      if (gate) {
+        try {
+          await this._raceTimeout(
+            this.git.checkout(projectPath, BRANCH_PREVIEW),
+            this.STEP_TIMEOUT_CHECKOUT_MS,
+            `checkout ${BRANCH_PREVIEW}`,
+          );
+          this._gitCache = {};
+        } catch (_e) { /* best-effort return to the working branch */ }
+        return { conflictPending: gate };
+      }
+    }
+    const strat = conflictStrategy ? this._conflictDriverFor(conflictStrategy) : null;
+
     this.sendOutput(`🔀 Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN} (preview vence conflitos)...`);
     try {
       await this._raceTimeout(
         this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
           ours: BRANCH_MAIN,
           fastForward: false,
-          ...(theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-          message: `Promote preview to main — ${new Date().toISOString()}`,
+          ...(strat
+            ? { mergeDriver: strat.driver }
+            : (theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {})),
+          message: `Promote preview to main${conflictStrategy ? ` (${conflictStrategy})` : ''} — ${new Date().toISOString()}`,
           author,
         }),
         this.STEP_TIMEOUT_MERGE_MS,
@@ -2265,11 +2530,14 @@ class GitHandlers {
         } catch (_resetErr) { /* best-effort */ }
         throw mergeErr;
       }
-      // Binary conflicts: PREVIEW wins (theirs = origin/preview).
+      // Binary conflicts: bytes from the winning side of the strategy
+      // (auto path = PREVIEW wins, theirs = origin/preview).
       this.sendOutput('⚠️ Conflito binário detectado — usando versão do preview.');
+      const binaryFn = strat ? strat.binary : resolveBinaryTheirs;
+      const binaryOid = strat && strat.side === 'ours' ? originMainOid : theirsOid;
       for (const filepath of conflictFiles) {
         try {
-          await resolveBinaryTheirs(this.git, projectPath, filepath, theirsOid);
+          await binaryFn(this.git, projectPath, filepath, binaryOid);
         } catch (resolveErr) {
           this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
         }
@@ -2330,6 +2598,118 @@ class GitHandlers {
     this._gitCache = {};
 
     return { success: true, branch: BRANCH_PREVIEW };
+  }
+
+  /**
+   * Resolve a pending conflict decision (Task 3 — counterpart of the
+   * CONFLICT_PENDING result minted by _mintConflictPending).
+   *
+   * Semantics:
+   *  - `strategy = 'CANCEL'`: clean abort. NOTHING beyond what was already
+   *    safe is touched — the WIP commit and the mandatory backup are KEPT
+   *    (they are protection, not garbage); no merge runs; the token is
+   *    consumed. Returns `{success:false, code:'CANCELLED'}`. This is the
+   *    MODAL cancel and is completely independent of the in-flight
+   *    operation cancel (requestCancel/AbortController): no lock is held
+   *    while a decision is pending.
+   *  - `strategy` in CONFLICT_STRATEGIES: consumes the token (single use),
+   *    re-locks, re-runs the SAME guarded flow with the chosen strategy —
+   *    the flow re-fetches (cheap depth:1), merges with the strategy's
+   *    driver, materializes and pushes/materializes exactly like the
+   *    automatic path would.
+   *
+   * Token security: tokens live ONLY in this handler's memory
+   * (crypto.randomBytes), expire after RESUME_TOKEN_TTL_MS (15 min) and are
+   * deleted on first use. Expired/unknown/reused tokens are rejected with
+   * typed codes. A lock held by an unrelated operation does NOT consume the
+   * token (retryable:true).
+   *
+   * @param {string} resumeToken - token from a CONFLICT_PENDING result
+   * @param {string} strategy - CONFLICT_STRATEGIES member or 'CANCEL'
+   * @returns {Promise<{success: boolean, code?: string, error?: string, message?: string, cancelled?: boolean, branch?: string, pushed?: boolean, retryable?: boolean}>}
+   */
+  async gitResolveConflict(resumeToken, strategy) {
+    // Lazy purge of OTHER expired tokens; the requested one is judged by
+    // the explicit TOKEN_EXPIRED branch below.
+    for (const [key, entry] of this._pendingConflicts) {
+      if (key !== resumeToken && Date.now() > entry.expiresAt) {
+        this._pendingConflicts.delete(key);
+      }
+    }
+    const entry = this._pendingConflicts.get(resumeToken);
+    if (!entry) {
+      return {
+        success: false,
+        code: 'INVALID_TOKEN',
+        error: 'Token de retomada inválido, expirado ou já utilizado. Inicie a operação novamente.',
+      };
+    }
+    if (Date.now() > entry.expiresAt) {
+      this._pendingConflicts.delete(resumeToken);
+      return {
+        success: false,
+        code: 'TOKEN_EXPIRED',
+        error: 'O tempo para decidir expirou. Inicie a operação novamente.',
+      };
+    }
+    if (strategy === 'CANCEL') {
+      this._pendingConflicts.delete(resumeToken);
+      this.sendOutput('🚫 Operação cancelada pelo usuário — nada foi mesclado; versão local e backup preservados.');
+      return {
+        success: false,
+        code: 'CANCELLED',
+        message: 'Operação cancelada — sua versão local e o backup permanecem intactos.',
+      };
+    }
+    if (!CONFLICT_STRATEGIES.includes(strategy)) {
+      return {
+        success: false,
+        code: 'INVALID_STRATEGY',
+        error: `Estratégia inválida: ${strategy}. Use uma de ${CONFLICT_STRATEGIES.join(', ')} ou CANCEL.`,
+      };
+    }
+    if (!this.acquireGitLock()) {
+      return {
+        success: false,
+        retryable: true,
+        error: 'Git operation already in progress. Please wait.',
+      };
+    }
+    this._pendingConflicts.delete(resumeToken);
+    try {
+      this._gitCache = {};
+      this.sendOutput(`🔀 Retomando fluxo ${entry.flow} com estratégia ${strategy}...`);
+      if (entry.flow === 'publish') {
+        return await this._runBackupGuardedPublish(entry.projectPath, entry.targetBranch, {
+          // WIP-style message: protects any edits made while the modal was
+          // open (commit-first ordering, same as the flow's own WIP).
+          commitMessage: `WIP (conflict resume ${strategy}) at ${new Date().toISOString()}`,
+          auth: entry.auth,
+          author: entry.author,
+          conflictStrategy: strategy,
+        });
+      }
+      if (entry.flow === 'refresh') {
+        return await this._runRefreshFlow(entry.projectPath, {
+          auth: entry.auth,
+          author: entry.author,
+          who: entry.who,
+          conflictStrategy: strategy,
+        });
+      }
+      return await this._runPublishMainFlow(entry.projectPath, {
+        auth: entry.auth,
+        author: entry.author,
+        who: entry.who,
+        conflictStrategy: strategy,
+      });
+    } catch (error) {
+      this.logger.error('Error in gitResolveConflict:', error);
+      return this._publishErrorToResult(error);
+    } finally {
+      this._gitCache = {};
+      this.releaseGitLock();
+    }
   }
 
   async gitListRemoteBranches(projectPath) {
@@ -2517,6 +2897,22 @@ class GitHandlers {
         return await this.gitPublishMain(projectId);
       } catch (error) {
         this.logger.error('Error in git:publish-main handler:', error);
+        return { success: false, error: error.message };
+      }
+    });
+
+    /**
+     * Resolve a pending conflict decision (counterpart of CONFLICT_PENDING).
+     * Invoked with (resumeToken, 'CANCEL') or (resumeToken, strategy) where
+     * strategy ∈ {MERGE_LOCAL, MERGE_REMOTE, FULL_LOCAL, FULL_REMOTE}.
+     * Result contract mirrors the flows' own result shapes; typed codes:
+     * CANCELLED, INVALID_TOKEN, TOKEN_EXPIRED, INVALID_STRATEGY.
+     */
+    ipcMain.handle('git:resolve-conflict', async (event, resumeToken, strategy) => {
+      try {
+        return await this.gitResolveConflict(resumeToken, strategy);
+      } catch (error) {
+        this.logger.error('Error in git:resolve-conflict handler:', error);
         return { success: false, error: error.message };
       }
     });

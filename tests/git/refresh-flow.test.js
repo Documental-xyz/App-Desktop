@@ -120,9 +120,9 @@ describe('gitRefresh — dirty tree + remote divergence, no hard reset', () => {
   });
 });
 
-// ─── Scenario (b): dirty tree + conflict on the SAME line ───────────────────
+// ─── Scenario (b): same-line conflict → CONFLICT_PENDING + resume ───────────
 
-describe('gitRefresh — same-line conflict: LOCAL wins, remote preserved in history', () => {
+describe('gitRefresh — same-line conflict: pending, MERGE_LOCAL resume keeps LOCAL', () => {
   let pair;
   let handlers;
 
@@ -138,7 +138,7 @@ describe('gitRefresh — same-line conflict: LOCAL wins, remote preserved in his
     pair.dispose();
   });
 
-  it('keeps the LOCAL version in the working tree while the remote commit stays reachable', async () => {
+  it('pauses with CONFLICT_PENDING, then resume merges LOCAL-wins with remote in history', async () => {
     // Remote commits line2 → REMOTE and pushes; local edits line2 → LOCAL
     // WITHOUT committing (dirty tree).
     await makeDivergent(pair, {
@@ -149,7 +149,16 @@ describe('gitRefresh — same-line conflict: LOCAL wins, remote preserved in his
 
     const result = await handlers.gitRefresh(1);
 
-    expect(result.success).toBe(true);
+    // Task 3 (conflict-strategy-modal): a REAL conflict pauses the flow.
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('CONFLICT_PENDING');
+    expect(result.flow).toBe('refresh');
+    expect(result.files).toContain('b.md');
+    expect(handlers.gitOperationInProgress).toBe(false);
+
+    const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+
+    expect(resumed.success).toBe(true);
     const bMd = await pair.local.readFile('b.md');
     expect(bMd).toContain('line2-LOCAL');
     expect(bMd).not.toContain('line2-REMOTE');

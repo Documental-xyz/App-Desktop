@@ -110,7 +110,11 @@ describe.each(providersUnderTest())('merge semantics regression [%s]', (provider
       await commitFile(pair.local, 'doc.md', LOCAL_VERSION, 'local: edit line2');
 
       const result = await handlers.gitPublishPreview(1, 'publish conflicting');
-      expect(result.success).toBe(true);
+      // Real conflict → pending decision (Task 3); MERGE_LOCAL resume =
+      // the historical per-hunk local arbitration.
+      expect(result.code).toBe('CONFLICT_PENDING');
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
 
       const merged = await pair.local.readFile('doc.md');
       // Conflicting line 2: LOCAL wins.
@@ -162,7 +166,11 @@ describe.each(providersUnderTest())('merge semantics regression [%s]', (provider
       await commitFile(pair.local, 'doc.md', LOCAL_VERSION, 'local: edit line2');
 
       const result = await handlers.gitRefresh(1);
-      expect(result.success).toBe(true);
+      // Real conflict → pending decision (Task 3); MERGE_LOCAL resume =
+      // the historical per-hunk local arbitration.
+      expect(result.code).toBe('CONFLICT_PENDING');
+      const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+      expect(resumed.success).toBe(true);
 
       const merged = await pair.local.readFile('doc.md');
       expect(merged).toContain('line2-LOCAL\n');

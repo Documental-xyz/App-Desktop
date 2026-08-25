@@ -80,6 +80,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshProject: (projectId, force) => ipcRenderer.invoke('git:refresh', projectId, force),
   publishToPreview: (projectId, commitMessage) => ipcRenderer.invoke('git:publish-preview', projectId, commitMessage),
   publishToMain: (projectId) => ipcRenderer.invoke('git:publish-main', projectId),
+  /**
+   * Resolve a pending conflict decision (counterpart of a CONFLICT_PENDING
+   * result returned by refreshProject/publishToPreview/publishToMain).
+   *
+   * @param {string} resumeToken - single-use token from the CONFLICT_PENDING payload
+   * @param {'MERGE_LOCAL'|'MERGE_REMOTE'|'FULL_LOCAL'|'FULL_REMOTE'|'CANCEL'} strategy
+   *   Context mapping — publish/refresh: LOCAL = this machine, REMOTE = origin;
+   *   publish-main: LOCAL = main, REMOTE = preview. MERGE_* = per-hunk winner,
+   *   FULL_* = same winner as a total decision. CANCEL = clean abort (local
+   *   version and backup are kept).
+   * @returns {Promise<{success: boolean, code?: string, error?: string, message?: string, branch?: string}>}
+   *   Typed codes: CANCELLED, INVALID_TOKEN, TOKEN_EXPIRED, INVALID_STRATEGY.
+   */
+  resolveGitConflict: (resumeToken, strategy) => ipcRenderer.invoke('git:resolve-conflict', resumeToken, strategy),
   checkPublishMain: (projectId) => ipcRenderer.invoke('git:check-publish-main', projectId),
   invalidatePermissionCache: (projectId) => ipcRenderer.invoke('git:invalidate-permission-cache', projectId),
   listRemoteBranches: (projectId) => ipcRenderer.invoke('git:list-remote-branches', projectId),

@@ -121,7 +121,7 @@ describe('gitPublishPreview — divergent remote, local-wins merge', () => {
     expect(names.some((n) => n.startsWith('backup/'))).toBe(true);
   });
 
-  it('resolves conflicting line with the LOCAL version while keeping remote-only lines', async () => {
+  it('conflicting line: CONFLICT_PENDING, then MERGE_LOCAL resume keeps LOCAL + remote-only files', async () => {
     // Remote edits line 5 differently (CONFLICT on same hunk).
     const remoteEdit = A_MD_BASE.replace('line5', 'line5-REMOTE');
     await makeDivergent(pair, {
@@ -132,7 +132,20 @@ describe('gitPublishPreview — divergent remote, local-wins merge', () => {
 
     const result = await handlers.gitPublishPreview(1, 'local: conflicting edit');
 
-    expect(result.success).toBe(true);
+    // Task 3 (conflict-strategy-modal): a REAL conflict never auto-merges —
+    // the flow pauses for a user decision.
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('CONFLICT_PENDING');
+    expect(result.flow).toBe('publish');
+    expect(result.files).toContain('a.md');
+    expect(result.strategies).toEqual([
+      'MERGE_LOCAL', 'MERGE_REMOTE', 'FULL_LOCAL', 'FULL_REMOTE',
+    ]);
+    expect(handlers.gitOperationInProgress).toBe(false);
+
+    const resumed = await handlers.gitResolveConflict(result.resumeToken, 'MERGE_LOCAL');
+
+    expect(resumed.success).toBe(true);
     const aMd = await pair.local.readFile('a.md');
     // LOCAL wins the conflicting hunk...
     expect(aMd).toContain('line5-LOCAL');

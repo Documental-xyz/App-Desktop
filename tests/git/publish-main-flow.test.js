@@ -113,10 +113,23 @@ describe('gitPublishMain — preview-wins promote', () => {
     pair.dispose();
   });
 
+  /**
+   * Conflict fixture → CONFLICT_PENDING → resume with MERGE_REMOTE (the
+   * historical preview-wins semantics). Task 3 (conflict-strategy-modal):
+   * a REAL conflict never auto-merges anymore.
+   */
+  async function publishMainResolved(handlers) {
+    const pending = await handlers.gitPublishMain(1);
+    if (pending.code !== 'CONFLICT_PENDING') {
+      throw new Error(`expected CONFLICT_PENDING, got: ${JSON.stringify(pending)}`);
+    }
+    return handlers.gitResolveConflict(pending.resumeToken, 'MERGE_REMOTE');
+  }
+
   it('ANTI-INVERSION: preview wins the conflicting line on origin/main (opposite of refresh)', async () => {
     await setupPromotable(pair);
 
-    const result = await handlers.gitPublishMain(1);
+    const result = await publishMainResolved(handlers);
 
     expect(result.success).toBe(true);
 
@@ -136,7 +149,7 @@ describe('gitPublishMain — preview-wins promote', () => {
   it('post-success: back on preview, merge commit on origin/main, WIP retained locally', async () => {
     await setupPromotable(pair);
 
-    const result = await handlers.gitPublishMain(1);
+    const result = await publishMainResolved(handlers);
 
     expect(result.success).toBe(true);
     expect(result.branch).toBe('preview');
@@ -171,7 +184,7 @@ describe('gitPublishMain — preview-wins promote', () => {
       })
     );
 
-    const result = await handlers.gitPublishMain(1);
+    const result = await publishMainResolved(handlers);
 
     // Typed error + guidance for the renderer ("update first").
     expect(result.success).toBe(false);
