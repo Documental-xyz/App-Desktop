@@ -40,6 +40,7 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
+import gitModule from 'isomorphic-git';
 
 import { GitHandlers } from '../../../src/ipc/git.js';
 import { GitService } from '../../../src/git/GitService.js';
@@ -211,6 +212,68 @@ export async function divergentFlowsWork(providerName) {
 export function gateOnCapability(ctx, open, bugRef) {
   if (!open) {
     ctx.skip(`GATED (conditional capability probe FAILED): ${bugRef} — see .omo/notepads/git-sync-strategy/issues.md`);
+  }
+}
+
+// ─── Capability probe (conflict-strategy-modal Task 5) ───────────────────────
+
+/** @type {Map<string, boolean>} cached probe results, per provider. */
+const binaryFallbackProbeResults = new Map();
+
+/**
+ * Probe T5-1: after a binary conflict resume with a REMOTE strategy,
+ * does the flow materialize the WINNING side's bytes AND integrate the
+ * remote's clean (non-conflicting) files? Bug: iso-git's merge rejects
+ * with an OBJECT-shaped `data` ({filepaths:[...]}) that
+ * GitHandlers._extractConflictFiles does not recognize → the binary
+ * fallback no-ops (wrong bytes, clean remote files dropped). See
+ * .omo/notepads/conflict-strategy-modal/issues.md T5-1.
+ * @param {string} providerName
+ * @returns {Promise<boolean>} true when the capability works
+ */
+export async function binaryFallbackWorks(providerName) {
+  if (binaryFallbackProbeResults.has(providerName)) {
+    return binaryFallbackProbeResults.get(providerName);
+  }
+
+  const gitMod = gitModule.default || gitModule;
+  const base = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const local = Buffer.from([1, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 7, 8, 9]);
+  const remote = Buffer.from([1, 2, 0xaa, 0xbb, 0, 7, 8]);
+
+  const p = await createRepoPair({ branch: 'preview' });
+  try {
+    const handlers = makeFlowHandlers(p.local.dir, providerName);
+    p.local.writeFiles({ 'probe.bin': base });
+    await p.local.commit('base: probe.bin', 'probe.bin');
+    await p.local.push('preview');
+
+    await p.remote.fetch();
+    const originTip = await gitMod.resolveRef({ fs, dir: p.remote.dir, ref: 'origin/preview' });
+    await gitMod.branch({ fs, dir: p.remote.dir, ref: 'preview', object: originTip });
+    await gitMod.checkout({ fs, dir: p.remote.dir, ref: 'preview' });
+    p.remote.writeFiles({ 'probe.bin': remote, 'probe-note.md': 'clean remote\n' });
+    await p.remote.commit('remote: probe', ['probe.bin', 'probe-note.md']);
+    await p.remote.push('preview');
+    p.local.writeFiles({ 'probe.bin': local });
+
+    const pending = await handlers.gitPublishPreview(1, 'probe: binary');
+    if (pending.code !== 'CONFLICT_PENDING') {
+      binaryFallbackProbeResults.set(providerName, false);
+      return false;
+    }
+    const resumed = await handlers.gitResolveConflict(pending.resumeToken, 'MERGE_REMOTE');
+    const works =
+      resumed.success === true &&
+      Buffer.compare(await p.local.readBytes('probe.bin'), remote) === 0 &&
+      fs.existsSync(path.join(p.local.dir, 'probe-note.md'));
+    binaryFallbackProbeResults.set(providerName, works);
+    return works;
+  } catch (_e) {
+    binaryFallbackProbeResults.set(providerName, false);
+    return false;
+  } finally {
+    p.dispose();
   }
 }
 
