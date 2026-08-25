@@ -34,7 +34,7 @@ import path from 'path';
 import os from 'os';
 
 import { DugiteProvider } from '../../src/git/providers/DugiteProvider.js';
-import { theirsMergeDriver } from '../../src/ipc/gitMergeDriver.js';
+import { theirsMergeDriver, fullLocalMergeDriver, fullRemoteMergeDriver } from '../../src/ipc/gitMergeDriver.js';
 import { gitSetup, isGitError, GIT_AUTHOR } from './harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -183,5 +183,82 @@ describe('DugiteProvider merge ours/theirs direction (Task 3)', () => {
       ? 'merging'
       : 'clean';
     expect(status).toBe('clean');
+  });
+});
+
+describe('DugiteProvider mergeDriverFavor full-local/full-remote (conflict-strategy-modal Task 2)', () => {
+  let base;
+
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), 'dugite-full-driver-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  // Unit level: marker + name detection translate full-* intents to -X
+  // ours/theirs (NEVER -s ours — it discards the entire remote side).
+  it('maps full-local/full-remote markers and names to ours/theirs favors', () => {
+    expect(DugiteProvider.mergeDriverFavor(fullLocalMergeDriver)).toBe('ours');
+    expect(DugiteProvider.mergeDriverFavor(fullRemoteMergeDriver)).toBe('theirs');
+  });
+
+  it('full-local merge keeps the LOCAL conflicting hunk and the non-conflicting remote change', async () => {
+    const { dir, provider } = await conflictRepo(base);
+
+    await provider.merge(dir, 'remote-side', {
+      fastForward: false,
+      mergeDriver: fullLocalMergeDriver,
+    });
+
+    const merged = await headBlob(provider, dir);
+    // Conflicting hunk: LOCAL integral wins.
+    expect(merged).toContain('line5-LOCAL\n');
+    expect(merged).not.toContain('line5-REMOTE');
+    // Non-conflicting remote change (appended line): preserved — full
+    // does NOT behave like `-s ours` (whole-remote discard).
+    expect(merged).toContain('line101-remote\n');
+  });
+
+  it('full-remote merge keeps the REMOTE conflicting hunk and the non-conflicting local change', async () => {
+    // Local version gains its own non-conflicting append (line102-local)
+    // on top of the conflicting line5 edit; it must survive full-remote.
+    const dir = path.join(base, 'work-fr');
+    fs.mkdirSync(dir, { recursive: true });
+    await gitSetup(['init', '-b', 'main', '.'], dir);
+    const provider = new DugiteProvider();
+    await provider.setConfig(dir, 'user.name', GIT_AUTHOR.name);
+    await provider.setConfig(dir, 'user.email', GIT_AUTHOR.email);
+
+    fs.writeFileSync(path.join(dir, 'doc.txt'), baseFile());
+    await provider.add(dir, 'doc.txt');
+    await provider.commit(dir, 'base: common ancestor');
+
+    await provider.branch(dir, 'remote-side');
+    await provider.checkout(dir, 'remote-side');
+    fs.writeFileSync(path.join(dir, 'doc.txt'), baseFile().replace('line5\n', 'line5-REMOTE\n'));
+    await provider.add(dir, 'doc.txt');
+    await provider.commit(dir, 'remote: edit line5');
+
+    await provider.checkout(dir, 'main');
+    fs.writeFileSync(
+      path.join(dir, 'doc.txt'),
+      `${localVersion()}line102-local\n`
+    );
+    await provider.add(dir, 'doc.txt');
+    await provider.commit(dir, 'local: edit line5 + append line102');
+
+    await provider.merge(dir, 'remote-side', {
+      fastForward: false,
+      mergeDriver: fullRemoteMergeDriver,
+    });
+
+    const merged = await headBlob(provider, dir);
+    // Conflicting hunk: REMOTE integral wins.
+    expect(merged).toContain('line5-REMOTE\n');
+    expect(merged).not.toContain('line5-LOCAL');
+    // Non-conflicting local change: preserved.
+    expect(merged).toContain('line102-local\n');
   });
 });

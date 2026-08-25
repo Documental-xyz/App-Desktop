@@ -202,4 +202,112 @@ async function resolveBinaryOurs(gitService, dir, filepath, oursOid) {
   await gitService.add(dir, filepath);
 }
 
-module.exports = { theirsMergeDriver, resolveBinaryTheirs, oursMergeDriver, resolveBinaryOurs };
+/**
+ * mergeDriver callback FULL-LOCAL (decisão de produto 2026-08-25:
+ * "total local" do modal de estratégia de conflito).
+ *
+ * SEMÂNTICA EXATA (JSDoc obrigatório — leitura confirmada com o usuário):
+ *   "Full" = prioridade TOTAL do lado local, mas mudanças NÃO-conflitantes
+ *   do outro lado continuam entrando no merge. Só os HUNKS/ARQUIVOS
+ *   conflitantes é que viram integrais do lado vencedor.
+ *
+ *   Por isso o driver NÃO retorna contents[1] puro (substituição
+ *   arquivo-inteiro): isso descartaria hunks remotos não-conflitantes do
+ *   MESMO arquivo (ex.: linha 2 conflita, linha 6 editada só pelo remoto —
+ *   a linha 6 deve sobreviver). O particionamento de hunks é delegado ao
+ *   diff3 (mesma lib do engine) e APENAS os hunks conflitantes são
+ *   decididos: lado local integral.
+ *
+ *   Consequência honesta: para ARQUIVOS DE TEXTO o resultado é idêntico ao
+ *   oursMergeDriver (por-hunk) — a semântica "full" do usuário COINCIDE com
+ *   `-X ours` no nível de hunk. Os drivers seguem separados porque são
+ *   INTENÇÕES de produto distintas (markers `direction` diferentes para o
+ *   DugiteProvider) e podem divergir no futuro (ex.: binários, add/add).
+ *
+ * Contrato isomorphic-git (v1.38.4): idem oursMergeDriver —
+ *   contents[0]=base, contents[1]=ours, contents[2]=theirs;
+ *   retorno { cleanMerge, mergedText }.
+ *
+ * Casos cobertos (espelham oursMergeDriver):
+ *   - Texto em conflito: cleanMerge:true, hunk conflitante = local
+ *   - Modify/delete: mantida a versão local
+ *   - Add/add sem base: base tratada como vazia
+ *   - Sem contents[1]: cleanMerge:false
+ *   - Binário (U+FFFD): cleanMerge:false + mergedText obrigatório
+ *     → chamador usa resolveBinaryFullLocal como fallback
+ *
+ * @param {{branches: string[], contents: (string|undefined)[], path: string}} args
+ * @returns {{cleanMerge: boolean, mergedText?: string}}
+ */
+function fullLocalMergeDriver(args) {
+  return oursMergeDriver(args);
+}
+
+// Marker consultado pelo DugiteProvider.mergeDriverFavor: full-local é
+// traduzido para `git merge -X ours` (por-hunk; ver JSDoc acima). NÃO usar
+// `-s ours`: a strategy ours do git descarta o remoto INTEIRO (todos os
+// arquivos, incluindo não-conflitantes) — semântica proibida pelo usuário.
+fullLocalMergeDriver.direction = 'full-local';
+
+/**
+ * mergeDriver callback FULL-REMOTE — espelha fullLocalMergeDriver para o
+ * lado remoto (prioridade total remota nos hunks conflitantes; hunks
+ * locais não-conflitantes preservados).
+ *
+ * Semântica exata e equivalência com `-X theirs`: ver fullLocalMergeDriver.
+ * Não existe `-s theirs` nativo no git; NÃO usar `checkout --theirs` pós
+ * merge conflitado: substituiria arquivos inteiros e descartaria hunks
+ * locais não-conflitantes do mesmo arquivo — a camada JS (diff3) entrega
+ * exatamente a semântica pedida.
+ *
+ * @param {{branches: string[], contents: (string|undefined)[], path: string}} args
+ * @returns {{cleanMerge: boolean, mergedText?: string}}
+ */
+function fullRemoteMergeDriver(args) {
+  return theirsMergeDriver(args);
+}
+
+fullRemoteMergeDriver.direction = 'full-remote';
+
+/**
+ * Fallback binário FULL-LOCAL: mesmo comportamento de resolveBinaryOurs
+ * (blob local integral no working tree + index). Separado por paridade de
+ * nome com fullLocalMergeDriver; semântica idêntica — binário não tem
+ * hunk, "full" é a ÚNICA forma de decidir local vs remoto.
+ *
+ * @param {import('../git/GitService.js').GitService} gitService - GitService facade
+ * @param {string} dir - diretório do repositório (working tree root)
+ * @param {string} filepath - caminho do arquivo relativo ao repo
+ * @param {string} oursOid - SHA do commit/tree/blob local de onde extrair o blob
+ * @returns {Promise<void>}
+ * @throws {Error} se oursOid ou filepath não existirem, ou falha de I/O
+ */
+async function resolveBinaryFullLocal(gitService, dir, filepath, oursOid) {
+  return resolveBinaryOurs(gitService, dir, filepath, oursOid);
+}
+
+/**
+ * Fallback binário FULL-REMOTE: mesmo comportamento de resolveBinaryTheirs
+ * (blob remoto integral no working tree + index).
+ *
+ * @param {import('../git/GitService.js').GitService} gitService - GitService facade
+ * @param {string} dir - diretório do repositório (working tree root)
+ * @param {string} filepath - caminho do arquivo relativo ao repo
+ * @param {string} theirsOid - SHA do commit/tree/blob theirs de onde extrair o blob
+ * @returns {Promise<void>}
+ * @throws {Error} se theirsOid ou filepath não existirem, ou falha de I/O
+ */
+async function resolveBinaryFullRemote(gitService, dir, filepath, theirsOid) {
+  return resolveBinaryTheirs(gitService, dir, filepath, theirsOid);
+}
+
+module.exports = {
+  theirsMergeDriver,
+  resolveBinaryTheirs,
+  oursMergeDriver,
+  resolveBinaryOurs,
+  fullLocalMergeDriver,
+  resolveBinaryFullLocal,
+  fullRemoteMergeDriver,
+  resolveBinaryFullRemote,
+};

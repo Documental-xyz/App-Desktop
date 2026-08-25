@@ -582,7 +582,9 @@ class DugiteProvider {
    *     flag (`git merge -X ours` / `-X theirs`). Intent detection
    *     (contract with src/ipc/gitMergeDriver.js, git-sync-strategy
    *     Task 3):
-   *       1. `mergeDriver.direction === 'ours' | 'theirs'` marker, OR
+   *   *       1. `mergeDriver.direction === 'ours' | 'theirs' | 'full-local'
+   *          | 'full-remote'` marker (full-* translate to -X ours/theirs,
+   *          see mergeDriverFavor), OR
    *       2. the named exports `oursMergeDriver` / `theirsMergeDriver`,
    *          detected via the function's `name` (reference comparison
    *          would require importing the ipc layer from the provider
@@ -618,7 +620,17 @@ class DugiteProvider {
   /**
    * Resolve a JS mergeDriver callback's INTENT to a native `-X` favor.
    * Detection contract (see merge JSDoc): `direction` marker property
-   * first, then the canonical names oursMergeDriver/theirsMergeDriver.
+   * first, then the canonical names oursMergeDriver/theirsMergeDriver/
+   * fullLocalMergeDriver/fullRemoteMergeDriver.
+   *
+   * full-local/full-remote (conflict-strategy-modal Task 2) translate to
+   * `-X ours`/`-X theirs` — NOT to `-s ours`: the user's "full" semantics
+   * keep the other side's NON-conflicting changes (only conflicting
+   * hunks/files become integral to the winner), which is exactly the
+   * hunk-level `-X` behavior. `-s ours` would discard the ENTIRE remote
+   * side (all files, including non-conflicting ones) and git has no native
+   * `-s theirs`; both are documented as rejected in gitMergeDriver JSDoc.
+   *
    * Returns 'ours' | 'theirs' | null (null = no recognizable intent).
    * @param {Function} driver
    * @returns {'ours'|'theirs'|null}
@@ -627,9 +639,15 @@ class DugiteProvider {
     if (driver && (driver.direction === 'ours' || driver.direction === 'theirs')) {
       return driver.direction;
     }
+    if (driver && driver.direction === 'full-local') return 'ours';
+    if (driver && driver.direction === 'full-remote') return 'theirs';
     if (typeof driver?.name === 'string') {
-      if (driver.name === 'oursMergeDriver') return 'ours';
-      if (driver.name === 'theirsMergeDriver') return 'theirs';
+      if (driver.name === 'oursMergeDriver' || driver.name === 'fullLocalMergeDriver') {
+        return 'ours';
+      }
+      if (driver.name === 'theirsMergeDriver' || driver.name === 'fullRemoteMergeDriver') {
+        return 'theirs';
+      }
     }
     return null;
   }
