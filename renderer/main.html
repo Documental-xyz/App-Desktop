@@ -199,6 +199,17 @@ clearingCache: false,
           warnings: [],
           fastPath: false,
       },
+      // Conflict strategy decision modal (conflict-strategy-modal Task 4).
+      // Opened ONLY from finishGitExecModal when a sync flow returns the
+      // typed CONFLICT_PENDING result — never in any other situation.
+      conflictDecision: {
+          open: false,
+          flow: null,          // 'publish' | 'refresh' | 'publish-main'
+          files: [],           // conflicted paths ([] = unrelated histories)
+          resumeToken: null,   // single-use, 15min TTL
+          expiresAt: null,
+          resolving: false,
+      },
       // Inline precedence error surfaced inside the publish setup modal
       precedenceError: '',
       precedenceChecking: false,
@@ -232,7 +243,7 @@ clearingCache: false,
         return this.devServerUrl || sessionStorage.getItem('devServerUrl') || this.baseURL;
     },
     get isAnyOverlayOpen() {
-        return this.menuOpen || this.publishSetupModalOpen || this.gitExecution.modalOpen || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen;
+        return this.menuOpen || this.publishSetupModalOpen || this.gitExecution.modalOpen || this.conflictDecision.open || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -752,6 +763,13 @@ clearingCache: false,
         this.gitExecution.errorCode = null;
     },
     finishGitExecModal(result) {
+        // Typed CONFLICT_PENDING (conflict-strategy-modal Task 4): the flow
+        // paused for a user decision — swap the execution modal for the
+        // 4-strategy conflict modal instead of showing a failure banner.
+        if (result && result.code === 'CONFLICT_PENDING') {
+            this.openConflictModal(result);
+            return;
+        }
         this.gitExecution.inProgress = false;
         this.gitExecution.finished = true;
         this.gitExecution.currentStep = this.gitExecution.totalSteps;
@@ -790,6 +808,10 @@ clearingCache: false,
         if (result.code === 'PUSH_FORBIDDEN') return __t('main.git_exec_error_main_permission');
         if (result.code === 'PREVIEW_NOT_AHEAD') return __t('main.git_exec_error_preview_not_ahead');
         if (result.code === 'MAIN_MISSING') return __t('main.git_exec_error_main_missing');
+        // Conflict resume token problems (conflict-strategy-modal Task 4):
+        // friendly guidance to repeat the original operation — never a trap.
+        if (result.code === 'TOKEN_EXPIRED') return __t('main.git_exec_error_token_expired');
+        if (result.code === 'INVALID_TOKEN') return __t('main.git_exec_error_invalid_token');
         if (result.cancelled) return __t('common.canceling');
         const err = result.error || '';
         if (err.includes('401') || err.includes('403')) return __t('main.git_exec_error_auth');
@@ -865,6 +887,68 @@ clearingCache: false,
         if (!projectId) return;
         this.pendingRefreshProjectId = projectId;
         await this.executeRefresh(projectId);
+    },
+    // ---- Conflict strategy modal (conflict-strategy-modal Task 4) ----
+    // Contextual side labels: publish/refresh = your changes vs colleague's
+    // (remote); publish-main = main vs preview (MERGE_LOCAL keeps MAIN).
+    conflictSides() {
+        const mainFlow = this.conflictDecision.flow === 'publish-main';
+        return {
+            local: __t(mainFlow ? 'main.conflict_side_local_main' : 'main.conflict_side_local'),
+            remote: __t(mainFlow ? 'main.conflict_side_remote_main' : 'main.conflict_side_remote'),
+        };
+    },
+    conflictStrategyOptions() {
+        const s = this.conflictSides();
+        return [
+            { id: 'MERGE_LOCAL',   icon: 'merge_type', title: __t('main.conflict_opt_merge_local_title',  { local: s.local }),  desc: __t('main.conflict_opt_merge_local_desc',  { local: s.local }) },
+            { id: 'MERGE_REMOTE',  icon: 'merge_type', title: __t('main.conflict_opt_merge_remote_title', { remote: s.remote }), desc: __t('main.conflict_opt_merge_remote_desc', { remote: s.remote }) },
+            { id: 'FULL_LOCAL',    icon: 'task_alt',   title: __t('main.conflict_opt_full_local_title',  { local: s.local }),  desc: __t('main.conflict_opt_full_local_desc',  { local: s.local }) },
+            { id: 'FULL_REMOTE',   icon: 'task_alt',   title: __t('main.conflict_opt_full_remote_title', { remote: s.remote }), desc: __t('main.conflict_opt_full_remote_desc', { remote: s.remote }) },
+        ];
+    },
+    openConflictModal(result) {
+        this.gitExecution.modalOpen = false;
+        this.conflictDecision.open = true;
+        this.conflictDecision.flow = result.flow || null;
+        this.conflictDecision.files = Array.isArray(result.files) ? result.files : [];
+        this.conflictDecision.resumeToken = result.resumeToken || null;
+        this.conflictDecision.expiresAt = result.expiresAt || null;
+        this.conflictDecision.resolving = false;
+    },
+    // X / Cancel = clean abort: consume the token with CANCEL, close the
+    // modal, nothing changes (local version and backup are kept).
+    async cancelConflictModal() {
+        if (this.conflictDecision.resolving) return;
+        const token = this.conflictDecision.resumeToken;
+        this.conflictDecision.open = false;
+        this.conflictDecision.resumeToken = null;
+        if (!token) return;
+        try {
+            await window.electronAPI.resolveGitConflict(token, 'CANCEL');
+        } catch (e) {
+            // Abort is safe regardless: no lock is held while pending.
+            console.warn('Conflict CANCEL failed (ignored):', e.message);
+        }
+    },
+    // Choice → git:resolve-conflict → reuse the existing execution modal
+    // pipeline (progress steps, success/error banners, PUSH_REJECTED retry).
+    async resolveConflictWith(strategy) {
+        const token = this.conflictDecision.resumeToken;
+        if (!token || this.conflictDecision.resolving) return;
+        this.conflictDecision.resolving = true;
+        const opType = { publish: 'publish-preview', refresh: 'refresh', 'publish-main': 'publish-main' }[this.conflictDecision.flow] || 'publish-preview';
+        const steps = opType === 'refresh' ? 3 : (opType === 'publish-main' ? 4 : 5);
+        this.conflictDecision.open = false;
+        this.openGitExecModal(opType, steps);
+        try {
+            const result = await window.electronAPI.resolveGitConflict(token, strategy);
+            this.finishGitExecModal(result);
+        } catch (e) {
+            this.finishGitExecModal({ success: false, error: e.message });
+        } finally {
+            this.conflictDecision.resolving = false;
+        }
     },
     async executeRefresh(projectId) {
         this.openGitExecModal('refresh', 3);
@@ -2090,6 +2174,67 @@ clearingCache: false,
         <span class="material-symbols-outlined text-sm">refresh</span>
         <span x-text="$store.i18n.t('main.git_exec_retry_refresh_btn')"></span>
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- Conflict Strategy Decision Modal (shown ONLY on typed CONFLICT_PENDING) -->
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="conflictDecision.open">
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-accent-orange) 20%, transparent);">
+        <span class="material-symbols-outlined text-accent-orange">merge_problem</span>
+      </div>
+      <div>
+        <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.conflict_title')"></h3>
+        <p class="text-xs text-muted-dark" x-text="$store.i18n.t('main.conflict_desc')"></p>
+      </div>
+    </div>
+
+    <!-- Conflicted files list ([] = unrelated histories, shows a note instead) -->
+    <div class="mb-4">
+      <p class="text-xs font-medium text-muted-dark mb-1" x-text="$store.i18n.t('main.conflict_files_label')"></p>
+      <template x-if="conflictDecision.files.length > 0">
+        <ul class="max-h-28 overflow-y-auto bg-background-dark border border-border-default rounded-md p-2 space-y-1">
+          <template x-for="file in conflictDecision.files" :key="file">
+            <li class="flex items-center gap-2 text-xs text-text-dark font-mono">
+              <span class="material-symbols-outlined text-sm text-accent-orange">description</span>
+              <span class="truncate" x-text="file"></span>
+            </li>
+          </template>
+        </ul>
+      </template>
+      <template x-if="conflictDecision.files.length === 0">
+        <p class="text-xs text-text-dark bg-background-dark border border-border-default rounded-md p-2" x-text="$store.i18n.t('main.conflict_files_unrelated')"></p>
+      </template>
+    </div>
+
+    <!-- 4 strategy options -->
+    <div class="space-y-2 mb-4">
+      <template x-for="opt in conflictStrategyOptions()" :key="opt.id">
+        <button @click="resolveConflictWith(opt.id)" :disabled="conflictDecision.resolving"
+                :class="conflictDecision.resolving ? 'opacity-50 cursor-not-allowed' : 'hover:border-primary'"
+                class="w-full text-left p-3 bg-background-dark border border-border-default rounded-md flex items-start gap-3 transition-colors">
+          <span class="material-symbols-outlined text-primary text-lg flex-shrink-0" x-text="opt.icon"></span>
+          <span>
+            <span class="block text-sm font-medium text-text-dark" x-text="opt.title"></span>
+            <span class="block text-xs text-muted-dark mt-0.5" x-text="opt.desc"></span>
+          </span>
+        </button>
+      </template>
+    </div>
+
+    <!-- Fixed safety note -->
+    <div class="mb-5 p-3 rounded-md flex items-start gap-2" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);">
+      <span class="material-symbols-outlined text-lg flex-shrink-0 text-primary">history</span>
+      <p class="text-sm text-text-dark" x-text="$store.i18n.t('main.conflict_history_note')"></p>
+    </div>
+
+    <div class="flex justify-end gap-2">
+      <button @click="cancelConflictModal()" :disabled="conflictDecision.resolving"
+              :class="conflictDecision.resolving ? 'opacity-50 cursor-not-allowed' : ''"
+              class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium"
+              x-text="$store.i18n.t('common.cancel')"></button>
     </div>
   </div>
 </div>
