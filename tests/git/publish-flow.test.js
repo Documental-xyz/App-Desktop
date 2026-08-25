@@ -219,6 +219,93 @@ describe('_isPushRejected — ref-lock race variants (T11-D1)', () => {
   });
 });
 
+// ─── F3-D1 regression: publish recovers after guided refresh ────────────────
+//
+// Post-recovery topology (PUSH_REJECTED → Atualizar → re-publish):
+// origin/preview is an ANCESTOR of HEAD, but the depth:1 fetch +
+// iso-git's broken canFastForward (module has NO such export — the
+// provider call always threw) forced the merge path, where
+// findMergeBase returns NON-MINIMAL multiple bases and iso-git merge
+// dies with MergeNotSupportedError. Recovery must skip the merge
+// entirely (local strictly ahead) and push.
+
+describe('F3-D1 — re-publish after PUSH_REJECTED + guided refresh', () => {
+  let pair;
+  let handlers;
+
+  beforeEach(async () => {
+    pair = await createRepoPair({
+      branch: 'preview',
+      files: { 'a.md': A_MD_BASE, 'docs.txt': 'v0\n' },
+    });
+    handlers = makeHandlers(pair.local.dir);
+  });
+
+  afterEach(() => {
+    pair.dispose();
+  });
+
+  it('provider canFastForward resolves ancestry (isomorphic-git has no native export)', async () => {
+    await makeDivergent(pair, {
+      localFiles: { 'docs.txt': 'local\n' },
+      localMessage: 'local: ahead',
+    });
+    await pair.local.fetch();
+    // local HEAD is a strict descendant of origin/preview
+    await expect(
+      handlers.git.canFastForward(pair.local.dir, { ref: 'origin/preview', target: 'HEAD' })
+    ).resolves.toBe(true);
+    // reverse direction is false
+    await expect(
+      handlers.git.canFastForward(pair.local.dir, { ref: 'HEAD', target: 'origin/preview' })
+    ).resolves.toBe(false);
+  });
+
+  it('re-publish after recovery skips the merge (local ahead) and succeeds', async () => {
+    // 1. healthy publish establishes origin/preview
+    makeDirty(pair.local, { 'docs.txt': 'v1\n' });
+    let result = await handlers.gitPublishPreview(1, 'publish 1');
+    expect(result.success).toBe(true);
+
+    // 2. origin advances (the advertisement race the UI cannot absorb)
+    await makeDivergent(pair, {
+      remoteFiles: { 'c.md': 'remote race\n' },
+      remoteMessage: 'remote: race commit',
+    });
+
+    // 3. publish with the push rejected → typed PUSH_REJECTED
+    makeDirty(pair.local, { 'docs.txt': 'v2\n' });
+    const pushSpy = vi.spyOn(handlers.git, 'push').mockRejectedValueOnce(
+      Object.assign(new Error('! [remote rejected] preview (incorrect old value provided)'), {
+        code: 'PushRejectedError',
+      })
+    );
+    result = await handlers.gitPublishPreview(1, 'publish 2 (rejected)');
+    pushSpy.mockRestore();
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('PUSH_REJECTED');
+
+    // 4. guided recovery: Atualizar merges the remote race commit
+    result = await handlers.gitRefresh(1);
+    expect(result.success).toBe(true);
+
+    // 5. re-publish MUST succeed and MUST NOT enter the merge path —
+    //    origin/preview is now an ancestor of the local HEAD
+    makeDirty(pair.local, { 'docs.txt': 'v3\n' });
+    const mergeSpy = vi.spyOn(handlers.git, 'merge');
+    result = await handlers.gitPublishPreview(1, 'publish 3 (recovery)');
+    expect(result.success).toBe(true);
+    expect(mergeSpy).not.toHaveBeenCalled();
+
+    // origin has everything: race commit + all three publishes
+    const head = await pair.local.resolveRef('HEAD');
+    const origin = await pair.local.resolveRef('refs/remotes/origin/preview');
+    expect(head).toBe(origin);
+    expect((await pair.local.readFile('docs.txt')).trim()).toBe('v3');
+    expect(await pair.local.readFile('c.md')).toBe('remote race\n');
+  });
+});
+
 // ─── No-upstream compensation (backup path) ─────────────────────────────────
 
 describe('gitPushToBranch — no upstream treated as all-unpushed', () => {

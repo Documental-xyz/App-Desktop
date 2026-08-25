@@ -374,16 +374,37 @@ class IsomorphicGitProvider {
 
   /**
    * Check whether a ref can be fast-forwarded onto a target without a
-   * merge commit (isomorphic-git helper; forwarded when the underlying
-   * module provides it). Extra options flow through untouched.
+   * merge commit, i.e. whether `ref` is an ANCESTOR of `target`.
+   *
+   * F3-D1: isomorphic-git exports NO `canFastForward` — forwarding the
+   * call verbatim always threw ("git.canFastForward is not a function"),
+   * so every caller fell back to the merge path (the post-recovery
+   * multi-merge-base breakage). The real ancestry API is `isDescendent`.
    *
    * @param {string} path - Local repository directory
    * @param {{ ref?: string, target?: string } & Record<string, unknown>} [opts]
    * @returns {Promise<boolean>}
    */
   async canFastForward(path, opts = {}) {
-    const { ...rest } = opts;
-    return wrap(this, 'canFastForward', (git) => git.canFastForward({ fs, dir: path, ...rest }));
+    const { ref, target, ...rest } = opts;
+    return wrap(this, 'canFastForward', async (git) => {
+      const ancestorOid = await git.resolveRef({ fs, dir: path, ref });
+      const descendantOid = await git.resolveRef({
+        fs,
+        dir: path,
+        ref: target === undefined ? 'HEAD' : target,
+      });
+      if (ancestorOid === descendantOid) {
+        return true;
+      }
+      return git.isDescendent({
+        fs,
+        dir: path,
+        oid: descendantOid,
+        ancestor: ancestorOid,
+        ...rest,
+      });
+    });
   }
 
   // ─── Local operations + reads (T10) ─────────────────────────────────────────

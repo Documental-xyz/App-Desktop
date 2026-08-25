@@ -138,6 +138,13 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockResolvedValue({});
       git.pull.mockResolvedValue({});
+      // F3-D1: canFastForward is REAL now — distinct SHAs + false ancestry
+      // route to git.pull (undefined resolveRef mocks would shortcut to
+      // fastForward and never call pull).
+      git.resolveRef.mockImplementation(async ({ ref }) =>
+        ref === 'HEAD' || ref === 'main' ? 'local-sha' : 'origin-sha'
+      );
+      git.isDescendent.mockResolvedValue(false);
       git.listRemotes.mockResolvedValue([
         { remote: 'origin', url: 'https://github.com/user/repo.git' },
       ]);

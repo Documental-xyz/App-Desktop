@@ -311,6 +311,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
       // Divergence fixture: local HEAD ≠ origin/preview (merge path).
+      // isDescendent=false keeps the merge path (F3-D1 made canFastForward
+      // REAL — ancestry now answers instead of always throwing).
+      git.isDescendent.mockResolvedValue(false);
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'refs/remotes/origin/preview' || ref === 'origin/preview') {
           return 'origin-sha-1';
@@ -763,6 +766,9 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([]);
       git.fetch.mockResolvedValue({});
+      // F3-D1: canFastForward is real now — false ancestry forces the merge
+      // path this test exercises.
+      git.isDescendent.mockResolvedValue(false);
       git.resolveRef.mockImplementation(async ({ ref }) => {
         if (ref === 'HEAD') return 'local-head-sha';
         if (ref === 'refs/remotes/origin/preview') return 'remote-preview-sha';

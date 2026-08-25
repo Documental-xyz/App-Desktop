@@ -1221,58 +1221,90 @@ class GitHandlers {
           // best-effort: the merge below surfaces the real error if any
         }
 
-        // Direction contract (anti-inversion):
-        //  - working-branch publish: ours = LOCAL commits → oursMergeDriver
-        //  - cross-branch publish:   ours = target(remote state), theirs =
-        //    the local commits → theirsMergeDriver keeps LOCAL winning
-        this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
-        const theirRef = onWorkingBranch ? `origin/${targetBranch}` : originalBranch;
+        // F3-D1: re-check ancestry now that history is complete. Post-recovery
+        // topologies (PUSH_REJECTED → guided refresh merge) make origin/target
+        // an ANCESTOR of HEAD, but the ancestry walk can fail on the shallow
+        // depth:1 tip (isDescendent needs full history), reporting
+        // localAhead=false above. Merging anyway hits iso-git's NON-MINIMAL
+        // findMergeBase (multiple bases incl. the already-merged remote tip)
+        // → MergeNotSupportedError. Skipping the merge is the correct outcome:
+        // the local branch is strictly ahead, the push alone syncs the remote.
+        let stillLocalAhead = false;
         try {
-          await this._raceTimeout(
-            this.git.merge(projectPath, theirRef, {
-              ours: targetBranch,
-              fastForward: false,
-              ...(onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {}),
-              ...(!onWorkingBranch && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-              message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
-              author,
-            }),
-            this.STEP_TIMEOUT_MERGE_MS,
-            `merge publish ${targetBranch}`,
-          );
-        } catch (mergeErr) {
-          const conflictFiles = this._extractConflictFiles(mergeErr);
-          if (!conflictFiles) {
-            throw mergeErr;
-          }
-          this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
-          for (const filepath of conflictFiles) {
-            try {
-              if (onWorkingBranch) {
-                await resolveBinaryOurs(this.git, projectPath, filepath, headBeforeMerge);
-              } else {
-                await resolveBinaryTheirs(this.git, projectPath, filepath, headBeforeMerge);
+          stillLocalAhead = await this.git.canFastForward(projectPath, {
+            ref: `origin/${targetBranch}`, target: 'HEAD',
+          });
+        } catch (_ffErr) { stillLocalAhead = false; }
+
+        let merged = stillLocalAhead;
+        if (!merged) {
+          // Direction contract (anti-inversion):
+          //  - working-branch publish: ours = LOCAL commits → oursMergeDriver
+          //  - cross-branch publish:   ours = target(remote state), theirs =
+          //    the local commits → theirsMergeDriver keeps LOCAL winning
+          this.sendOutput('🔀 Mesclando alterações (suas alterações vencem conflitos)...');
+          const theirRef = onWorkingBranch ? `origin/${targetBranch}` : originalBranch;
+          try {
+            await this._raceTimeout(
+              this.git.merge(projectPath, theirRef, {
+                ours: targetBranch,
+                fastForward: false,
+                ...(onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {}),
+                ...(!onWorkingBranch && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
+                message: `Merge publish (${targetBranch}) — ${new Date().toISOString()}`,
+                author,
+              }),
+              this.STEP_TIMEOUT_MERGE_MS,
+              `merge publish ${targetBranch}`,
+            );
+          } catch (mergeErr) {
+            // F3-D1 defense: multi merge-base → MergeNotSupportedError. When
+            // the remote tip is already merged into HEAD (non-minimal base
+            // list includes it), the merge is a semantic no-op — push only.
+            if (this._isMergeNotSupported(mergeErr)) {
+              try {
+                merged = await this.git.canFastForward(projectPath, {
+                  ref: `origin/${targetBranch}`, target: 'HEAD',
+                });
+              } catch (_ffErr) { merged = false; }
+            }
+            if (!merged) {
+              const conflictFiles = this._extractConflictFiles(mergeErr);
+              if (!conflictFiles) {
+                throw mergeErr;
               }
-            } catch (resolveErr) {
-              this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+              this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
+              for (const filepath of conflictFiles) {
+                try {
+                  if (onWorkingBranch) {
+                    await resolveBinaryOurs(this.git, projectPath, filepath, headBeforeMerge);
+                  } else {
+                    await resolveBinaryTheirs(this.git, projectPath, filepath, headBeforeMerge);
+                  }
+                } catch (resolveErr) {
+                  this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
+                }
+              }
+              const otherParent = onWorkingBranch ? originOid : originalBranch;
+              await this.git.commit(
+                projectPath,
+                `Merge publish (binary resolved) — ${new Date().toISOString()}`,
+                { author, parent: [targetBranch, otherParent] },
+              );
             }
           }
-          const otherParent = onWorkingBranch ? originOid : originalBranch;
-          await this.git.commit(
-            projectPath,
-            `Merge publish (binary resolved) — ${new Date().toISOString()}`,
-            { author, parent: [targetBranch, otherParent] },
-          );
         }
 
-        // isomorphic-git merge does NOT touch the working tree — materialize
-        // HEAD. Safe: the caller wraps this core in withMandatoryBackup.
-        await this._raceTimeout(
-          this.git.checkout(projectPath, targetBranch, { force: true }),
-          this.STEP_TIMEOUT_CHECKOUT_MS,
-          `materialize ${targetBranch}`,
-        );
-        this._gitCache = {};
+        if (!merged) {
+          // isomorphic-git merge does NOT touch the working tree — materialize
+          // HEAD. Safe: the caller wraps this core in withMandatoryBackup.
+          await this._raceTimeout(
+            this.git.checkout(projectPath, targetBranch, { force: true }),
+            this.STEP_TIMEOUT_CHECKOUT_MS,
+            `materialize ${targetBranch}`,
+          );
+          this._gitCache = {};
+        }
       } else {
         this.sendOutput('⚡ Modo rápido');
       }
@@ -1349,6 +1381,13 @@ class GitHandlers {
       msg.includes('[remote rejected]') ||
       msg.includes('remote rejected') ||
       /\b409\b/.test(msg);
+  }
+
+  _isMergeNotSupported(err) {
+    const code = err && (err.code || (err.cause && err.cause.code));
+    return code === 'MergeNotSupportedError' ||
+      /Merges with conflicts are not supported yet/.test((err && err.message) || '') ||
+      /Merges with conflicts are not supported yet/.test((err && err.cause && err.cause.message) || '');
   }
 
   /**
