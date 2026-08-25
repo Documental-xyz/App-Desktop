@@ -83,7 +83,8 @@ oursMergeDriver.direction = 'ours';
 
 /**
  * mergeDriver callback equivalente a `git merge -X theirs`.
- * Retorna contents[2] (theirs) sempre que houver conteúdo textual.
+ * Espelha oursMergeDriver: particionamento de hunks via diff3, decidindo
+ * APENAS os hunks conflitantes pelo lado theirs.
  *
  * Contrato isomorphic-git (v1.38.4):
  *   callback recebe { branches: string[], contents: string[], path: string }
@@ -91,18 +92,21 @@ oursMergeDriver.direction = 'ours';
  *   contents[0] = base, contents[1] = ours, contents[2] = theirs
  *   retorno: { cleanMerge: boolean, mergedText: string }
  *
- * Casos cobertos:
- *   - Texto em conflito: cleanMerge:true, mergedText = contents[2] (theirs vence)
- *   - Modify/delete (theirs = ''): mergedText = '' (deleção efetiva)
- *   - Add/add sem base (contents[0] undefined): funciona normalmente com contents[2]
- *   - Binário ou sem ancestor theirs (contents[2] undefined/null): cleanMerge:false
- *     → chamador deve capturar MergeConflictError e usar resolveBinaryTheirs como fallback
+ * Semântica (hunk-level — igual ao oursMergeDriver e ao `-X theirs`
+ * nativo do dugite; NÃO é substituição arquivo-inteiro):
+ *   - Retornar contents[2] puro descartaria hunks OURS não-conflitantes
+ *     do mesmo arquivo. Em vez disso, o diff3 particiona os hunks e só
+ *     os CONFLITANTES são resolvidos pelo theirs (contents[2]).
  *
- * Observação sobre arquivos binários:
- *   O mergeDriver do isomorphic-git só é invocado para arquivos textuais (o merge
- *   engine decodifica UTF-8 antes de chamar o driver). Arquivos binários em conflito
- *   fazem o merge geral falhar com MergeConflictError ANTES do driver ser chamado,
- *   por isso o fallback resolveBinaryTheirs é necessário no chamador.
+ * Casos cobertos:
+ *   - Texto em conflito: cleanMerge:true, hunk conflitante = theirs
+ *   - Modify/delete (theirs = ''): mergedText = '' (deleção efetiva)
+ *   - Add/add sem base (contents[0] undefined): base tratada como vazia
+ *   - Sem conteúdo theirs (contents[2] undefined/null): cleanMerge:false
+ *   - Binário (decode UTF-8 lossy, detectado via U+FFFD): cleanMerge:false
+ *     com mergedText obrigatório (mergeBlobs faz Buffer.from incondicional)
+ *     → chamador deve capturar MergeConflictError e usar resolveBinaryTheirs
+ *       como fallback
  *
  * @param {{branches: string[], contents: (string|undefined)[], path: string}} args
  * @returns {{cleanMerge: boolean, mergedText?: string}}
@@ -111,7 +115,27 @@ function theirsMergeDriver({ branches, contents, path }) {
   if (contents[2] === undefined || contents[2] === null) {
     return { cleanMerge: false };
   }
-  return { cleanMerge: true, mergedText: contents[2] };
+  // Heurística de binário — mesma do oursMergeDriver (ver lá).
+  if (
+    contents[2].includes('\uFFFD') ||
+    (contents[1] && contents[1].includes('\uFFFD')) ||
+    (contents[0] && contents[0].includes('\uFFFD'))
+  ) {
+    return { cleanMerge: false, mergedText: contents[2] };
+  }
+  const ours = (contents[1] || '').match(LINEBREAKS) || [''];
+  const base = (contents[0] || '').match(LINEBREAKS) || [''];
+  const theirs = contents[2].match(LINEBREAKS) || [''];
+
+  let mergedText = '';
+  for (const item of diff3Merge(ours, base, theirs)) {
+    if (item.ok) {
+      mergedText += item.ok.join('');
+    } else if (item.conflict) {
+      mergedText += item.conflict.b.join('');
+    }
+  }
+  return { cleanMerge: true, mergedText };
 }
 
 /**
