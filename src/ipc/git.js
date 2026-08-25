@@ -1317,6 +1317,10 @@ class GitHandlers {
               this.git.merge(projectPath, theirRef, {
                 ours: targetBranch,
                 fastForward: false,
+                // T5-1: stage clean merges + conflict stages in the index
+                // BEFORE iso-git throws, so the binary fallback commit
+                // keeps the remote's clean files (dugite ignores this key).
+                abortOnConflict: false,
                 ...(strat
                   ? { mergeDriver: strat.driver }
                   : (onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
@@ -1448,9 +1452,20 @@ class GitHandlers {
     if (!isConflict) {
       return null;
     }
-    return Array.isArray(err.data)
-      ? err.data
-      : (err.cause && Array.isArray(err.cause.data) ? err.cause.data : []);
+    // iso-git delivers data either as string[] or as an OBJECT
+    // {filepaths: [...], bothModified, deleteByUs, deleteByTheirs}
+    // (T5-1) — both carry the conflicted paths.
+    const filepathsOf = (data) => {
+      if (Array.isArray(data)) {
+        return data;
+      }
+      if (data && typeof data === 'object' && Array.isArray(data.filepaths)) {
+        return data.filepaths;
+      }
+      return null;
+    };
+    return filepathsOf(err.data) ??
+      (err.cause ? filepathsOf(err.cause.data) : null) ?? [];
   }
 
   _isPushRejected(err) {
@@ -2056,6 +2071,10 @@ class GitHandlers {
         this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
           ours: BRANCH_PREVIEW,
           fastForward: false,
+          // T5-1: stage clean merges + conflict stages in the index BEFORE
+          // iso-git throws, so the binary fallback commit keeps the
+          // remote's clean files (dugite ignores this key).
+          abortOnConflict: false,
           ...(strat
             ? { mergeDriver: strat.driver }
             : (oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
@@ -2511,6 +2530,10 @@ class GitHandlers {
         this.git.merge(projectPath, `origin/${BRANCH_PREVIEW}`, {
           ours: BRANCH_MAIN,
           fastForward: false,
+          // T5-1: stage clean merges + conflict stages in the index BEFORE
+          // iso-git throws, so the binary fallback commit keeps the
+          // remote's clean files (dugite ignores this key).
+          abortOnConflict: false,
           ...(strat
             ? { mergeDriver: strat.driver }
             : (theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {})),
