@@ -93,3 +93,43 @@ describe('verify-bundled-git findGitBinary', () => {
     expect(makeVerifier().findGitBinary(artifact)).toBeNull();
   });
 });
+
+describe('verify-bundled-git findArtifacts', () => {
+  it('accepts dist/mac with a .app bundle as an artifact and finds the binary', () => {
+    const dist = path.resolve('/dist');
+    const mac = path.join(dist, 'mac');
+    const resources = path.join(mac, 'Documental.app', 'Contents', 'Resources');
+    const binary = path.join(resources, 'app.asar.unpacked', 'node_modules', 'dugite', 'git', 'bin', 'git');
+    stubFs({
+      existsPaths: [dist, mac, resources, binary],
+      dirs: {
+        [dist]: [dir('mac')],
+        [mac]: [dir('Documental.app')]
+      }
+    });
+    const verifier = makeVerifier();
+    verifier.distBasePath = dist;
+
+    const artifacts = verifier.findArtifacts();
+    expect(artifacts).toEqual([mac]);
+    expect(verifier.findGitBinary(artifacts[0])).toBe(binary);
+  });
+
+  it('sorts artifacts deterministically and never lists .app bundles or unrelated dirs', () => {
+    const dist = path.resolve('/dist');
+    const mac = path.join(dist, 'mac');
+    const winUnpacked = path.join(dist, 'win-unpacked');
+    stubFs({
+      existsPaths: [dist],
+      dirs: {
+        [dist]: [dir('win-unpacked'), dir('foo'), dir('mac')],
+        [mac]: [dir('Documental.app')],
+        [path.join(dist, 'foo')]: []
+      }
+    });
+    const verifier = makeVerifier();
+    verifier.distBasePath = dist;
+
+    expect(verifier.findArtifacts()).toEqual([mac, winUnpacked]);
+  });
+});

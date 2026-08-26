@@ -38,15 +38,40 @@ class BundledGitVerifier {
     return match[1];
   }
 
-  // Locate *-unpacked artifacts (linux-unpacked, win-unpacked, mac-unpacked, linux-arm64-unpacked...)
+  // Locate build artifacts under dist:
+  // - *-unpacked dirs (linux-unpacked, win-unpacked, mac-unpacked, ...)
+  // - mac .app container dirs (mac, mac_universal, mas) that directly hold
+  //   at least one *.app bundle. The bundles themselves are not artifacts;
+  //   findResourceDirs descends into them. Order is deterministic (sorted).
   findArtifacts() {
     if (!fs.existsSync(this.distBasePath)) {
       return null;
     }
-    return fs
+    const dirents = fs
       .readdirSync(this.distBasePath, { withFileTypes: true })
-      .filter(dirent => dirent.isDirectory() && /-unpacked$/.test(dirent.name))
-      .map(dirent => path.join(this.distBasePath, dirent.name));
+      .filter(dirent => dirent.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const artifacts = [];
+    for (const dirent of dirents) {
+      const artifactPath = path.join(this.distBasePath, dirent.name);
+      if (/-unpacked$/.test(dirent.name)) {
+        artifacts.push(artifactPath);
+      } else if (this.containsAppBundle(artifactPath)) {
+        artifacts.push(artifactPath);
+      }
+    }
+    return artifacts;
+  }
+
+  containsAppBundle(dirPath) {
+    try {
+      return fs
+        .readdirSync(dirPath, { withFileTypes: true })
+        .some(dirent => dirent.isDirectory() && dirent.name.endsWith('.app'));
+    } catch {
+      return false;
+    }
   }
 
   // Collect candidate Resources directories for an artifact, supporting both
@@ -113,7 +138,9 @@ class BundledGitVerifier {
 
     const artifacts = this.findArtifacts();
     if (!artifacts || artifacts.length === 0) {
-      console.error(`❌ No unpacked artifact found under ${this.distBasePath}. Run build first.`);
+      console.error(
+        `❌ No artifact found under ${this.distBasePath}: expected a *-unpacked directory or a mac *.app container (e.g. dist/mac/<App>.app). Run build first.`
+      );
       return false;
     }
 
