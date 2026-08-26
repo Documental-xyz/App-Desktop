@@ -260,12 +260,51 @@ export function makeDirty(repo, files) {
  * colleague repo AND pushed to origin. Neither side fetches — callers
  * (or the flow under test) decide when to fetch/merge.
  *
+ * `syncRemote: true` first advances the COLLEAGUE to origin's current
+ * tip (fetch + branch materialization — the proven makeConflict
+ * pattern). Without it, the colleague stays at its clone-time base, so
+ * any test that PUBLISHES before diverging builds a non-FF push that
+ * iso-git's client-side check rejects (flaky F3-D1 setup).
+ *
  * @param {Awaited<ReturnType<typeof createRepoPair>>} pair
  * @param {{localFiles?: Object<string,string|Buffer>, remoteFiles?: Object<string,string|Buffer>,
- *          localMessage?: string, remoteMessage?: string}} [opts]
+ *          localMessage?: string, remoteMessage?: string, syncRemote?: boolean}} [opts]
  * @returns {Promise<{localHead: string, originHead: string}>}
  */
 export async function makeDivergent(pair, opts = {}) {
+  if (opts.syncRemote) {
+    await pair.remote.fetch();
+    const originTip = await git.resolveRef({
+      fs,
+      dir: pair.remote.dir,
+      ref: `origin/${pair.branch}`,
+    });
+    const colleagueHead = await git.resolveRef({
+      fs,
+      dir: pair.remote.dir,
+      ref: pair.branch,
+    });
+    if (originTip !== colleagueHead) {
+      // Unborn-or-stale colleague branch: (re)materialize at origin tip.
+      // NB: `checkout(ref: 'origin/<branch>')` on an unborn repo DETACHES
+      // HEAD — same caveat as makeConflict; branch FIRST, then checkout.
+      try {
+        await git.branch({
+          fs,
+          dir: pair.remote.dir,
+          ref: pair.branch,
+          object: originTip,
+          force: true,
+        });
+      } catch (_e) { /* branch exists and is checked out — reset below */ }
+      await git.checkout({
+        fs,
+        dir: pair.remote.dir,
+        ref: pair.branch,
+        force: true,
+      });
+    }
+  }
   if (opts.localFiles && Object.keys(opts.localFiles).length) {
     pair.local.writeFiles(opts.localFiles);
     await pair.local.commit(

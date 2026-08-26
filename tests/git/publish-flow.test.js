@@ -291,19 +291,29 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
   });
 
   it('re-publish after recovery skips the merge (local ahead) and succeeds', async () => {
+    // T17-proof dirty contents: every docs.txt rewrite has a DIFFERENT
+    // LENGTH. Same-length rewrites ('v0'→'v1'→'v2'→'v3', 3 bytes) hit
+    // iso-git's same-second stat-cache: statusMatrix reports the file
+    // clean when the write lands in the same mtime second as the last
+    // staged stat, so publish 1 nondeterministically no-opped (no commit,
+    // origin stuck at base) — the flake this suite used to have.
     // 1. healthy publish establishes origin/preview
-    makeDirty(pair.local, { 'docs.txt': 'v1\n' });
+    makeDirty(pair.local, { 'docs.txt': 'v1 - first publish\n' });
     let result = await handlers.gitPublishPreview(1, 'publish 1');
     expect(result.success).toBe(true);
 
-    // 2. origin advances (the advertisement race the UI cannot absorb)
+    // 2. origin advances (the advertisement race the UI cannot absorb).
+    //    syncRemote: the colleague must advance ON TOP of origin's CURRENT
+    //    tip (publish 1 moved it) — pushing a base-rooted commit would be
+    //    a non-FF push iso-git rejects client-side.
     await makeDivergent(pair, {
       remoteFiles: { 'c.md': 'remote race\n' },
       remoteMessage: 'remote: race commit',
+      syncRemote: true,
     });
 
     // 3. publish with the push rejected → typed PUSH_REJECTED
-    makeDirty(pair.local, { 'docs.txt': 'v2\n' });
+    makeDirty(pair.local, { 'docs.txt': 'v2 - second publish (rejected)\n' });
     const pushSpy = vi.spyOn(handlers.git, 'push').mockRejectedValueOnce(
       Object.assign(new Error('! [remote rejected] preview (incorrect old value provided)'), {
         code: 'PushRejectedError',
@@ -320,7 +330,7 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
 
     // 5. re-publish MUST succeed and MUST NOT enter the merge path —
     //    origin/preview is now an ancestor of the local HEAD
-    makeDirty(pair.local, { 'docs.txt': 'v3\n' });
+    makeDirty(pair.local, { 'docs.txt': 'v3 - third publish (recovery)\n' });
     const mergeSpy = vi.spyOn(handlers.git, 'merge');
     result = await handlers.gitPublishPreview(1, 'publish 3 (recovery)');
     expect(result.success).toBe(true);
@@ -330,7 +340,7 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
     const head = await pair.local.resolveRef('HEAD');
     const origin = await pair.local.resolveRef('refs/remotes/origin/preview');
     expect(head).toBe(origin);
-    expect((await pair.local.readFile('docs.txt')).trim()).toBe('v3');
+    expect((await pair.local.readFile('docs.txt')).trim()).toBe('v3 - third publish (recovery)');
     expect(await pair.local.readFile('c.md')).toBe('remote race\n');
   });
 });
