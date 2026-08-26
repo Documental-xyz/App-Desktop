@@ -9,6 +9,11 @@ extraMetadata:
 files:
   - "main.js"
   - "preload.js"
+  # Hardening vs minimatch#284 / electron-builder#9621: globstar patterns like
+  # `renderer/**/*` silently drop the whole dir from app.asar under the broken
+  # minimatch 10.2.3; literal file patterns survive it. Keep when adding pages.
+  - "renderer/*.html"
+  - "renderer/*.js"
   - "renderer/**/*"
   - "src/**/*"
   - "themes/**/*"
