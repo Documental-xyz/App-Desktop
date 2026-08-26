@@ -49,23 +49,47 @@ class BundledGitVerifier {
       .map(dirent => path.join(this.distBasePath, dirent.name));
   }
 
-  // Resolve the git binary inside the artifact, supporting both layouts:
+  // Collect candidate Resources directories for an artifact, supporting both
+  // the flat Linux/Windows layout (<artifact>/resources) and the macOS
+  // .app bundle layout (<artifact>/<AppName>.app/Contents/Resources).
+  // Multiple .app bundles (e.g. universal + x64) are all returned.
+  findResourceDirs(artifactPath) {
+    const dirs = [];
+    const flatResources = path.join(artifactPath, 'resources');
+    if (fs.existsSync(flatResources)) {
+      dirs.push(flatResources);
+    }
+    if (fs.existsSync(artifactPath)) {
+      const appResources = fs
+        .readdirSync(artifactPath, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory() && dirent.name.endsWith('.app'))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(dirent => path.join(artifactPath, dirent.name, 'Contents', 'Resources'))
+        .filter(resourcesPath => fs.existsSync(resourcesPath));
+      dirs.push(...appResources);
+    }
+    return dirs;
+  }
+
+  // Resolve the git binary inside the artifact, supporting all layouts:
   // - resources/app.asar.unpacked/node_modules/dugite/git/
   // - resources/git/
+  // - <App>.app/Contents/resources/app.asar.unpacked/node_modules/dugite/git/
+  // - <App>.app/Contents/resources/git/
   findGitBinary(artifactPath) {
-    const resourcesPath = path.join(artifactPath, 'resources');
-    const gitRoots = [
-      path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'dugite', 'git'),
-      path.join(resourcesPath, 'git')
-    ];
-
     const candidates = process.platform === 'win32' ? ['cmd/git.exe', 'bin/git.exe'] : ['bin/git'];
 
-    for (const root of gitRoots) {
-      for (const rel of candidates) {
-        const binaryPath = path.join(root, ...rel.split('/'));
-        if (fs.existsSync(binaryPath)) {
-          return binaryPath;
+    for (const resourcesPath of this.findResourceDirs(artifactPath)) {
+      const gitRoots = [
+        path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', 'dugite', 'git'),
+        path.join(resourcesPath, 'git')
+      ];
+      for (const root of gitRoots) {
+        for (const rel of candidates) {
+          const binaryPath = path.join(root, ...rel.split('/'));
+          if (fs.existsSync(binaryPath)) {
+            return binaryPath;
+          }
         }
       }
     }
@@ -104,7 +128,7 @@ class BundledGitVerifier {
       const binaryPath = this.findGitBinary(artifact);
 
       if (!binaryPath) {
-        console.error(`   ❌ Bundled git binary not found (checked app.asar.unpacked and resources/git layouts)`);
+        console.error(`   ❌ Bundled git binary not found (checked resources/app.asar.unpacked, resources/git and <App>.app/Contents/resources layouts)`);
         overallSuccess = false;
         continue;
       }
@@ -150,5 +174,9 @@ function parseArgs() {
   return dist;
 }
 
-const verifier = new BundledGitVerifier(parseArgs());
-verifier.verify().then(success => process.exit(success ? 0 : 1));
+module.exports = { BundledGitVerifier, parseArgs };
+
+if (require.main === module) {
+  const verifier = new BundledGitVerifier(parseArgs());
+  verifier.verify().then(success => process.exit(success ? 0 : 1));
+}
