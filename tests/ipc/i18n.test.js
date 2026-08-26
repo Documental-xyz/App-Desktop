@@ -5,8 +5,12 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { fileURLToPath } from 'url';
 
-const FIXTURES_PATH = new URL('../fixtures/locales', import.meta.url).pathname;
+// fileURLToPath (NOT url.pathname): on Windows `.pathname` yields
+// "/D:/a/..." which no fs call ever resolves, and URL-escaped segments
+// (spaces, %20) stay encoded — readYamlTranslations would see null.
+const FIXTURES_PATH = fileURLToPath(new URL('../fixtures/locales', import.meta.url));
 
 function createMockDb(initialLocale = null) {
   let storedLocale = initialLocale;

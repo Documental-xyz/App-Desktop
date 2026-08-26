@@ -6,6 +6,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+vi.unmock('path');
+import path from 'path';
+
 // Mock electron at the top level
 const mockIpcMain = {
   handle: vi.fn(),
@@ -160,8 +163,11 @@ describe('GitHandlers Unit Tests', () => {
 
     it('should handle getting project path', async () => {
       const result = await gitHandlers.getProjectPath(1);
-      
-      expect(result).toBe('/base/path/repo-name');
+
+      // getProjectPath joins with the NATIVE path module (src uses
+      // require('path') — see the vi.mock note at the top of this file),
+      // so the expectation must be built with it, not a POSIX literal.
+      expect(result).toBe(path.join('/base/path', 'repo-name'));
     });
 
     it('should validate git list branches method exists and is callable', async () => {
