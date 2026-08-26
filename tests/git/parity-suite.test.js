@@ -44,6 +44,7 @@ import {
   makeDivergent,
   makeDirty,
 } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import {
   makeFlowHandlers,
   gateOnCapability,
@@ -82,7 +83,12 @@ function branchNames(handlers, dir) {
 
 // ─── Parameterized parity scenarios ──────────────────────────────────────────
 
-describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
+describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [%s]', (providerName) => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
   let divergentGateOpen;
@@ -402,7 +408,12 @@ describe.each(providersUnderTest())('flow parity [%s]', (providerName) => {
 // ─── Parity regressions (formerly `it.fails` tripwires for T10-D1/D2;
 // the bugs were fixed — these now pin the CORRECT behavior) ──────────────────
 
-describe('parity regressions [dugite]', () => {
+describe.skipIf(!httpBackendAvailable)('parity regressions [dugite]', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('T10-D1 (fixed): fetch() without depth deepens a depth:1 repo (merge-base appears)', async () => {
     expect(await dugiteDeepenFetchWorks('dugite')).toBe(true);
   });

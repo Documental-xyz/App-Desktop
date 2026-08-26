@@ -24,6 +24,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
 import { providerFactory } from '../git-providers/harness.js';
@@ -76,7 +77,12 @@ function backupNames(handlers, dir) {
 
 // ─── 1. Detection → CONFLICT_PENDING (no merge mutation) ─────────────────────
 
-describe('publish — real conflict returns CONFLICT_PENDING without merging', () => {
+describe.skipIf(!httpBackendAvailable)('publish — real conflict returns CONFLICT_PENDING without merging', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
   let headBefore;
@@ -122,7 +128,12 @@ describe('publish — real conflict returns CONFLICT_PENDING without merging', (
   });
 });
 
-describe('refresh — real conflict returns CONFLICT_PENDING', () => {
+describe.skipIf(!httpBackendAvailable)('refresh — real conflict returns CONFLICT_PENDING', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -148,7 +159,12 @@ describe('refresh — real conflict returns CONFLICT_PENDING', () => {
 
 // ─── 2. Resume with each of the 4 strategies ─────────────────────────────────
 
-describe.each([
+describe.skipIf(!httpBackendAvailable).each([
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   ['MERGE_LOCAL', 'line5-LOCAL', 'line5-REMOTE'],
   ['FULL_LOCAL', 'line5-LOCAL', 'line5-REMOTE'],
   ['MERGE_REMOTE', 'line5-REMOTE', 'line5-LOCAL'],
@@ -199,7 +215,12 @@ describe.each([
 
 // ─── 3. CANCEL = clean abort ─────────────────────────────────────────────────
 
-describe('CANCEL — clean abort, repo intact', () => {
+describe.skipIf(!httpBackendAvailable)('CANCEL — clean abort, repo intact', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -236,7 +257,12 @@ describe('CANCEL — clean abort, repo intact', () => {
 
 // ─── 4. Token security: expiry, forgery, invalid strategy ────────────────────
 
-describe('resume token security', () => {
+describe.skipIf(!httpBackendAvailable)('resume token security', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -278,7 +304,12 @@ describe('resume token security', () => {
 
 // ─── 5. publish-main: preview/main mapping ───────────────────────────────────
 
-describe('publish-main — conflict pending + resume mapping', () => {
+describe.skipIf(!httpBackendAvailable)('publish-main — conflict pending + resume mapping', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 

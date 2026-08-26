@@ -44,19 +44,46 @@ import {
 
 export const GIT_AUTHOR = { name: 'dual-suite', email: 'dual@example.local' };
 
+// CI runners (GitHub Actions) have NO global user.name/user.email, and
+// `git merge` / `git commit` / `git commit-tree` / `git tag` refuse to run
+// without a committer identity (exit 128). EVERY CLI setup call therefore
+// carries an EXPLICIT identity via `-c` — global config is never assumed.
+const IDENTITY_ARGS = [
+  '-c', `user.email=${GIT_AUTHOR.email}`,
+  '-c', `user.name=${GIT_AUTHOR.name}`,
+];
+// Same identity in env form for raw spawn() call sites — belt and braces
+// with the -c flags (GIT_AUTHOR_*/GIT_COMMITTER_* cover ident-sensitive
+// plumbing like commit-tree that reads env before config).
+const IDENTITY_ENV = {
+  GIT_AUTHOR_NAME: GIT_AUTHOR.name,
+  GIT_AUTHOR_EMAIL: GIT_AUTHOR.email,
+  GIT_COMMITTER_NAME: GIT_AUTHOR.name,
+  GIT_COMMITTER_EMAIL: GIT_AUTHOR.email,
+};
+
 /** @returns {string} fresh temp working directory */
 export function makeTempDir(prefix = 'dual-providers-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// ─── Capability probe: git http-backend (loopback smart-http transport) ───────
+//
+// Probe lives in the LEAF module ./httpBackend.js (no heavy imports, so
+// evaluation order can never shadow the flag). Loopback-dependent suites
+// gate with .skipIf(!httpBackendAvailable) — conditional skip that
+// re-opens automatically when the runner's git ships the CGI.
+export { httpBackendAvailable } from './httpBackend.js';
+
 /**
  * Run bundled git (SETUP ONLY — never for assertions). Throws on failure.
+ * Identity is injected EXPLICITLY (CI runners have no global git identity).
  * @param {string[]} args git argv
  * @param {string} [cwd]
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number}>}
  */
 export async function gitSetup(args, cwd) {
-  const res = await dugiteExec(args, cwd || os.tmpdir(), { env: {} });
+  const res = await dugiteExec([...IDENTITY_ARGS, ...args], cwd || os.tmpdir(), { env: {} });
   if (res.exitCode !== 0) {
     throw new Error(
       `setup git ${args.join(' ')} failed (exit ${res.exitCode}): ${res.stderr}`
@@ -197,11 +224,8 @@ export async function createHttpRemote(baseDir, opts = {}) {
   }
   await gitSetup(['add', '.'], seed);
   for (let i = 0; i < commits; i++) {
-    await gitSetup(
-      ['-c', `user.email=${GIT_AUTHOR.email}`, '-c', `user.name=${GIT_AUTHOR.name}`,
-        'commit', '-m', `seed #${i + 1}`, '--allow-empty'],
-      seed
-    );
+    // Identity comes from gitSetup's explicit -c injection (CI-safe).
+    await gitSetup(['commit', '-m', `seed #${i + 1}`, '--allow-empty'], seed);
   }
 
   await gitSetup(['clone', '--bare', '--', seed, bare], baseDir);
@@ -227,8 +251,10 @@ export async function advanceRemoteHead(bare, message = 'remote advance', ref = 
   const commit = await new Promise((resolve, reject) => {
     const child = spawn(
       resolveGitBinary(),
-      ['-C', bare, 'commit-tree', tree, '-p', ref],
-      { env: { ...process.env, GIT_EXEC_PATH: resolveGitExecPath() } }
+      // Explicit identity on the argv AND via env — commit-tree is
+      // ident-sensitive and CI runners have no global identity (exit 128).
+      [...IDENTITY_ARGS, '-C', bare, 'commit-tree', tree, '-p', ref],
+      { env: { ...process.env, ...IDENTITY_ENV, GIT_EXEC_PATH: resolveGitExecPath() } }
     );
     let out = '';
     child.stdout.on('data', (d) => (out += d.toString()));

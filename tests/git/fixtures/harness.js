@@ -30,6 +30,7 @@ vi.unmock('fs');
 vi.unmock('path');
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import gitModule from 'isomorphic-git';
 import * as httpNs from 'isomorphic-git/http/node';
@@ -41,8 +42,38 @@ import {
   GIT_AUTHOR,
 } from '../../git-providers/harness.js';
 
+// Re-export so fixture suites can gate on the loopback-transport
+// capability (conditional skip, providerHarness convention — re-opens
+// automatically when the runner's bundled git ships http-backend). The
+// probe lives in a LEAF module so import evaluation order can never
+// shadow the flag.
+export { httpBackendAvailable } from '../../git-providers/httpBackend.js';
+
 const git = gitModule.default || gitModule;
 const http = httpNs.default?.request ? httpNs.default : httpNs;
+
+// ─── Machine git identity for CLI-backed flows (CI portability) ───────────────
+//
+// The flow suites exercise the REAL DugiteProvider, whose `git merge`
+// (unlike `commit`) has no explicit-identity fallback — it relies on a
+// machine-level user.name/user.email, which dev boxes have and CI
+// runners do NOT ("Committer identity unknown", exit 128). Point
+// GIT_CONFIG_GLOBAL at a harness-written identity file so every dugite
+// child inherits one. Precedence is safe: command-line `-c` (used by
+// provider.commit and gitSetup) beats this file, so explicit identities
+// are never overridden — only identity-less commands (merge) get one.
+// Deterministic global config: always point at the harness file so the
+// suites never depend on (or break on) the machine's ~/.gitconfig.
+{
+  const globalConfig = path.join(os.tmpdir(), `smc-test-gitconfig-${process.pid}`);
+  try {
+    fs.writeFileSync(
+      globalConfig,
+      `[user]\n\tname = ${GIT_AUTHOR.name}\n\temail = ${GIT_AUTHOR.email}\n`
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  } catch (_e) { /* best-effort: dev machines already carry an identity */ }
+}
 
 // ─── Repo handle ─────────────────────────────────────────────────────────────
 

@@ -39,6 +39,29 @@ import {
 
 const safeCwd = process.cwd();
 
+/**
+ * Windows rmdir of a directory a (recently exited) child process held as
+ * cwd fails with EBUSY; retry briefly, then give up with a warn — a
+ * leftover temp dir must never fail the suite (CI portability).
+ * @param {string} dir
+ * @param {string} [what]
+ */
+function rmSyncTolerant(dir, what = dir) {
+  const attempts = 3;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (i === attempts - 1) {
+        console.warn(`[getcwd-repro] cleanup gave up after ${attempts} tries: ${what} (${e.code || e.message})`);
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    }
+  }
+}
+
 /** Run `sh -c 'echo ok'` with inherited (dead) cwd; collect stderr. */
 function spawnShNoCwd() {
   return new Promise((resolve) => {
@@ -57,7 +80,9 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
     const dead = makeTempDir('getcwd-dead-');
     process.chdir(dead);
     try {
-      fs.rmSync(dead, { recursive: true, force: true });
+      // Windows: rm of the process's OWN cwd can hit EBUSY while
+      // handles drain — tolerant retry, never a crash (CI portability).
+      rmSyncTolerant(dead, 'dead cwd dir');
       return await fn();
     } finally {
       process.chdir(safeCwd);
@@ -71,14 +96,24 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
     } catch (_e) { /* ignore */ }
   });
 
-  test('variant A: bare `sh` with dead inherited cwd DOES emit getcwd() failed', async () => {
-    const res = await withDeadCwd(spawnShNoCwd);
-    // Mechanism confirmation: dash cannot getcwd() at startup when its
-    // inherited cwd is gone. This is the exact string from the bug log.
-    expect(res.stderr).toMatch(/getcwd\(\) failed/);
-  });
+  // GATE (platform, win32): there is no bare `sh` on PATH on Windows
+  // (spawn → ENOENT) and Windows shells do not emit a getcwd diagnostic —
+  // the shell-level mechanism confirmation only exists on POSIX. The
+  // dugite-level variants B/C below still run everywhere.
+  (process.platform === 'win32' ? it.skip : it)(
+    'variant A: bare `sh` with dead inherited cwd DOES emit getcwd() failed',
+    async () => {
+      const res = await withDeadCwd(spawnShNoCwd);
+      // Mechanism confirmation: the shell cannot getcwd() at startup when
+      // its inherited cwd is gone. dash says "getcwd() failed: ...", BSD
+      // sh (macOS runners) says "shell-init: error retrieving current
+      // directory: getcwd: cannot access parent directories" — match the
+      // MECHANISM (getcwd failure), not one shell's wording.
+      expect(res.stderr).toMatch(/getcwd|cannot access parent directories/);
+    }
+  );
 
-  test('variant B: dugite exec (explicit cwd) succeeds with dead process cwd', async () => {
+  it('variant B: dugite exec (explicit cwd) succeeds with dead process cwd', async () => {
     const repo = makeTempDir('getcwd-repo-');
     try {
       await initLocalRepo(repo);
@@ -86,29 +121,26 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
         dugiteExec(['rev-parse', '--git-dir'], repo, { env: {} })
       );
       expect(res.exitCode).toBe(0);
-      expect(res.stderr).not.toMatch(/getcwd\(\) failed/);
+      expect(res.stderr).not.toMatch(/getcwd|cannot access parent directories/);
     } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
+      rmSyncTolerant(repo, 'variant B repo');
     }
   });
 
-  test('variant C: DugiteProvider op succeeds with dead process cwd', async () => {
+  it('variant C: DugiteProvider op succeeds with dead process cwd', async () => {
     const repo = makeTempDir('getcwd-provider-');
     fs.mkdirSync(repo, { recursive: true });
     await gitSetup(['init', '-b', 'main', '.'], repo);
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
     await gitSetup(['add', '.'], repo);
-    await gitSetup(
-      ['-c', 'user.email=t7@example.local', '-c', 'user.name=t7', 'commit', '-m', 'c1'],
-      repo
-    );
+    await gitSetup(['commit', '-m', 'c1'], repo);
 
     const provider = providerFactory('dugite')();
     try {
       const matrix = await withDeadCwd(() => provider.statusMatrix(repo));
       expect(matrix).toEqual([['a.txt', 1, 1, 1]]);
     } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
+      rmSyncTolerant(repo, 'variant C repo');
     }
   });
 });

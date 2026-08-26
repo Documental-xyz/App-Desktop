@@ -45,6 +45,7 @@ import {
   providerFactory,
   isGitError,
   GIT_AUTHOR,
+  httpBackendAvailable,
 } from './harness.js';
 import { resetGitProviderCache } from '../../src/git/GitProviderFactory.js';
 
@@ -129,7 +130,11 @@ function describeGitProvider(name, factory) {
 
     // ─── Shallow fetch semantics over the shared loopback transport ────
 
-    it('shallow clone (depth 10) creates .git/shallow for both providers (same loopback http transport)', async () => {
+    // GATE (capability, never unconditional): both shallow specs talk to
+    // the loopback git-http-backend server; skipped only where the
+    // bundled git lacks the CGI (harness.httpBackendAvailable probe) and
+    // re-opened automatically when the runner ships it.
+    it.skipIf(!httpBackendAvailable)('shallow clone (depth 10) creates .git/shallow for both providers (same loopback http transport)', async () => {
       // History longer than the clone depth (10): git skips .git/shallow
       // when the cutoff would land at/below the root commit.
       const { server, url } = await createHttpRemote(base, { commits: 12 });
@@ -144,7 +149,7 @@ function describeGitProvider(name, factory) {
       }
     });
 
-    it('shallow fetch (depth 1) tracks a remote advance on the same transport', async () => {
+    it.skipIf(!httpBackendAvailable)('shallow fetch (depth 1) tracks a remote advance on the same transport', async () => {
       const { server, url, bare } = await createHttpRemote(base);
       try {
         const dir = path.join(base, 'clone');

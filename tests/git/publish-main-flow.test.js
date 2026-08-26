@@ -28,6 +28,7 @@ import path from 'path';
 import gitModule from 'isomorphic-git';
 
 import { createRepoPair, commitFile, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
 import { providerFactory } from '../git-providers/harness.js';
@@ -97,7 +98,12 @@ async function setupPromotable(pair) {
 
 // ─── Scenarios ──────────────────────────────────────────────────────────────
 
-describe('gitPublishMain — preview-wins promote', () => {
+describe.skipIf(!httpBackendAvailable)('gitPublishMain — preview-wins promote', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 

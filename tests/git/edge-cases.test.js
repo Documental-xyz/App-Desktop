@@ -35,6 +35,7 @@ import {
   makeDivergent,
   makeDirty,
 } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import {
   makeFlowHandlers,
   gateOnCapability,
@@ -52,7 +53,12 @@ async function backupBranches(handlers, dir) {
   return bs.map((b) => (typeof b === 'string' ? b : b.name)).filter((n) => n.startsWith('backup/'));
 }
 
-describe.each(providersUnderTest())('edge cases [%s]', (providerName) => {
+describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('edge cases [%s]', (providerName) => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
   let divergentGateOpen;

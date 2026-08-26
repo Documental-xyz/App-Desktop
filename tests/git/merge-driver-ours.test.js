@@ -14,6 +14,7 @@
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { createRepoPair, makeConflict, commitFile } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { oursMergeDriver, resolveBinaryOurs } from '../../src/ipc/gitMergeDriver.js';
 
 import gitModule from 'isomorphic-git';
@@ -39,7 +40,12 @@ afterAll(() => {
   if (pair) pair.dispose();
 });
 
-describe('oursMergeDriver (text)', () => {
+describe.skipIf(!httpBackendAvailable)('oursMergeDriver (text)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('keeps LOCAL on the conflicting hunk AND keeps the remote non-conflicting hunk', async () => {
     // Base: 10 lines. Local edits line 5 (hunk X). Remote edits line 5
     // differently (conflict) AND appends line 11 (hunk Y, non-conflicting).
@@ -117,7 +123,12 @@ describe('oursMergeDriver (text)', () => {
   });
 });
 
-describe('resolveBinaryOurs (binary)', () => {
+describe.skipIf(!httpBackendAvailable)('resolveBinaryOurs (binary)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('preserves LOCAL bytes of a conflicting binary file (identical hash)', async () => {
     const localBytes = Buffer.from([1, 2, 0xff, 0xff, 0, 0, 7, 8]);
     pair = await createRepoPair();

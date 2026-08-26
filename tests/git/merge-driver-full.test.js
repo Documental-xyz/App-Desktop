@@ -17,6 +17,7 @@
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { createRepoPair, makeConflict } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import {
   fullLocalMergeDriver,
   fullRemoteMergeDriver,
@@ -66,7 +67,12 @@ async function mergeWithDriver(driver) {
   return originHead;
 }
 
-describe('fullLocalMergeDriver (text, real repo)', () => {
+describe.skipIf(!httpBackendAvailable)('fullLocalMergeDriver (text, real repo)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('conflicting line 2 = LOCAL integral AND non-conflicting remote line 6 PRESENT', async () => {
     pair = await createRepoPair();
     const { file } = await makeConflict(pair, {
@@ -111,7 +117,12 @@ describe('fullLocalMergeDriver (text, real repo)', () => {
   });
 });
 
-describe('fullRemoteMergeDriver (text, real repo)', () => {
+describe.skipIf(!httpBackendAvailable)('fullRemoteMergeDriver (text, real repo)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('conflicting line 2 = REMOTE integral AND non-conflicting local line 6 PRESERVED', async () => {
     pair = await createRepoPair();
     const { file } = await makeConflict(pair, {
@@ -166,7 +177,12 @@ describe('direction markers (DugiteProvider.mergeDriverFavor contract)', () => {
   });
 });
 
-describe('binary fallbacks (real repo)', () => {
+describe.skipIf(!httpBackendAvailable)('binary fallbacks (real repo)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('resolveBinaryFullLocal keeps LOCAL bytes (identical hash)', async () => {
     const localBytes = Buffer.from([1, 2, 0xff, 0xff, 0, 0, 7, 8]);
     pair = await createRepoPair();

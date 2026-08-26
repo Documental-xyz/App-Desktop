@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
 import { providerFactory } from '../git-providers/harness.js';
@@ -67,7 +68,12 @@ const A_MD_LOCAL = A_MD_BASE.replace('line5', 'line5-LOCAL');
 
 // ─── Scenario (a): publish with non-conflicting divergence ──────────────────
 
-describe('gitPublishPreview — divergent remote, local-wins merge', () => {
+describe.skipIf(!httpBackendAvailable)('gitPublishPreview — divergent remote, local-wins merge', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -157,7 +163,12 @@ describe('gitPublishPreview — divergent remote, local-wins merge', () => {
 
 // ─── Scenario (b): push rejected → typed error, zero local loss ─────────────
 
-describe('gitPublishPreview — push rejected (PUSH_REJECTED)', () => {
+describe.skipIf(!httpBackendAvailable)('gitPublishPreview — push rejected (PUSH_REJECTED)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -242,7 +253,12 @@ describe('_isPushRejected — ref-lock race variants (T11-D1)', () => {
 // dies with MergeNotSupportedError. Recovery must skip the merge
 // entirely (local strictly ahead) and push.
 
-describe('F3-D1 — re-publish after PUSH_REJECTED + guided refresh', () => {
+describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED + guided refresh', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -321,7 +337,12 @@ describe('F3-D1 — re-publish after PUSH_REJECTED + guided refresh', () => {
 
 // ─── No-upstream compensation (backup path) ─────────────────────────────────
 
-describe('gitPushToBranch — no upstream treated as all-unpushed', () => {
+describe.skipIf(!httpBackendAvailable)('gitPushToBranch — no upstream treated as all-unpushed', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 

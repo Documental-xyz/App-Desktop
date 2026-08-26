@@ -29,6 +29,7 @@ import crypto from 'crypto';
 
 import { providersUnderTest, providerFactory } from '../git-providers/harness.js';
 import { createRepoPair, makeConflict } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 
 import { detectMergeConflicts } from '../../src/ipc/gitConflictDetect.js';
 
@@ -83,7 +84,12 @@ async function repoStateHash(dir) {
   return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }
 
-describe.each(providersUnderTest())('conflict detection [%s]', (providerName) => {
+describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('conflict detection [%s]', (providerName) => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   /** @type {Awaited<ReturnType<typeof createRepoPair>>} */
   let pair;
   let provider;

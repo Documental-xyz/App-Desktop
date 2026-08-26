@@ -23,6 +23,7 @@ import gitModule from 'isomorphic-git';
 import { GitSafety, GitSafetyError, createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 import { createMockGitProvider } from './fixtures/mockProvider.js';
 import { createRepoPair, commitFile, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 
 const git = gitModule.default || gitModule;
 
@@ -157,7 +158,12 @@ describe('Task 5: statusMatrix failure is a hard block (never dirty=[])', () => 
 
 // ─── 3. Cancel + recovery from backup ────────────────────────────────────────
 
-describe('Task 5: cancel keeps backups; recovery = writeRef(backup) + checkout', () => {
+describe.skipIf(!httpBackendAvailable)('Task 5: cancel keeps backups; recovery = writeRef(backup) + checkout', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('recoverFromBackup restores working tree to backup content and keeps the backup branch', async () => {
     const pair = await createRepoPair({ files: { 'doc.md': 'v1\n' }, branch: 'preview' });
     try {

@@ -46,6 +46,7 @@ import {
   providerFactory,
   isGitError,
   randomBytes,
+  httpBackendAvailable,
 } from './harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -59,7 +60,12 @@ const MANY_FILES = 100;
  * @param {() => Object} factory
  */
 function describePushProvider(name, factory) {
-  describe(`push scenarios — provider: ${name}`, () => {
+  // GATE (capability, never unconditional): every scenario in this
+  // battery clones/pushes over the loopback git-http-backend server.
+  // Where the bundled git lacks the http-backend CGI (mac/win runners),
+  // the battery skips — it re-opens automatically once the runner's git
+  // ships the binary (harness.httpBackendAvailable probe).
+  describe.skipIf(!httpBackendAvailable)(`push scenarios — provider: ${name}`, () => {
     /** @type {Object} */
     let provider;
     /** @type {string} */
@@ -362,7 +368,8 @@ describe('retry parity — gitOperations._pushWithRetry over dugite', () => {
     fs.rmSync(base, { recursive: true, force: true });
   });
 
-  it('non-fast-forward through the REAL dugite provider throws immediately (no retry)', async () => {
+  // GATE (capability): needs the loopback http-backend remote.
+  it.skipIf(!httpBackendAvailable)('non-fast-forward through the REAL dugite provider throws immediately (no retry)', async () => {
     const ops = new GitOperations({ logger: null, databaseManager: null });
     const dugite = new DugiteProvider();
     const remote = await createHttpRemote(base);

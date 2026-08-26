@@ -15,6 +15,7 @@ import {
   makeDirty,
   makeDivergent,
 } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 
 /** @type {Awaited<ReturnType<typeof createRepoPair>>} */
 let pair;
@@ -23,7 +24,12 @@ afterAll(() => {
   if (pair) pair.dispose();
 });
 
-describe('git fixtures harness', () => {
+describe.skipIf(!httpBackendAvailable)('git fixtures harness', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('creates a reproducible local vs remote divergence', async () => {
     // 1. Repo pair with a common base commit pushed to origin.
     pair = await createRepoPair({ files: { 'a.txt': 'base\n' } });

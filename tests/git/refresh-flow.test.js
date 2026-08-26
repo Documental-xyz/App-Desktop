@@ -26,6 +26,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
 import { providerFactory } from '../git-providers/harness.js';
@@ -66,7 +67,12 @@ const B_MD_BASE = Array.from({ length: 60 }, (_, i) => `line${i + 1}`).join('\n'
 
 // ─── Scenario (a): dirty tree + remote same-file edit (different lines) ─────
 
-describe('gitRefresh — dirty tree + remote divergence, no hard reset', () => {
+describe.skipIf(!httpBackendAvailable)('gitRefresh — dirty tree + remote divergence, no hard reset', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -122,7 +128,12 @@ describe('gitRefresh — dirty tree + remote divergence, no hard reset', () => {
 
 // ─── Scenario (b): same-line conflict → CONFLICT_PENDING + resume ───────────
 
-describe('gitRefresh — same-line conflict: pending, MERGE_LOCAL resume keeps LOCAL', () => {
+describe.skipIf(!httpBackendAvailable)('gitRefresh — same-line conflict: pending, MERGE_LOCAL resume keeps LOCAL', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 
@@ -173,7 +184,12 @@ describe('gitRefresh — same-line conflict: pending, MERGE_LOCAL resume keeps L
 
 // ─── Scenario (c): no origin/preview → typed NO_UPSTREAM ────────────────────
 
-describe('gitRefresh — missing upstream (origin/preview does not exist)', () => {
+describe.skipIf(!httpBackendAvailable)('gitRefresh — missing upstream (origin/preview does not exist)', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let pair;
   let handlers;
 

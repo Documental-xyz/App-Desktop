@@ -40,6 +40,7 @@ import gitModule from 'isomorphic-git';
 
 import { providersUnderTest } from '../git-providers/harness.js';
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import {
   makeFlowHandlers,
   gateOnCapability,
@@ -126,7 +127,12 @@ async function publishMainPair(providerName) {
 
 // ─── Parameterized parity scenarios ──────────────────────────────────────────
 
-describe.each(providersUnderTest())('conflict-strategy parity [%s]', (providerName) => {
+describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('conflict-strategy parity [%s]', (providerName) => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   let gateOpen;
   let binaryGateOpen;
 

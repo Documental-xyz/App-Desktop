@@ -26,6 +26,7 @@ import gitModule from 'isomorphic-git';
 
 import { GitSafety, createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 import { createRepoPair } from './fixtures/harness.js';
+import { httpBackendAvailable } from './fixtures/harness.js';
 import { createMockGitProvider } from './fixtures/mockProvider.js';
 
 const git = gitModule.default || gitModule;
@@ -68,7 +69,12 @@ const branchNames = (dir) => git.listBranches({ fs, dir });
 
 // ─── 1. Real repo: pruning window ────────────────────────────────────────────
 
-describe('pruneOldBackups — real repo, 7-day window', () => {
+describe.skipIf(!httpBackendAvailable)('pruneOldBackups — real repo, 7-day window', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('deletes the 8-day-old backup and keeps the 6-day-old one', async () => {
     const pair = await newPair();
     await pair.local.fetch();
@@ -108,7 +114,12 @@ describe('pruneOldBackups — real repo, 7-day window', () => {
 
 // ─── 2. Successful sync does not delete a fresh backup ──────────────────────
 
-describe('retention — sync success keeps fresh backup', () => {
+describe.skipIf(!httpBackendAvailable)('retention — sync success keeps fresh backup', () => {
+  // GATE (capability, never unconditional): this battery drives real
+  // repos over the loopback git-http-backend server (createRepoPair);
+  // skipped only where the bundled git lacks the CGI
+  // (fixtures/harness.httpBackendAvailable probe) — re-opens by itself
+  // when the runner ships http-backend. Mock/unit describes stay ungated.
   it('cleanupBackupBranch (post-success) + pruneOldBackups both retain a fresh backup', async () => {
     const pair = await newPair({ files: { 'a.txt': 'base' }, branch: 'main' });
     await pair.local.fetch();
