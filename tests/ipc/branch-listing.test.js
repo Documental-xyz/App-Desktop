@@ -6,6 +6,10 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// Mirror the src construction (git.js uses require('path').join, native).
+vi.unmock('path');
+import path from 'path';
+
 describe('Branch Listing Functionality - Basic Tests', () => {
   let mockLogger;
 
@@ -73,15 +77,15 @@ describe('Branch Listing Functionality - Basic Tests', () => {
     });
 
     it('should test path construction logic', () => {
-      const projectPath = '/test/project';
+      const projectPath = path.join(path.sep, 'test', 'project');
       const repoFolderName = 'my-repo';
-      
-      // Test the path construction logic
-      const repoPath = `${projectPath}/${repoFolderName}`;
-      const refsDir = `${repoPath}/.git/refs/heads`;
-      
-      expect(repoPath).toBe('/test/project/my-repo');
-      expect(refsDir).toBe('/test/project/my-repo/.git/refs/heads');
+
+      // Same construction git.js uses (native path joins)
+      const repoPath = path.join(projectPath, repoFolderName);
+      const refsDir = path.join(repoPath, '.git', 'refs', 'heads');
+
+      expect(repoPath).toBe(path.join(path.sep, 'test', 'project', 'my-repo'));
+      expect(refsDir).toBe(path.join(path.sep, 'test', 'project', 'my-repo', '.git', 'refs', 'heads'));
     });
   });
 

@@ -8,6 +8,16 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// Real fs/path for the temp cwd (setup.js mocks both for the module
+// graph; this suite needs a REAL, platform-native directory to spawn
+// into and native path joins).
+vi.unmock('fs');
+vi.unmock('path');
+
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 // PlatformService stub — keeps the constructor off the real platform adapter.
 vi.mock('../../src/main/services/platform/PlatformService.js', () => ({
   PlatformService: class {
@@ -26,6 +36,22 @@ vi.mock('../../src/main/services/platform/PlatformService.js', () => ({
 import { ProcessManager } from '../../src/ipc/processManager.js';
 
 const logger = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
+
+// CI portability: the old hardcoded cwd '/tmp' does not exist on Windows
+// runners — the embedded spawn dies with ENOENT as a STARTUP error, which
+// (a) flips the rejection message to "Failed to start command" and (b)
+// triggers the managed fallback install, breaking BOTH assertions of each
+// test (reproduced on Linux by pointing cwd at a missing dir). A fresh
+// mkdtemp under os.tmpdir() is native and guaranteed to exist on every OS.
+function makeNativeCwd() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'pm-fallback-'));
+}
+
+function rmSyncTolerant(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (_e) { /* temp dir cleanup must never fail the suite */ }
+}
 
 function makeNodeDetectionService() {
   return {
@@ -91,22 +117,32 @@ describe('ProcessManager embedded runtime fallback', () => {
   });
 
   describe('executeCommand fallback semantics', () => {
+    let cwd;
+
+    beforeEach(() => {
+      cwd = makeNativeCwd();
+    });
+
+    afterEach(() => {
+      rmSyncTolerant(cwd);
+    });
+
     it('a non-zero exit does NOT trigger the managed fallback install', async () => {
       // Real spawn via the embedded runtime: exits 3 on purpose.
       await expect(
-        pm.executeCommand('node', ['-e', 'process.exit(3)'], '/tmp', 'p-exit3', () => {})
+        pm.executeCommand('node', ['-e', 'process.exit(3)'], cwd, 'p-exit3', () => {})
       ).rejects.toThrow(/code 3/);
 
       expect(mockNodeDetectionService.installManagedRuntime).not.toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('a successful embedded spawn never consults the fallback service', async () => {
       await expect(
-        pm.executeCommand('node', ['-p', '40+2'], '/tmp', 'p-ok', () => {})
+        pm.executeCommand('node', ['-p', '40+2'], cwd, 'p-ok', () => {})
       ).resolves.toBeUndefined();
 
       expect(mockNodeDetectionService.installManagedRuntime).not.toHaveBeenCalled();
-    });
+    }, 30_000);
 
     it('a STARTUP failure of the embedded runtime retries once via the managed runtime', async () => {
       let call = 0;
@@ -118,7 +154,7 @@ describe('ProcessManager embedded runtime fallback', () => {
       });
 
       await expect(
-        pm.executeCommand('node', ['-p', '1'], '/tmp', 'p-startup', () => {})
+        pm.executeCommand('node', ['-p', '1'], cwd, 'p-startup', () => {})
       ).resolves.toBeUndefined();
 
       // First attempt: embedded descriptor; retry: managed descriptor

@@ -6,6 +6,22 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// src/ipc/system.js resolves paths with the NATIVE path module via CJS
+// require (vi.mock in setup.js cannot intercept it — same pattern as the
+// i18n/git suites): expectations must be built with the native path too.
+vi.unmock('path');
+
+import path from 'path';
+
+/** Normalize to POSIX separators for substring checks on mixed literals. */
+const toPosix = (p) => p.split(path.sep).join('/');
+
+/** Platform-native stand-in for the packaged app root mock. */
+const MOCK_APP_PATH = path.join(path.sep, 'mock', 'app', 'path');
+
+/** Platform-native stand-in for the dev-mode cwd. */
+const DEV_CWD = path.join(path.sep, 'dev', 'project');
+
 // Store original cwd
 let originalCwd;
 
@@ -65,7 +81,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       };
       
       global.mockElectron.app.isPackaged = true;
-      global.mockElectron.app.getAppPath.mockReturnValue('/mock/app/path');
+      global.mockElectron.app.getAppPath.mockReturnValue(MOCK_APP_PATH);
       global.mockElectron.BrowserWindow = vi.fn(() => mockWindow);
       global.mockElectron.BrowserWindow.getFocusedWindow = vi.fn(() => ({
         getBounds: vi.fn(() => ({ width: 1400, height: 900 }))
@@ -84,7 +100,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       expect(mockLoadFile).toHaveBeenCalled();
       
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(filePath).toContain('/mock/app/path');
+      expect(toPosix(filePath)).toContain('mock/app/path');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('main.html');
     });
@@ -101,7 +117,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       };
       
       global.mockElectron.app.isPackaged = false;
-      process.cwd = vi.fn(() => '/dev/project');
+      process.cwd = vi.fn(() => DEV_CWD);
       global.mockElectron.BrowserWindow = vi.fn(() => mockWindow);
       global.mockElectron.BrowserWindow.getFocusedWindow = vi.fn(() => ({
         getBounds: vi.fn(() => ({ width: 1400, height: 900 }))
@@ -119,7 +135,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       expect(mockLoadFile).toHaveBeenCalled();
       
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(filePath).toContain('/dev/project');
+      expect(toPosix(filePath)).toContain('dev/project');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('main.html');
     });
@@ -135,7 +151,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       };
       
       global.mockElectron.app.isPackaged = true;
-      global.mockElectron.app.getAppPath.mockReturnValue('/mock/app/path');
+      global.mockElectron.app.getAppPath.mockReturnValue(MOCK_APP_PATH);
       global.mockElectron.BrowserWindow = vi.fn(() => mockWindow);
       global.mockElectron.BrowserWindow.getFocusedWindow = vi.fn(() => ({
         getBounds: vi.fn(() => ({ width: 1400, height: 900 }))
@@ -177,7 +193,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       };
       
       global.mockElectron.app.isPackaged = true;
-      global.mockElectron.app.getAppPath.mockReturnValue('/mock/app/path');
+      global.mockElectron.app.getAppPath.mockReturnValue(MOCK_APP_PATH);
       global.mockElectron.BrowserWindow = vi.fn(() => newMockWindow);
       global.mockElectron.BrowserWindow.fromWebContents = vi.fn(() => mockWindow);
       global.mockElectron.BrowserWindow.getAllWindows = vi.fn(() => []);
@@ -195,7 +211,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       expect(mockLoadFile).toHaveBeenCalled();
       
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(filePath).toContain('/mock/app/path');
+      expect(toPosix(filePath)).toContain('mock/app/path');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('index.html');
     });
@@ -215,7 +231,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       };
       
       global.mockElectron.app.isPackaged = false;
-      process.cwd = vi.fn(() => '/dev/project');
+      process.cwd = vi.fn(() => DEV_CWD);
       global.mockElectron.BrowserWindow = vi.fn(() => newMockWindow);
       global.mockElectron.BrowserWindow.fromWebContents = vi.fn(() => mockWindow);
       
@@ -232,7 +248,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
       expect(mockLoadFile).toHaveBeenCalled();
       
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(filePath).toContain('/dev/project');
+      expect(toPosix(filePath)).toContain('dev/project');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('index.html');
     });
