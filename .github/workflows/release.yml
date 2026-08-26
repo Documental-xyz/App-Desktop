@@ -159,6 +159,11 @@ jobs:
       - name: Verify bundled Git
         run: npm run verify:bundled-git
 
+      # Same gating logic as above: fail the job if silent packaging drops
+      # removed startup-critical files from app.asar (win-asar-packaging evidence).
+      - name: Verify app.asar contents
+        run: npm run verify:asar
+
       - name: Verify theme in runtime env
         shell: bash
         run: |
