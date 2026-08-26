@@ -67,7 +67,8 @@ jobs:
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      DUGITE_CACHE_DIR: ${{ runner.temp }}/dugite-cache
+      # `runner` context is invalid in job-level env; `github.workspace` is valid and keeps the cache next to the checkout.
+      DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
@@ -178,7 +179,8 @@ jobs:
     continue-on-error: true
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
-      DUGITE_CACHE_DIR: ${{ runner.temp }}/dugite-cache
+      # `runner` context is invalid in job-level env; `github.workspace` is valid and keeps the cache next to the checkout.
+      DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
     steps:
