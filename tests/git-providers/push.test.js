@@ -47,6 +47,7 @@ import {
   isGitError,
   randomBytes,
   httpBackendAvailable,
+  removeTempDir,
 } from './harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -77,14 +78,16 @@ function describePushProvider(name, factory) {
       provider = factory();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       resetGitProviderCache();
       if (originalEnv === undefined) {
         delete process.env.GIT_PROVIDER;
       } else {
         process.env.GIT_PROVIDER = originalEnv;
       }
-      fs.rmSync(base, { recursive: true, force: true });
+      // Tolerant removal (Windows EBUSY: aborted-push children can hold
+      // the work dir cwd briefly) — same helper as provider-suite.
+      await removeTempDir(base);
     });
 
     /** Fresh provider-cloned working repo against its own loopback remote. */
@@ -364,8 +367,8 @@ describe('retry parity — gitOperations._pushWithRetry over dugite', () => {
     base = makeTempDir('dual-retry-');
   });
 
-  afterEach(() => {
-    fs.rmSync(base, { recursive: true, force: true });
+  afterEach(async () => {
+    await removeTempDir(base);
   });
 
   // GATE (capability): needs the loopback http-backend remote.

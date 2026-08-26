@@ -44,6 +44,7 @@ import {
   providersUnderTest,
   providerFactory,
   httpBackendAvailable,
+  removeTempDir,
 } from './harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -86,14 +87,14 @@ function describeAuthContractProvider(name, factory) {
       provider = factory();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       resetGitProviderCache();
       if (originalEnv === undefined) {
         delete process.env.GIT_PROVIDER;
       } else {
         process.env.GIT_PROVIDER = originalEnv;
       }
-      fs.rmSync(base, { recursive: true, force: true });
+      await removeTempDir(base);
     });
 
     it('push with auth:{token} publishes refs/heads/preview to the remote (regression: no anonymous-write failure)', async () => {
@@ -176,7 +177,7 @@ describe('dugite boundary: auth:{token} push against a github.com remote', () =>
     base = makeTempDir('auth-boundary-');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     resetGitProviderCache();
     if (originalEnv === undefined) {
       delete process.env.GIT_PROVIDER;
@@ -188,7 +189,7 @@ describe('dugite boundary: auth:{token} push against a github.com remote', () =>
     } else {
       process.env.SMC_GIT_ASKPASS_TOKEN = originalTokenEnv;
     }
-    fs.rmSync(base, { recursive: true, force: true });
+    await removeTempDir(base);
   });
 
   it('creates the GIT_ASKPASS helper (token env-only, never argv/file), pushes, and cleans up', async () => {

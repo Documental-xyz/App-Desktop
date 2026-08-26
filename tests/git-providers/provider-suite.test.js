@@ -46,6 +46,7 @@ import {
   isGitError,
   GIT_AUTHOR,
   httpBackendAvailable,
+  removeTempDir,
 } from './harness.js';
 import { resetGitProviderCache } from '../../src/git/GitProviderFactory.js';
 
@@ -76,14 +77,17 @@ function describeGitProvider(name, factory) {
       provider = factory();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       resetGitProviderCache();
       if (originalEnv === undefined) {
         delete process.env.GIT_PROVIDER;
       } else {
         process.env.GIT_PROVIDER = originalEnv;
       }
-      fs.rmSync(base, { recursive: true, force: true });
+      // Windows: a killed git child (aborted push) can still hold the
+      // work dir as cwd for a moment — tolerant removal polls the real
+      // release instead of racing rmdir (EBUSY).
+      await removeTempDir(base);
     });
 
     // ─── Full local cycle ──────────────────────────────────────────────
@@ -414,6 +418,15 @@ function describeGitProvider(name, factory) {
         // provider-specific (dugite: kill; iso: internal ~5s request
         // timeout — documented divergence, T9) and is NOT asserted.
         expect(isGitError(err)).toBe(true);
+
+        // Windows EBUSY guard: the rejection means dugite's execFile saw
+        // the DIRECT git child exit (its callback runs post-exit), but
+        // the aborted push may leave an orphaned remote-helper
+        // grandchild holding `work` as cwd for a short window. Poll the
+        // actual release (bounded) before the structural teardown in
+        // afterEach — no child handle exists to await (dugite does not
+        // expose it), so the removable-dir condition IS the exit signal.
+        await removeTempDir(path.join(base, 'work'), { label: 'blackhole work dir' });
       } finally {
         await close();
       }

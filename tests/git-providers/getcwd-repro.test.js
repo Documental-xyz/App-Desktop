@@ -35,32 +35,10 @@ import {
   gitSetup,
   initLocalRepo,
   providerFactory,
+  rmSyncWithRetry,
 } from './harness.js';
 
 const safeCwd = process.cwd();
-
-/**
- * Windows rmdir of a directory a (recently exited) child process held as
- * cwd fails with EBUSY; retry briefly, then give up with a warn — a
- * leftover temp dir must never fail the suite (CI portability).
- * @param {string} dir
- * @param {string} [what]
- */
-function rmSyncTolerant(dir, what = dir) {
-  const attempts = 3;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (e) {
-      if (i === attempts - 1) {
-        console.warn(`[getcwd-repro] cleanup gave up after ${attempts} tries: ${what} (${e.code || e.message})`);
-        return;
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-    }
-  }
-}
 
 /** Run `sh -c 'echo ok'` with inherited (dead) cwd; collect stderr. */
 function spawnShNoCwd() {
@@ -82,7 +60,7 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
     try {
       // Windows: rm of the process's OWN cwd can hit EBUSY while
       // handles drain — tolerant retry, never a crash (CI portability).
-      rmSyncTolerant(dead, 'dead cwd dir');
+      rmSyncWithRetry(dead, 'dead cwd dir');
       return await fn();
     } finally {
       process.chdir(safeCwd);
@@ -123,7 +101,7 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
       expect(res.exitCode).toBe(0);
       expect(res.stderr).not.toMatch(/getcwd|cannot access parent directories/);
     } finally {
-      rmSyncTolerant(repo, 'variant B repo');
+      rmSyncWithRetry(repo, 'variant B repo');
     }
   });
 
@@ -140,7 +118,7 @@ describe('task-7 getcwd() failed repro (dead process cwd)', () => {
       const matrix = await withDeadCwd(() => provider.statusMatrix(repo));
       expect(matrix).toEqual([['a.txt', 1, 1, 1]]);
     } finally {
-      rmSyncTolerant(repo, 'variant C repo');
+      rmSyncWithRetry(repo, 'variant C repo');
     }
   });
 });

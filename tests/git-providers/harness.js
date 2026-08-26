@@ -67,6 +67,69 @@ export function makeTempDir(prefix = 'dual-providers-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// ─── Tolerant temp-dir removal (Windows EBUSY/EPERM on cwd-holding children) ──
+//
+// A killed git child (aborted push) — or its orphaned remote-helper
+// grandchild — can still hold the work dir as cwd for a short window on
+// Windows, making rmdir fail with EBUSY/EPERM even after the provider
+// promise already rejected (dugite's execFile callback only proves the
+// DIRECT child exited). The retry POLLS THE REAL RELEASE CONDITION
+// (dir becomes removable) — no arbitrary long sleeps, bounded by
+// attempts × sleepMs; a leftover temp dir warns instead of failing
+// the suite.
+
+/** Sync sleep (usable inside sync test code). */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Sync removal with retry/backoff. Single implementation shared by the
+ * dual-suite afterEach (via removeTempDir) and getcwd-repro's dead-cwd
+ * removal — do NOT duplicate.
+ * @param {string} dir
+ * @param {{attempts?: number, sleepMs?: number, label?: string}} [opts]
+ */
+export function rmSyncWithRetry(dir, opts = {}) {
+  const { attempts = 20, sleepMs = 150, label = dir } = opts;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (!fs.existsSync(dir)) return true;
+    } catch (e) {
+      if (i === attempts) break;
+    }
+    sleepSync(sleepMs);
+  }
+  console.warn(
+    `[harness] temp dir cleanup gave up after ${attempts} tries: ${label}`
+  );
+  return false;
+}
+
+/**
+ * Async variant for hooks (afterEach/finally): yields to the event loop
+ * between attempts so pending child-exit events can land.
+ * @param {string} dir
+ * @param {{attempts?: number, delayMs?: number, label?: string}} [opts]
+ */
+export async function removeTempDir(dir, opts = {}) {
+  const { attempts = 25, delayMs = 120, label = dir } = opts;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (!fs.existsSync(dir)) return true;
+    } catch (_e) {
+      // EBUSY/EPERM/ENOTEMPTY: a child still holds the dir — retry.
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  console.warn(
+    `[harness] temp dir cleanup gave up after ${attempts} tries: ${label}`
+  );
+  return false;
+}
+
 // ─── Capability probe: git http-backend (loopback smart-http transport) ───────
 //
 // Probe lives in the LEAF module ./httpBackend.js (no heavy imports, so
