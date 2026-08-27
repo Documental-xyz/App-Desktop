@@ -25,44 +25,51 @@ function getNativeTheme() {
 
 /**
  * Attempt to load runtime-env.json (mirrors github-config.js pattern).
+ * Reads ALL readable candidates and MERGES them, assigning in increasing
+ * priority order so the packaged build config (resources/config) wins over
+ * a stale userData/runtime-env.json written by older builds. First-read-wins
+ * semantics previously let a legacy/partial userData file (e.g. a persisted
+ * "base" fallback) permanently shadow the packaged .env config.
  * @param {Object} fsImpl - fs implementation (real or mock)
  * @param {Object} pathImpl - path implementation (real or mock)
  * @param {string} appRoot - Application root directory
- * @returns {Object|null} Parsed runtime env or null
+ * @returns {Object|null} Merged runtime env or null
  */
 async function loadRuntimeEnv(fsImpl, pathImpl, appRoot) {
+  // Ordered lowest → highest priority: later candidates override earlier ones.
   const candidatePaths = [
-    pathImpl.join(appRoot, 'resources', 'config', 'runtime-env.json'),
-    pathImpl.join(process.cwd(), 'resources', 'config', 'runtime-env.json')
+    pathImpl.join(process.cwd(), 'resources', 'config', 'runtime-env.json'),
+    pathImpl.join(appRoot, 'resources', 'config', 'runtime-env.json')
   ];
-
-  if (process.resourcesPath) {
-    candidatePaths.unshift(
-      pathImpl.join(process.resourcesPath, 'config', 'runtime-env.json')
-    );
-  }
 
   try {
     const { app } = require('electron');
     if (app && app.getPath) {
-      candidatePaths.unshift(
+      candidatePaths.push(
         pathImpl.join(app.getPath('userData'), 'runtime-env.json')
       );
     }
   } catch (_e) {}
 
+  if (process.resourcesPath) {
+    candidatePaths.push(
+      pathImpl.join(process.resourcesPath, 'config', 'runtime-env.json')
+    );
+  }
+
   const fsPromises = fsImpl.promises || require('fs').promises;
+  const merged = {};
   for (const candidate of candidatePaths) {
     try {
       await fsPromises.access(candidate);
       const raw = await fsPromises.readFile(candidate, 'utf8');
-      return JSON.parse(raw);
+      Object.assign(merged, JSON.parse(raw));
     } catch (_err) {
-      // Skip unreadable candidates
+      // Skip unreadable/invalid candidates
     }
   }
 
-  return null;
+  return Object.keys(merged).length > 0 ? merged : null;
 }
 
 class ThemeService {
@@ -111,7 +118,7 @@ class ThemeService {
     this.manifest = await this._loadManifest(this.themeDir);
 
     // Resolve mode priority: env → runtime-env.json → database (highest)
-    this._resolveThemeModeEnv();  // sync, sets _rawMode from env/file
+    await this._resolveThemeModeEnv(); // sets _rawMode from env/file
     await this._loadDbThemeMode(); // async, overrides from database if present
 
     // Resolve to actual themeMode using the final _rawMode
@@ -438,10 +445,25 @@ class ThemeService {
     return 'base';
   }
 
+  /**
+   * Check that a directory exists. Uses stat() because Electron's asar fs
+   * shim fails fs.access() with ENOENT for DIRECTORY entries inside asar
+   * archives (file entries work), which made every packaged theme dir look
+   * missing and forced the "base" fallback.
+   * @param {string} dirPath - Directory to check
+   * @returns {Promise<boolean>} True if directory exists
+   */
+  async _dirExists(dirPath) {
+    try {
+      const stats = await this._fsPromises.stat(dirPath);
+      return stats.isDirectory();
+    } catch (_err) {
+      return false;
+    }
+  }
+
   async _validateThemeDir(themeDir, themeName) {
-    let themeDirExists = false;
-    try { await this._fsPromises.access(themeDir); themeDirExists = true; } catch { themeDirExists = false; }
-    if (!themeDirExists) {
+    if (!(await this._dirExists(themeDir))) {
       this.logger.warn(
         `ThemeService: theme directory "${themeDir}" not found, falling back to "base"`
       );
@@ -476,7 +498,7 @@ class ThemeService {
 
   async _resolveMode(manifest, explicitMode) {
     const availableModes = manifest.mode || ['dark', 'light'];
-    const mode = explicitMode || this._resolveThemeModeEnv();
+    const mode = explicitMode || await this._resolveThemeModeEnv();
 
     if (mode === 'auto') {
       const osPrefersDark = await this._detectOsDarkPreference();
@@ -547,22 +569,22 @@ class ThemeService {
     return true;
   }
 
-  _resolveThemeModeEnv() {
+  async _resolveThemeModeEnv() {
     this._appRoot = this._appRoot || null;
-
-    if (this._appRoot) {
-      const runtimeEnv = loadRuntimeEnv(this._fs, this._path, this._appRoot);
-      const runtimeMode = (runtimeEnv?.THEME_MODE || '').trim().toLowerCase();
-      if (runtimeMode) {
-        this._rawMode = runtimeMode;
-        return runtimeMode;
-      }
-    }
 
     const envMode = (process.env.THEME_MODE || '').trim().toLowerCase();
     if (envMode) {
       this._rawMode = envMode;
       return envMode;
+    }
+
+    if (this._appRoot) {
+      const runtimeEnv = await loadRuntimeEnv(this._fs, this._path, this._appRoot);
+      const runtimeMode = (runtimeEnv?.THEME_MODE || '').trim().toLowerCase();
+      if (runtimeMode) {
+        this._rawMode = runtimeMode;
+        return runtimeMode;
+      }
     }
 
     this._rawMode = 'auto';
@@ -610,9 +632,7 @@ class ThemeService {
 
     if (manifest.inherit) {
       const parentDir = this._path.join(appRoot, 'themes', manifest.inherit);
-      let parentDirExists = false;
-      try { await this._fsPromises.access(parentDir); parentDirExists = true; } catch { parentDirExists = false; }
-      if (parentDirExists) {
+      if (await this._dirExists(parentDir)) {
         const parentManifest = await this._loadManifest(parentDir);
         const parentChain = await this._buildCssChain(parentDir, parentManifest, appRoot);
         chain.push(...parentChain);
