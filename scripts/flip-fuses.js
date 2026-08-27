@@ -27,6 +27,8 @@ module.exports = async function flipFusesHook(context) {
     [FuseV1Options.EnableNodeCliInspectArguments]: true,
     [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: false,
     [FuseV1Options.OnlyLoadAppFromAsar]: false,
-    [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
+    // MUST stay enabled: without this privilege Chromium's file:// handler
+    // refuses asar-internal paths → every window fails with ERR_FILE_NOT_FOUND
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: true,
   });
 };
