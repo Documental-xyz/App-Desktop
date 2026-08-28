@@ -2,10 +2,11 @@ appId: com.documental.app
 productName: Documental
 directories:
   output: dist
-extraMetadata:
-  env:
-    GITHUB_CLIENT_ID:
-      $fromFile: electron-builder.env
+# Do NOT embed electron-builder.env values under extraMetadata via a "from
+# file" macro: app-builder-lib 26.x supports no such macro — the literal
+# object gets shipped inside the packaged package.json. Runtime env reaches
+# the app only through resources/config/runtime-env.json (npm run build:env,
+# from process.env + electron-builder.env). See .omo/evidence/ci-empty-asar.md.
 files:
   - "main.js"
   - "preload.js"

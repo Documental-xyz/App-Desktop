@@ -88,8 +88,12 @@ describe('Config Unification', () => {
     expect(ymlContent).toBeTruthy();
   });
 
-  it('electron-builder.yml should carry extraMetadata (ported from the removed build field)', () => {
-    expect(ymlContent).toContain('extraMetadata');
+  it('electron-builder.yml must NOT use the unsupported $fromFile macro', () => {
+    // app-builder-lib 26.x silently ships the literal {$fromFile: ...} object
+    // into the packaged package.json instead of reading the file.
+    expect(ymlContent).not.toContain('$fromFile');
+    const configLines = ymlContent.split('\n').filter((l) => !l.trim().startsWith('#'));
+    expect(configLines.some((l) => l.trim().startsWith('extraMetadata:'))).toBe(false);
   });
 
   it('electron-builder.yml should own packaging keys (files/win/linux/asarUnpack)', () => {
@@ -109,5 +113,30 @@ describe('Config Unification', () => {
 
   it('electron-builder.yml should have portable in win targets', () => {
     expect(ymlContent).toContain('portable');
+  });
+});
+
+describe('verify-asar entry normalization', () => {
+  const { normalizeEntry, REQUIRED_FILES } = require('../scripts/verify-asar.js');
+
+  it('normalizes POSIX-style listPackage() entries', () => {
+    expect(normalizeEntry('/renderer/index.html')).toBe('renderer/index.html');
+    expect(normalizeEntry('/main.js')).toBe('main.js');
+  });
+
+  it('normalizes Windows-style listPackage() entries (leading backslash, backslash joins)', () => {
+    // @electron/asar joins header paths with path.join('/', ...) — on Windows
+    // that yields '\renderer\index.html'. The gate compared these against
+    // forward-slash REQUIRED_FILES and failed 16/16 on a healthy asar.
+    expect(normalizeEntry('\\renderer\\index.html')).toBe('renderer/index.html');
+    expect(normalizeEntry('\\main.js')).toBe('main.js');
+    expect(normalizeEntry('\\src\\main\\window\\windowManager.js')).toBe('src/main/window/windowManager.js');
+  });
+
+  it('every required file normalizes to itself (self-check of REQUIRED_FILES shape)', () => {
+    for (const file of REQUIRED_FILES) {
+      expect(normalizeEntry(`/${file}`)).toBe(file);
+      expect(normalizeEntry(`\\${file.split('/').join('\\')}`)).toBe(file);
+    }
   });
 });

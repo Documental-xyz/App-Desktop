@@ -5,6 +5,13 @@
  * packaged app.asar. Silent packaging drops (glob matcher regressions,
  * node_modules hoisting bugs, stale builder caches) otherwise only surface
  * at user runtime as ERR_FILE_NOT_FOUND — see win-asar-packaging evidence.
+ *
+ * @electron/asar's listPackage() joins header paths with path.join('/', ...),
+ * so entries are '/main.js' on POSIX but '\main.js' (backslash-joined, with a
+ * leading backslash) on Windows. Every comparison here MUST go through
+ * normalizeEntry() — the raw strings are not comparable across platforms
+ * (ci-empty-asar evidence: the gate failed 16/16 required files on
+ * windows-latest against a complete, healthy app.asar).
  */
 
 const fs = require('fs');
@@ -29,6 +36,18 @@ const REQUIRED_FILES = [
   'renderer/script.js',
   'renderer/i18n.js',
 ];
+
+/**
+ * Convert an asar listPackage() entry to a comparable forward-slash relative
+ * path, regardless of the host OS separator.
+ * @param {string} entry Raw entry ('/renderer/index.html' or '\renderer\index.html')
+ * @returns {string} Normalized entry ('renderer/index.html')
+ */
+function normalizeEntry(entry) {
+  return entry
+    .replace(/^[\\/]+/, '')
+    .replace(/\\/g, '/');
+}
 
 function findAsarArchives(distDir) {
   const results = [];
@@ -58,7 +77,7 @@ function findAsarArchives(distDir) {
 }
 
 function verifyArchive(asarPath) {
-  const entries = listPackage(asarPath).map((e) => e.replace(/^\//, ''));
+  const entries = listPackage(asarPath).map(normalizeEntry);
   const entrySet = new Set(entries);
   const missing = REQUIRED_FILES.filter((f) => !entrySet.has(f));
 
@@ -100,4 +119,8 @@ function main() {
   console.log('\napp.asar verification passed.');
 }
 
-main();
+module.exports = { normalizeEntry, REQUIRED_FILES };
+
+if (require.main === module) {
+  main();
+}

@@ -120,8 +120,10 @@ jobs:
         env:
           GIT_PROVIDER: dugite
 
-      # Must run BEFORE any build:* script — electron-builder.yml extraMetadata uses
-      # $fromFile: electron-builder.env, so the file itself must exist on disk.
+      # Must run BEFORE any build:* script — `npm run build:env` consumes
+      # electron-builder.env (and the electron-builder CLI injects it as env
+      # vars) to produce resources/config/runtime-env.json, so the file must
+      # exist on disk.
       # THEME/THEME_MODE are required (job env) and verified post-build.
       - name: Generate electron-builder.env
         shell: bash
