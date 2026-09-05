@@ -401,6 +401,11 @@ class BrowserHandlers {
       const detachView = (view) => {
         if (!view) return;
         try {
+          // Collapse the input/render region FIRST so even a flaky removal
+          // cannot leave an interactive ghost over the next page.
+          view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+        } catch (_) { /* view already gone */ }
+        try {
           if (window && typeof window.isDestroyed === 'function' && !window.isDestroyed()) {
             window.removeBrowserView(view);
           }
@@ -418,6 +423,20 @@ class BrowserHandlers {
       if (viewerView && !viewerView.webContents.isDestroyed()) {
         viewerView.webContents.close();
       }
+
+      // Electron-on-Windows quirk: removing BrowserViews can leave the stale
+      // view region rendered and swallowing input until a native relayout is
+      // forced. Re-applying the content size (and invalidating the page)
+      // forces that repaint; harmless no-op elsewhere.
+      try {
+        if (window && typeof window.isDestroyed === 'function' && !window.isDestroyed()) {
+          const [width, height] = window.getContentSize();
+          window.setContentSize(width, height);
+          if (window.webContents && typeof window.webContents.invalidate === 'function') {
+            window.webContents.invalidate();
+          }
+        }
+      } catch (_) { /* never fatal */ }
       
       this.windowBrowserViews.delete(window);
       this.logger.info(`Cleaned up BrowserViews for window ${window.id}`);
