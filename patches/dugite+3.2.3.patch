@@ -1,0 +1,25 @@
+diff --git a/node_modules/dugite/build/lib/exec.js b/node_modules/dugite/build/lib/exec.js
+index f3de25c..5c13b66 100644
+--- a/node_modules/dugite/build/lib/exec.js
++++ b/node_modules/dugite/build/lib/exec.js
+@@ -14,6 +14,7 @@ function exec(args, path, options) {
+         maxBuffer: options?.maxBuffer ?? Infinity,
+         signal: options?.signal,
+         killSignal: options?.killSignal,
++        windowsHide: true,
+     };
+     return new Promise((resolve, reject) => {
+         const cp = (0, child_process_1.execFile)(gitLocation, args, opts, (err, stdout, stderr) => {
+diff --git a/node_modules/dugite/build/lib/spawn.js b/node_modules/dugite/build/lib/spawn.js
+index 924ad09..43ceb92 100644
+--- a/node_modules/dugite/build/lib/spawn.js
++++ b/node_modules/dugite/build/lib/spawn.js
+@@ -13,7 +13,7 @@ const child_process_1 = require("child_process");
+  */
+ function spawn(args, path, opts) {
+     const { env, gitLocation } = (0, git_environment_1.setupEnvironment)(opts?.env ?? {});
+-    const spawnedProcess = (0, child_process_1.spawn)(gitLocation, args, { env, cwd: path });
++    const spawnedProcess = (0, child_process_1.spawn)(gitLocation, args, { env, cwd: path, windowsHide: true });
+     (0, ignore_closed_input_stream_1.ignoreClosedInputStream)(spawnedProcess);
+     return spawnedProcess;
+ }
