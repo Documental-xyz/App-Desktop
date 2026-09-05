@@ -121,6 +121,9 @@ class EmbeddedRuntimeService {
    * Spawn a child process using the embedded runtime's env scrub.
    * All options except `env` are passed through to execa verbatim
    * (killDescendants, cleanup, windowsHide, cwd, stdio, ...).
+   * On win32, spawns through a shell host when cmd is the embedded runtime
+   * (electron.exe has no console, so windowsHide is meaningless for it —
+   * cmd.exe gets the invisible console the whole npm child-tree inherits).
    * @param {string} cmd - Executable path (no shell interpolation)
    * @param {string[]} args - Arguments array
    * @param {Object} [opts] - execa options; `env` defaults to process.env and is scrubbed
@@ -128,8 +131,16 @@ class EmbeddedRuntimeService {
    */
   spawnNodeChild(cmd, args, opts = {}) {
     const { env, ...rest } = opts;
+    // The embedded runtime runs CLIs inside electron.exe (GUI subsystem — it
+    // has NO console, so windowsHide is meaningless for it): every
+    // console-subsystem child npm spawns would get its own VISIBLE console.
+    // Spawning through a shell host on win32 gives cmd.exe an invisible
+    // console (windowsHide) that the ENTIRE npm child-tree inherits.
+    const viaShellHost = process.platform === 'win32' &&
+      typeof cmd === 'string' && path.resolve(cmd).toLowerCase() === path.resolve(process.execPath).toLowerCase();
     return execa(cmd, args, {
       ...rest,
+      shell: viaShellHost || rest.shell || false,
       env: this.buildChildEnv(env || process.env),
       extendEnv: false
     });

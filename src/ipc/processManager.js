@@ -319,9 +319,19 @@ class ProcessManager {
           killSignal: 'SIGTERM',
           cleanup: true
         };
+        // The embedded runtime runs CLIs inside electron.exe (GUI subsystem
+        // — it has NO console, so windowsHide is meaningless for it): every
+        // console-subsystem child npm spawns would get its own VISIBLE
+        // console. Spawning through a shell host on win32 gives cmd.exe an
+        // invisible console (windowsHide) that the ENTIRE npm child-tree
+        // inherits. Do not clobber an existing shell option.
+        const embeddedShellHost = process.platform === 'win32' &&
+          typeof actualCommand === 'string' &&
+          path.resolve(actualCommand).toLowerCase() === path.resolve(process.execPath).toLowerCase();
+        const mergedSpawnOptions = { ...spawnOptions, shell: embeddedShellHost || spawnOptions.shell || false };
         const subprocess = viaEmbeddedRuntime
-          ? this.embeddedRuntimeService.spawnNodeChild(actualCommand, actualArgs, spawnOptions)
-          : execa(actualCommand, actualArgs, spawnOptions);
+          ? this.embeddedRuntimeService.spawnNodeChild(actualCommand, actualArgs, mergedSpawnOptions)
+          : execa(actualCommand, actualArgs, mergedSpawnOptions);
 
         activeProcesses[processId] = subprocess;
 
