@@ -410,7 +410,11 @@ async getHomeDirectory() {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (window && !window.isDestroyed()) {
         // Use absolute path - handle both development and packaged environments
-          const rendererPath = path.join(app.getAppPath(), 'renderer', page);
+          // __dirname-based resolution, identical to windowManager's startup
+          // loads — app.getAppPath() is unreliable in some packaged builds
+          // (observed returning a path without package.json/renderer, which
+          // broke every navigation while startup kept working).
+          const rendererPath = path.join(__dirname, '..', '..', 'renderer', page);
           
           this.logger.info(`🚀 Navigating to page: ${page}`);
           this.logger.info(`📦 App packaged: ${require('electron').app.isPackaged}`);

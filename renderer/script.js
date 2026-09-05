@@ -1,4 +1,14 @@
 document.addEventListener('DOMContentLoaded', async () => {
+  // Surface silent navigation failures: main.html registers its own handlers
+  // (confirmCloseProject); every other page gets this global catch-all so a
+  // failed navigate() never leaves links looking "dead" with no feedback.
+  if (window.electronAPI && window.electronAPI.onceNavigateFailed &&
+      !window.location.pathname.includes('main.html')) {
+    window.electronAPI.onceNavigateFailed((page, errorMessage) => {
+      console.error(`Falha ao navegar para ${page}:`, errorMessage);
+      alert(`Não foi possível abrir a tela solicitada (${page}).\n${errorMessage || ''}`.trim());
+    });
+  }
   if (window.__i18nReady) await window.__i18nReady;
   const navigateButtons = document.querySelectorAll('[data-navigate]');
   function navigateToPage(page) {
