@@ -136,13 +136,13 @@ function getGitBinaryPath(overrideDirs) {
 function getBundledGitVersion(overrideDirs, callback) {
   const bin = getGitBinaryPath(overrideDirs);
   if (typeof callback === 'function') {
-    execFile(bin, ['--version'], { timeout: 10000 }, (err, stdout) => {
+    execFile(bin, ['--version'], { timeout: 10000, windowsHide: true }, (err, stdout) => {
       callback(err, err ? undefined : String(stdout).trim());
     });
     return null;
   }
   return new Promise((resolve, reject) => {
-    execFile(bin, ['--version'], { timeout: 10000 }, (err, stdout) => {
+    execFile(bin, ['--version'], { timeout: 10000, windowsHide: true }, (err, stdout) => {
       if (err) reject(err);
       else resolve(String(stdout).trim());
     });

@@ -30,7 +30,7 @@ class WindowsProcessInspector {
    */
   static async processExists(pid) {
     return new Promise((resolve) => {
-      const tasklist = spawn('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv']);
+      const tasklist = spawn('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv'], { windowsHide: true });
       
       tasklist.stdout.on('data', (data) => {
         if (data.toString().includes('No tasks are running')) {
@@ -55,7 +55,7 @@ class WindowsProcessInspector {
    */
   static async getProcessInfo(pid) {
     return new Promise((resolve) => {
-      const tasklist = spawn('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/v']);
+      const tasklist = spawn('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/v'], { windowsHide: true });
       let output = '';
       
       tasklist.stdout.on('data', (data) => {
@@ -113,7 +113,7 @@ class WindowsProcessInspector {
    */
   static async getProcessesByName(namePattern) {
     return new Promise((resolve) => {
-      const tasklist = spawn('tasklist', ['/fi', `IMAGENAME eq ${namePattern}`, '/fo', 'csv', '/v']);
+      const tasklist = spawn('tasklist', ['/fi', `IMAGENAME eq ${namePattern}`, '/fo', 'csv', '/v'], { windowsHide: true });
       let output = '';
       
       tasklist.stdout.on('data', (data) => {
@@ -207,7 +207,7 @@ class WindowsProcessInspector {
    */
   static async killProcess(pid) {
     return new Promise((resolve) => {
-      const taskkill = spawn('taskkill', ['/pid', pid.toString(), '/f']);
+      const taskkill = spawn('taskkill', ['/pid', pid.toString(), '/f'], { windowsHide: true });
       
       taskkill.on('close', (code) => {
         resolve(code === 0);

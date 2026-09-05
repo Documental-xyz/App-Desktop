@@ -432,7 +432,8 @@ class NodeRuntimeManager {
       const child = spawn(executable, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: this.buildRuntimeEnv(),
-        shell: this.platform === 'win32' && executable.endsWith('.cmd')
+        shell: this.platform === 'win32' && executable.endsWith('.cmd'),
+        windowsHide: true
       });
 
       let output = '';

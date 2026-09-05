@@ -45,7 +45,11 @@ async function killPidTree(pid, gracePeriod = 1500) {
  */
 function killWindows(pid) {
   return new Promise((resolve, reject) => {
-    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], (error, stdout, stderr) => {
+    // NOTE: tree-kill's internal exec('taskkill') is intentionally NOT reached
+    // on win32 — killPidTree branches to this execFile first, so tree-kill
+    // itself stays unpatched. `windowsHide: true` suppresses the console-window
+    // flash that taskkill would otherwise cause on Windows (no-op elsewhere).
+    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         // taskkill exits non-zero when the process is already dead
         // Treat this as success — the goal is "process is gone"

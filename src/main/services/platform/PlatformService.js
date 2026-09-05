@@ -62,6 +62,7 @@ class PlatformService {
         env: { ...process.env, ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 30000,
+        windowsHide: true,
         ...options
       };
 

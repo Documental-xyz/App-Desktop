@@ -6,7 +6,6 @@
 
 'use strict';
 
-const { spawn } = require('child_process');
 const { execa } = require('execa');
 const fs = require('fs');
 const path = require('path');
@@ -472,9 +471,6 @@ class ProcessManager {
     let processStarted = false;
     
     try {
-      // Create a custom spawn to handle the dev server process
-      const { spawn } = require('child_process');
-      
       // Resolve npm via the embedded runtime, with managed-runtime fallback
       let env = { ...process.env };
       const runtime = await this.resolveRuntimeExecutable('npm', env, `dev-${projectId}`);

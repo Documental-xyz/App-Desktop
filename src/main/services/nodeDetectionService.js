@@ -222,7 +222,8 @@ class NodeDetectionService {
   async checkSystemNode() {
     return new Promise((resolve) => {
       const child = spawn('node', ['-p', 'JSON.stringify({ version: process.version, path: process.execPath })'], {
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
       });
 
       let stdout = '';
