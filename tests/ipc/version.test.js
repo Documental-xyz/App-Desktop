@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // tests/static-assertions.test.js) — we need the REAL modules to read files.
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 /** Repository package.json — the single version source of truth. */
 const pkg = JSON.parse(
@@ -69,11 +70,29 @@ describe('app:get-version IPC', () => {
     // Assertion happens inside registerAndGetHandler (registration found)
   });
 
-  it('returns exactly app.getVersion() (delegates, no hardcoding)', async () => {
-    global.mockElectron.app.getVersion.mockReturnValue('9.9.9-test');
+  it('resolves the package.json version even when getVersion() returns the Electron fallback', async () => {
+    // Regression: in packaged builds app.getVersion() falls back to the
+    // ELECTRON executable version ("42.3.3") when it cannot locate the app's
+    // package.json. The handler must read package.json explicitly instead.
+    global.mockElectron.app.getVersion.mockReturnValue('42.3.3');
     const handler = await registerAndGetHandler();
-    expect(handler()).toBe('9.9.9-test');
-    expect(global.mockElectron.app.getVersion).toHaveBeenCalled();
+    expect(handler()).toBe(pkg.version);
+    expect(handler()).not.toBe('42.3.3');
+  });
+
+  it('falls back to app.getVersion() when package.json cannot be resolved', async () => {
+    global.mockElectron.app.isPackaged = true;
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'version-fallback-'));
+    try {
+      global.mockElectron.app.getAppPath.mockReturnValue(emptyDir);
+      global.mockElectron.app.getVersion.mockReturnValue('9.9.9-test');
+      const handler = await registerAndGetHandler();
+      expect(handler()).toBe('9.9.9-test');
+      expect(global.mockElectron.app.getVersion).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(emptyDir, { recursive: true, force: true });
+      global.mockElectron.app.isPackaged = false;
+    }
   });
 
   it('returns the package.json version when Electron reads it (dev behavior)', async () => {

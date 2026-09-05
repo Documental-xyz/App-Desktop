@@ -16,6 +16,7 @@ const path = require('path');
 const os = require('os');
 const { PlatformService } = require('../main/services/platform/PlatformService.js');
 const { getAppIcon } = require('../main/platform/icons');
+const { resolveAppVersion } = require('../main/app-version.js');
 
 /**
  * @type {import('child_process').ChildProcess[]} Currently active exec() child processes
@@ -665,7 +666,7 @@ async getHomeDirectory() {
     /**
      * Get app version (package.json in dev, packaged app metadata in prod)
      */
-    ipcMain.handle('app:get-version', () => app.getVersion());
+    ipcMain.handle('app:get-version', () => resolveAppVersion(app));
 
     ipcMain.handle('completeWelcomeSetup', async (event) => {
       return this.completeWelcomeSetup(event);

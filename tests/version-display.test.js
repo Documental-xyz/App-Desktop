@@ -60,15 +60,15 @@ describe('Window titles are versioned at creation (D4)', () => {
     const source = read('src/main/window/windowManager.js');
     expect(source).toMatch(/const \{ BrowserWindow, Menu, app \} = require\('electron'\)/);
     expect(source).toMatch(/function getVersionedTitle\(base = 'Documental'\)/);
-    expect(source).toMatch(/app\.getVersion\(\)/);
+    expect(source).toMatch(/resolveAppVersion\(app\)/);
     const uses = source.match(/title: getVersionedTitle\(\)/g) || [];
     expect(uses.length).toBe(3);
   });
 
-  it('system.js registers app:get-version returning app.getVersion()', () => {
+  it('system.js registers app:get-version returning resolveAppVersion(app)', () => {
     const source = read('src/ipc/system.js');
     expect(source).toMatch(
-      /ipcMain\.handle\('app:get-version',\s*\(\)\s*=>\s*app\.getVersion\(\)\)/
+      /ipcMain\.handle\('app:get-version',\s*\(\)\s*=>\s*resolveAppVersion\(app\)\)/
     );
   });
 });

@@ -12,15 +12,16 @@ const { BrowserWindow, Menu, app } = require('electron');
 const WINDOW_BG_COLOR = '#111827';
 
 /**
- * Window title with the dynamic app version appended (app.getVersion()).
+ * Window title with the dynamic app version appended (resolveAppVersion()).
  * @param {string} [base='Documental'] - Base title before the version suffix
  * @returns {string} e.g. "Documental v1.0.0"
  */
 function getVersionedTitle(base = 'Documental') {
-  return `${base} v${app.getVersion()}`;
+  return `${base} v${resolveAppVersion(app)}`;
 }
 const path = require('path');
 const fs = require('fs');
+const { resolveAppVersion } = require('../app-version.js');
 const { getLogger } = require('../logging/logger.js');
 const { getAppIcon } = require('../platform/icons');
 
