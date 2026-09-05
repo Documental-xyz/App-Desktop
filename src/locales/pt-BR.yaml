@@ -508,7 +508,7 @@ main:
   help_understood: "Entendido"
   # About modal
   about_title: "Documental Desktop"
-  about_version: "Documental 1.0.0"
+  about_version: "Documental {version}"
   about_copyright: "© 2023 Documental. Todos os direitos reservados."
   about_close: "Fechar"
   # Exit modal

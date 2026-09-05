@@ -578,7 +578,13 @@
                 zoomLevel: 100,
 
                 init() {
-                    document.title = __t('welcome.page_title');
+                    const baseTitle = __t('welcome.page_title');
+                    document.title = baseTitle;
+                    if (window.Documental && window.Documental.withVersion) {
+                        window.Documental.withVersion(baseTitle).then(function (title) {
+                            document.title = title;
+                        });
+                    }
 
                     this.checkAuthenticationStatus();
                     this.initTheme();

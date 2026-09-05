@@ -6,10 +6,19 @@
 
 'use strict';
 
-const { BrowserWindow, Menu } = require('electron');
+const { BrowserWindow, Menu, app } = require('electron');
 
 /** @type {string} Background color for BrowserWindow (shown before CSS loads) */
 const WINDOW_BG_COLOR = '#111827';
+
+/**
+ * Window title with the dynamic app version appended (app.getVersion()).
+ * @param {string} [base='Documental'] - Base title before the version suffix
+ * @returns {string} e.g. "Documental v1.0.0"
+ */
+function getVersionedTitle(base = 'Documental') {
+  return `${base} v${app.getVersion()}`;
+}
 const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('../logging/logger.js');
@@ -77,7 +86,7 @@ class WindowManager {
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
       icon: getAppIcon(),
-      title: 'Documental',
+      title: getVersionedTitle(),
       resizable: windowConfig.resizable !== false,
       maximizable: windowConfig.maximizable !== false,
       minimizable: windowConfig.minimizable !== false,
@@ -122,7 +131,7 @@ class WindowManager {
       show: false,
       backgroundColor: WINDOW_BG_COLOR,
       icon: getAppIcon(),
-      title: 'Documental',
+      title: getVersionedTitle(),
       webPreferences: this.config.windowConfig.webPreferences
     });
 
@@ -228,7 +237,7 @@ class WindowManager {
   createCustomWindow(windowConfig = {}) {
     const config = {
       icon: getAppIcon(),
-      title: 'Documental',
+      title: getVersionedTitle(),
       ...this.config.windowConfig,
       ...windowConfig,
       webPreferences: {

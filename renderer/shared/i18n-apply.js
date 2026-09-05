@@ -5,6 +5,37 @@
  * @since 1.0.0
  */
 
+/** @type {string|undefined} Cached app version ('' when unavailable). */
+let cachedAppVersion;
+
+/**
+ * Resolve the app version once via the preload bridge (cached). Resolves to
+ * '' when the bridge is unavailable (plain-browser dev) or the invoke fails,
+ * so callers treat '' as "no version suffix".
+ * @returns {Promise<string>}
+ */
+async function getAppVersion() {
+  if (cachedAppVersion !== undefined) return cachedAppVersion;
+  try {
+    const version = await window.electronAPI?.getAppVersion?.();
+    cachedAppVersion = typeof version === 'string' && version.trim() ? version : '';
+  } catch (_e) {
+    cachedAppVersion = '';
+  }
+  return cachedAppVersion;
+}
+
+/**
+ * Append the ` v{version}` suffix to an already-localized title when the
+ * app version is available; returns the title unchanged otherwise.
+ * @param {string} title - Base (already localized) title
+ * @returns {Promise<string>}
+ */
+async function withVersion(title) {
+  const version = await getAppVersion();
+  return version ? `${title} v${version}` : title;
+}
+
 /**
  * Apply translations to all declarative i18n attributes under rootEl.
  * Supports: data-i18n, data-i18n-placeholder, data-i18n-title, data-i18n-html,
@@ -37,15 +68,17 @@ async function applyTranslations(rootEl) {
     el.innerHTML = window.__t(el.getAttribute('data-i18n-html'));
   });
 
-  // document.title (if <html data-i18n-document-title> present)
+  // document.title (if <html data-i18n-document-title> present), with the
+  // dynamic app version appended when available
   const docTitleKey = document.documentElement.getAttribute('data-i18n-document-title');
-  if (docTitleKey) document.title = window.__t(docTitleKey);
+  if (docTitleKey) document.title = await withVersion(window.__t(docTitleKey));
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { applyTranslations };
+  module.exports = { applyTranslations, withVersion, getAppVersion };
 }
 if (typeof window !== 'undefined') {
   window.Documental = window.Documental || {};
   window.Documental.applyTranslations = applyTranslations;
+  window.Documental.withVersion = withVersion;
 }

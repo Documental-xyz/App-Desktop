@@ -679,6 +679,11 @@ async getHomeDirectory() {
       return this.openFileExplorer(dirPath);
     });
 
+    /**
+     * Get app version (package.json in dev, packaged app metadata in prod)
+     */
+    ipcMain.handle('app:get-version', () => app.getVersion());
+
     ipcMain.handle('completeWelcomeSetup', async (event) => {
       return this.completeWelcomeSetup(event);
     });

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="dark" lang="en"><head>
+<html class="dark" lang="en" data-i18n-document-title="main.page_title"><head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <link rel="icon" type="image/png" sizes="64x64" href="./assets/icon-favicon.png"/>
@@ -8,6 +8,7 @@
 <link href="./assets/css/compiled.css" rel="stylesheet"/>
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <script src="./i18n.js"></script>
+<script src="./shared/i18n-apply.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="script.js" defer></script>
 <style>
@@ -163,6 +164,7 @@
 clearingCache: false,
     helpModalOpen: false,
     aboutModalOpen: false,
+    appVersion: '',
     exitModalOpen: false,
     closeProjectModalOpen: false,
     isNavigating: false,
@@ -1036,7 +1038,14 @@ clearingCache: false,
     },
     async init() { // Make init an async function
         console.log('🚀 INIT STARTED - Renderer initialization beginning');
-        
+
+        // App version (dynamic, from package.json via app:get-version IPC) —
+        // fetched first so the About modal never shows a stale value even if
+        // later init steps fail.
+        window.electronAPI?.getAppVersion?.().then((version) => {
+            this.appVersion = (typeof version === 'string' && version) || '';
+        }).catch(() => {});
+
         // Check project context immediately
         const currentProjectId = sessionStorage.getItem('currentProjectId');
         console.log('🔍 PROJECT CONTEXT CHECK - currentProjectId:', currentProjectId);
@@ -2405,7 +2414,7 @@ clearingCache: false,
 </svg>
 </div>
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.about_title')"></h3>
-<p class="mt-1 text-sm text-muted-dark" x-text="__t('main.about_version')"></p>
+<p class="mt-1 text-sm text-muted-dark" x-text="appVersion ? __t('main.about_version', { version: appVersion }) : 'Documental'"></p>
 <p class="mt-4 text-xs text-muted-dark" x-text="__t('main.about_copyright')"></p>
 <div class="mt-6 flex justify-center">
 <button @click="aboutModalOpen = false" class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary-hover" x-text="__t('main.about_close')"></button>
@@ -2436,5 +2445,12 @@ clearingCache: false,
 
 </div>
 
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.Documental && window.Documental.applyTranslations) {
+      window.Documental.applyTranslations();
+    }
+  });
+</script>
 <script src="./shared/theme-init.js" defer></script>
 </body></html>

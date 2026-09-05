@@ -352,7 +352,11 @@ document.addEventListener('DOMContentLoaded', async function() {
       el.textContent = window.__t(el.getAttribute('data-i18n'));
     });
   }
-  document.title = window.__t('repo_select.page_title');
+  if (window.Documental && window.Documental.withVersion) {
+    document.title = await window.Documental.withVersion(window.__t('repo_select.page_title'));
+  } else {
+    document.title = window.__t('repo_select.page_title');
+  }
 });
 
 // Inject logo SVG during parse (before paint) to avoid flicker.
