@@ -20,9 +20,9 @@ const childProcess = nodeRequire('child_process');
 
 const execFileCalls = [];
 let latestExecFileCallback = null;
-childProcess.execFile = function stubExecFile(cmd, args, cb) {
+childProcess.execFile = function stubExecFile(cmd, args, opts, maybeCb) {
   execFileCalls.push({ cmd, args });
-  latestExecFileCallback = cb;
+  latestExecFileCallback = typeof opts === 'function' ? opts : maybeCb;
 };
 
 vi.mock('tree-kill', () => vi.fn());
