@@ -1,7 +1,9 @@
 const { test, expect } = require('@playwright/test');
 const path = require('path');
+const fs = require('fs');
 
 const RENDERER_DIR = path.resolve(__dirname, '../../renderer');
+const EVIDENCE_DIR = path.resolve(__dirname, '../../.omo/evidence');
 
 test.describe('index.html - SVG Logo and Zoom Controls', () => {
   test.beforeEach(async ({ page }) => {
@@ -169,5 +171,72 @@ test.describe('index.html - SVG Logo and Zoom Controls', () => {
     await expect(createCard).toBeVisible();
     await expect(openCard).toBeVisible();
     await expect(recentCard).toBeVisible();
+  });
+});
+
+test.describe('index.html - Recent Workspaces path normalization', () => {
+  test('recent card renders normalized path for NULL repoFolderName, never raw DB string', async ({ page }) => {
+    const raw1 = 'C:/Users/Dev/Workspaces';
+    const raw2 = 'C:/Users//Dev/../Dev/Workspaces';
+    // path.join(raw, '') mirrors the renderer's PathUtils.join(projectPath, '')
+    // and yields exactly what the real join-path IPC (fileService path.join)
+    // returns on this host. Raw2 contains duplicate + dot-dot segments that
+    // path.join provably rewrites on every host, so the raw string must not
+    // survive into the DOM.
+    const expected1 = path.join(raw1, '');
+    const expected2 = path.join(raw2, '');
+
+    const projects = [
+      { id: 1, projectName: 'Docs WS', projectPath: raw1, repoFolderName: null, repoFullName: null },
+      { id: 2, projectName: 'Unnormalized DB Row', projectPath: raw2, repoFolderName: null, repoFullName: null }
+    ];
+    // Fake joinPath keyed by the exact spread segments PathUtils forwards
+    // (including the empty repoFolderName segment).
+    const joinKey = (...segments) => segments.join('||');
+    const joinExpectations = {
+      [joinKey(raw1, '')]: expected1,
+      [joinKey(raw2, '')]: expected2
+    };
+
+    await page.addInitScript(({ seededProjects, expectations }) => {
+      window.electronAPI = {
+        getRecentProjects: () => Promise.resolve(seededProjects),
+        joinPath: (...segments) =>
+          Promise.resolve(expectations[segments.join('||')]),
+        normalizePath: (p) => Promise.resolve(p)
+      };
+    }, { seededProjects: projects, expectations: joinExpectations });
+
+    const filePath = path.resolve(RENDERER_DIR, 'index.html');
+    await page.goto(`file://${filePath}`);
+    await page.waitForLoadState('domcontentloaded');
+
+    const container = page.locator('#recent-projects-container');
+    const card1 = container.locator('.recent-project-item[data-project-id="1"]');
+    const card2 = container.locator('.recent-project-item[data-project-id="2"]');
+    await expect(card1).toBeVisible();
+    await expect(card2).toBeVisible();
+
+    // Path <p> is the last <p> per card; its textContent is the "folder"
+    // icon ligature followed by the rendered path.
+    const readPathText = async (card) => {
+      const text = await card.locator('p').last().textContent();
+      return text.replace(/^folder/, '').trim();
+    };
+
+    const rendered1 = await readPathText(card1);
+    expect(rendered1).toBe(expected1);
+
+    const rendered2 = await readPathText(card2);
+    expect(rendered2).toBe(expected2);
+    if (expected2 !== raw2) {
+      expect(rendered2).not.toBe(raw2);
+    }
+
+    fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+    await page.screenshot({
+      path: path.join(EVIDENCE_DIR, 'task-4-recent-normalized.png'),
+      fullPage: true
+    });
   });
 });

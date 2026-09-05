@@ -13,24 +13,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const projectNameInput = document.getElementById('project-name');
   const githubUrlInput = document.getElementById('github-url');
 
-  // Cross-platform path utility functions
-  const PathUtils = {
-    join: async (...segments) => {
-      if (window.electronAPI && window.electronAPI.joinPath) {
-        return await window.electronAPI.joinPath(...segments);
-      }
-      // Fallback for development/testing
-      return segments.join('/').replace(/\/+/g, '/');
-    },
-    
-    normalize: async (filePath) => {
-      if (window.electronAPI && window.electronAPI.normalizePath) {
-        return await window.electronAPI.normalizePath(filePath);
-      }
-      // Fallback for development/testing
-      return filePath.replace(/\\/g, '/');
-    }
-  };
+  // PathUtils lives in renderer/shared/path-utils.js, which must be loaded
+  // via <script> before script.js. Pages without it (e.g. main.html) never
+  // render project paths, so a null reference must fail loudly, not silently
+  // render raw DB strings.
+  const PathUtils = (window.Documental && window.Documental.PathUtils) || null;
 
   // Load recent projects
   await loadRecentProjects();
@@ -208,9 +195,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         recentProjectsContainer.innerHTML = await Promise.all(recentProjects.map(async (project) => {
-          const fullPath = project.repoFolderName 
-            ? await PathUtils.join(project.projectPath, project.repoFolderName)
-            : project.projectPath;
+          // Always normalize: join with '' collapses the raw-render vector
+          // when repoFolderName is NULL.
+          const fullPath = await PathUtils.join(project.projectPath, project.repoFolderName || '');
           
           const repoName = project.repoFullName || '';
           return `
@@ -332,9 +319,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         allProjectsContainer.innerHTML = await Promise.all(allProjects.map(async (project) => {
-          const fullPath = project.repoFolderName 
-            ? await PathUtils.join(project.projectPath, project.repoFolderName)
-            : project.projectPath;
+          // Always normalize: join with '' collapses the raw-render vector
+          // when repoFolderName is NULL.
+          const fullPath = await PathUtils.join(project.projectPath, project.repoFolderName || '');
           
           const repoName = project.repoFullName || '';
           return `
