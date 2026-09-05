@@ -59,7 +59,10 @@ class IpcRegistry {
     
     this.systemHandlers = new SystemHandlers({
       ...dependencies,
-      processManager: this.projectCreationHandler.processManager
+      processManager: this.projectCreationHandler.processManager,
+      // Reuses BrowserHandlers.cleanupWindowBrowserViews when navigate()
+      // moves a window away from main.html (same-window workspace switch).
+      browserHandlers: this.browserHandlers
     });
     
     // Register Node.js detection handlers

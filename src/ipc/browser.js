@@ -393,7 +393,24 @@ class BrowserHandlers {
   cleanupWindowBrowserViews(window) {
     if (this.windowBrowserViews.has(window)) {
       const { editorView, viewerView } = this.windowBrowserViews.get(window);
-      
+
+      // Detach views BEFORE destroying their webContents — on same-window
+      // navigation away from main.html the window is still alive and dead
+      // views must not stay stacked over the next page. From the window
+      // 'closed' event the window is already destroyed, hence the guard.
+      const detachView = (view) => {
+        if (!view) return;
+        try {
+          if (window && typeof window.isDestroyed === 'function' && !window.isDestroyed()) {
+            window.removeBrowserView(view);
+          }
+        } catch (_) {
+          // Window already gone — webContents.close() below still runs.
+        }
+      };
+      detachView(editorView);
+      detachView(viewerView);
+
       // Clean up BrowserViews
       if (editorView && !editorView.webContents.isDestroyed()) {
         editorView.webContents.close();

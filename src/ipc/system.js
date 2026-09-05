@@ -130,13 +130,17 @@ class SystemHandlers {
    * @param {Object} [dependencies.processManager] - Process manager instance
    * @param {Object} [dependencies.themeService] - Theme service instance
    * @param {Object} [dependencies.nodeDetectionService] - Node detection service (single source of truth)
+   * @param {Object} [dependencies.browserHandlers] - BrowserView handlers instance
+   *   (cleanupWindowBrowserViews is reused by navigate() when a window leaves
+   *   the editor page; injected by the IPC registry to avoid cross-module requires)
    */
-  constructor({ logger, windowManager, processManager, themeService, nodeDetectionService }) {
+  constructor({ logger, windowManager, processManager, themeService, nodeDetectionService, browserHandlers }) {
     this.logger = logger;
     this.windowManager = windowManager;
     this.processManager = processManager;
     this.themeService = themeService || null;
     this.nodeDetectionService = nodeDetectionService || null;
+    this.browserHandlers = browserHandlers || null;
     this.platformService = new PlatformService({ logger });
 
     this.installationProgress = {
@@ -377,7 +381,26 @@ async getHomeDirectory() {
   }
 
   /**
-   * Navigate to a specific page
+   * Tear down the BrowserViews attached to a window during a same-window
+   * workspace switch. Delegates to BrowserHandlers.cleanupWindowBrowserViews
+   * (the same cleanup the window 'closed' path performs), injected via the
+   * IPC registry. Never fatal: navigation must proceed even if teardown errs.
+   * @param {Electron.BrowserWindow} window - Window leaving the editor page
+   * @private
+   */
+  _teardownWindowBrowserViews(window) {
+    if (!this.browserHandlers || typeof this.browserHandlers.cleanupWindowBrowserViews !== 'function') {
+      return;
+    }
+    try {
+      this.browserHandlers.cleanupWindowBrowserViews(window);
+    } catch (err) {
+      this.logger.warn(`⚠️ BrowserView teardown during navigation failed: ${err && err.message}`);
+    }
+  }
+
+  /**
+   * Navigate to a specific page in the SAME window
    * @param {Object} event - IPC event object
    * @param {string} page - Page name to navigate to
    */
@@ -385,13 +408,13 @@ async getHomeDirectory() {
     try {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (window && !window.isDestroyed()) {
-       // Use absolute path - handle both development and packaged environments
-         const rendererPath = path.join(app.getAppPath(), 'renderer', page);
+        // Use absolute path - handle both development and packaged environments
+          const rendererPath = path.join(app.getAppPath(), 'renderer', page);
+          
+          this.logger.info(`🚀 Navigating to page: ${page}`);
+          this.logger.info(`📦 App packaged: ${require('electron').app.isPackaged}`);
+          this.logger.info(`📁 Renderer path: ${rendererPath}`);
          
-         this.logger.info(`🚀 Navigating to page: ${page}`);
-         this.logger.info(`📦 App packaged: ${require('electron').app.isPackaged}`);
-         this.logger.info(`📁 Renderer path: ${rendererPath}`);
-        
         // Use loadFile() instead of loadURL() - it handles asar files correctly
         // Prevent window from closing during navigation
         const closeHandler = (e) => {
@@ -400,75 +423,35 @@ async getHomeDirectory() {
         };
         
         window.on('close', closeHandler);
+
+        // Navigating AWAY from the editor (main.html is the only page hosting
+        // BrowserViews): tear the window's views down FIRST — they would stay
+        // attached and visible over the target page otherwise.
+        if (path.basename(String(page)) !== 'main.html') {
+          this._teardownWindowBrowserViews(window);
+        }
         
         window.loadFile(rendererPath)
           .then(() => {
             this.logger.info(`✅ Page loaded successfully: ${page}`);
             // Remove the close prevention handler after successful load
             window.removeListener('close', closeHandler);
+            event.sender.send('navigate-complete', page);
           })
           .catch(error => {
             this.logger.error(`❌ Failed to load page: ${error.message}`);
             this.logger.error(`❌ Error details:`, error);
             // Remove the close prevention handler on error
             window.removeListener('close', closeHandler);
+            // Notify the renderer so it resets its isNavigating flags —
+            // stranded flags would silently bypass the exit confirmation.
+            event.sender.send('navigate-failed', page, String(error && error.message || error));
           });
       } else {
         this.logger.error(`❌ Window is destroyed or null for navigation to: ${page}`);
       }
     } catch (error) {
       this.logger.error(`❌ Critical error in navigate method:`, error);
-    }
-  }
-
-  /**
-   * Close current window and open new one with index.html
-   * @param {Object} event - IPC event object
-   * @returns {Promise<{success: boolean, error?: string}>} Result of the operation
-   */
-  async closeAndReopenToIndex(event) {
-    try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (window && !window.isDestroyed()) {
-        this.logger.info('🔄 Closing window and reopening with index.html');
-        
-        // Get current window bounds to preserve size
-        const { width, height, x, y } = window.getBounds();
-        
-        // Create new window FIRST (to prevent app from quitting if this is the last window)
-        const newWindow = new BrowserWindow({
-          width,
-          height,
-          x,
-          y,
-          show: false,
-          backgroundColor: WINDOW_BG_COLOR,
-          icon: getAppIcon(),
-          title: 'Documental',
-          webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            preload: path.join(__dirname, '../../preload.js')
-          }
-        });
-        
-         // Load index.html
-         const indexPath = path.join(app.getAppPath(), 'renderer', 'index.html');
-         await newWindow.loadFile(indexPath);
-        
-        // Show new window
-        newWindow.show();
-        
-        // Now close the old window
-        window.close();
-        
-        this.logger.info('✅ Window closed and new one opened with index.html');
-        return { success: true };
-      }
-      return { success: false, error: 'Window not found or destroyed' };
-    } catch (error) {
-      this.logger.error('❌ Error in closeAndReopenToIndex:', error);
-      return { success: false, error: error.message };
     }
   }
 
@@ -693,13 +676,6 @@ async getHomeDirectory() {
      */
     ipcMain.handle('create-new-window-with-state', async (event, windowState) => {
       return await this.createNewWindowWithState(windowState);
-    });
-
-    /**
-     * Close and reopen to index
-     */
-    ipcMain.handle('close-and-reopen-to-index', async (event) => {
-      return await this.closeAndReopenToIndex(event);
     });
 
     const { nativeTheme } = require('electron');

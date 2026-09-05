@@ -4,6 +4,11 @@ console.log('🔧 Preload script loaded successfully!');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   navigateTo: (page) => ipcRenderer.send('navigate', page),
+  // One-shot navigation result feedback (navigateTo is fire-and-forget):
+  // `once` self-removes so a failed navigation can never leave the renderer's
+  // isNavigating flags stranded at `true` (which would bypass exit confirmation).
+  onceNavigateComplete: (callback) => ipcRenderer.once('navigate-complete', (event, page) => callback(page)),
+  onceNavigateFailed: (callback) => ipcRenderer.once('navigate-failed', (event, page, error) => callback(page, error)),
   getHomeDirectory: () => ipcRenderer.invoke('get-home-directory'),
   openDirectoryDialog: () => ipcRenderer.invoke('open-directory-dialog'),
   saveProject: (projectData) => ipcRenderer.invoke('save-project', projectData),
@@ -40,7 +45,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getBrowserViewUrl: (viewName) => ipcRenderer.invoke('get-browser-view-url', viewName),
   clearBrowserCache: () => ipcRenderer.invoke('clear-browser-cache'),
   createNewWindowWithState: (windowState) => ipcRenderer.invoke('create-new-window-with-state', windowState),
-  closeAndReopenToIndex: () => ipcRenderer.invoke('close-and-reopen-to-index'),
   onBrowserViewLoaded: (callback) => ipcRenderer.on('browser-view-loaded', (event, payload) => callback(payload)),
   onBrowserViewNavigated: (callback) => ipcRenderer.on('browser-view-navigated', (event, payload) => callback(payload)),
   confirmExitApp: () => ipcRenderer.invoke('confirm-exit-app'),

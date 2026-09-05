@@ -494,10 +494,44 @@ clearingCache: false,
         sessionStorage.removeItem('serverOutput');
         sessionStorage.removeItem('commandOutput');
         
-        // ESTRATÉGIA RADICAL: Fechar janela atual e abrir nova com index.html
-        // Isso garante estado 100% limpo, eliminando BrowserViews e estado Alpine.js
-        if (window.electronAPI && window.electronAPI.closeAndReopenToIndex) {
-            window.electronAPI.closeAndReopenToIndex();
+        // Navegar na MESMA janela para a tela de seleção (index.html). O estado
+        // Alpine é reiniciado naturalmente pelo carregamento da página e as
+        // BrowserViews são desanexadas pelo handler 'navigate' do main.
+        // Paridade intencional: o servidor dev e processos filhos NÃO são
+        // encerrados aqui (o fluxo antigo também os mantinha; killAll só
+        // dispara no before-quit).
+        if (window.electronAPI && window.electronAPI.navigateTo) {
+            this.isNavigating = true;
+            window.isNavigating = true; // suprime o modal de saída no beforeunload durante a navegação
+
+            // navigateTo é fire-and-forget (ipcRenderer.send): observar o
+            // resultado para que uma falha nunca deixe as flags presas em
+            // `true` — elas silenciariam a confirmação de saída num X posterior.
+            const resetNavFlags = () => {
+                this.isNavigating = false;
+                window.isNavigating = false;
+            };
+            const safetyTimeout = setTimeout(() => {
+                // Sem evento do main em 10s — rearmar a proteção de saída.
+                resetNavFlags();
+            }, 10000);
+            const onNavComplete = () => clearTimeout(safetyTimeout);
+            const onNavFailed = (_page, errorMessage) => {
+                clearTimeout(safetyTimeout);
+                resetNavFlags();
+                this.closeProjectModalOpen = false;
+                console.error('Falha ao navegar para a tela de seleção:', errorMessage);
+                alert(__t('main.git_exec_error_generic'));
+            };
+
+            if (window.electronAPI.onceNavigateComplete) {
+                window.electronAPI.onceNavigateComplete(onNavComplete);
+            }
+            if (window.electronAPI.onceNavigateFailed) {
+                window.electronAPI.onceNavigateFailed(onNavFailed);
+            }
+
+            window.electronAPI.navigateTo('index.html');
         }
     },
     cancelCloseProject() {

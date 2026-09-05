@@ -176,40 +176,35 @@ describe('SystemHandlers Path Resolution Tests', () => {
     });
   });
 
-  describe('closeAndReopenToIndex path resolution', () => {
+  describe('navigate path resolution (same-window workspace switch)', () => {
     it('should use app.getAppPath() when app is packaged', async () => {
       const mockLoadFile = vi.fn().mockResolvedValue(undefined);
-      const mockClose = vi.fn();
       const mockWindow = {
         id: 123,
         isDestroyed: vi.fn(() => false),
-        getBounds: vi.fn(() => ({ width: 1400, height: 900, x: 100, y: 100 })),
-        close: mockClose
-      };
-      const newMockWindow = {
-        id: 456,
         loadFile: mockLoadFile,
-        show: vi.fn()
+        on: vi.fn(),
+        removeListener: vi.fn()
       };
-      
+
       global.mockElectron.app.isPackaged = true;
       global.mockElectron.app.getAppPath.mockReturnValue(MOCK_APP_PATH);
-      global.mockElectron.BrowserWindow = vi.fn(() => newMockWindow);
       global.mockElectron.BrowserWindow.fromWebContents = vi.fn(() => mockWindow);
       global.mockElectron.BrowserWindow.getAllWindows = vi.fn(() => []);
-      
+
       const mockLogger = { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
       const mockWindowManager = { hasValidMainWindow: vi.fn().mockReturnValue(true), getMainWindow: vi.fn() };
-      
+
       const { SystemHandlers } = await import('../../src/ipc/system.js');
       const handlers = new SystemHandlers({ logger: mockLogger, windowManager: mockWindowManager });
-      
+
       const mockEvent = { sender: { send: vi.fn() } };
-      await handlers.closeAndReopenToIndex(mockEvent);
-      
+      handlers.navigate(mockEvent, 'index.html');
+      await new Promise((resolve) => setImmediate(resolve));
+
       expect(global.mockElectron.app.getAppPath).toHaveBeenCalled();
       expect(mockLoadFile).toHaveBeenCalled();
-      
+
       const filePath = mockLoadFile.mock.calls[0][0];
       expect(toPosix(filePath)).toContain('mock/app/path');
       expect(filePath).toContain('renderer');
@@ -221,32 +216,28 @@ describe('SystemHandlers Path Resolution Tests', () => {
       const mockWindow = {
         id: 123,
         isDestroyed: vi.fn(() => false),
-        getBounds: vi.fn(() => ({ width: 1400, height: 900, x: 100, y: 100 })),
-        close: vi.fn()
-      };
-      const newMockWindow = {
-        id: 456,
         loadFile: mockLoadFile,
-        show: vi.fn()
+        on: vi.fn(),
+        removeListener: vi.fn()
       };
-      
+
       global.mockElectron.app.isPackaged = false;
       process.cwd = vi.fn(() => DEV_CWD);
-      global.mockElectron.BrowserWindow = vi.fn(() => newMockWindow);
       global.mockElectron.BrowserWindow.fromWebContents = vi.fn(() => mockWindow);
-      
+
       const mockLogger = { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
       const mockWindowManager = { hasValidMainWindow: vi.fn().mockReturnValue(true), getMainWindow: vi.fn() };
-      
+
       const { SystemHandlers } = await import('../../src/ipc/system.js');
       const handlers = new SystemHandlers({ logger: mockLogger, windowManager: mockWindowManager });
-      
+
       const mockEvent = { sender: { send: vi.fn() } };
-      await handlers.closeAndReopenToIndex(mockEvent);
-      
+      handlers.navigate(mockEvent, 'index.html');
+      await new Promise((resolve) => setImmediate(resolve));
+
       expect(global.mockElectron.app.getAppPath).not.toHaveBeenCalled();
       expect(mockLoadFile).toHaveBeenCalled();
-      
+
       const filePath = mockLoadFile.mock.calls[0][0];
       expect(toPosix(filePath)).toContain('dev/project');
       expect(filePath).toContain('renderer');
