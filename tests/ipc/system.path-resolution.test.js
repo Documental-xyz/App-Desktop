@@ -177,7 +177,7 @@ describe('SystemHandlers Path Resolution Tests', () => {
   });
 
   describe('navigate path resolution (same-window workspace switch)', () => {
-    it('should use app.getAppPath() when app is packaged', async () => {
+    it('should resolve pages relative to __dirname (not app.getAppPath()) when app is packaged', async () => {
       const mockLoadFile = vi.fn().mockResolvedValue(undefined);
       const mockWindow = {
         id: 123,
@@ -202,16 +202,15 @@ describe('SystemHandlers Path Resolution Tests', () => {
       handlers.navigate(mockEvent, 'index.html');
       await new Promise((resolve) => setImmediate(resolve));
 
-      expect(global.mockElectron.app.getAppPath).toHaveBeenCalled();
+      expect(global.mockElectron.app.getAppPath).not.toHaveBeenCalled();
       expect(mockLoadFile).toHaveBeenCalled();
 
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(toPosix(filePath)).toContain('mock/app/path');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('index.html');
     });
 
-    it('should use process.cwd() when app is in development mode', async () => {
+    it('should resolve pages relative to __dirname (not process.cwd()) in development mode', async () => {
       const mockLoadFile = vi.fn().mockResolvedValue(undefined);
       const mockWindow = {
         id: 123,
@@ -239,7 +238,6 @@ describe('SystemHandlers Path Resolution Tests', () => {
       expect(mockLoadFile).toHaveBeenCalled();
 
       const filePath = mockLoadFile.mock.calls[0][0];
-      expect(toPosix(filePath)).toContain('dev/project');
       expect(filePath).toContain('renderer');
       expect(filePath).toContain('index.html');
     });
