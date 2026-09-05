@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 
+const { isDummyClientId } = require('./lib/client-id-guard');
+
 const projectRoot = path.resolve(__dirname, '..');
 
 /**
@@ -41,6 +43,24 @@ function main() {
     process.exit(1);
   }
 
+  // Guard: known dummy/placeholder client IDs must never ship in a build.
+  if (isDummyClientId(clientId)) {
+    if (process.env.ALLOW_DUMMY_GITHUB_CLIENT_ID === '1') {
+      console.warn('⚠️  WARNING: GITHUB_CLIENT_ID is a dummy/placeholder value ("%s").', clientId);
+      console.warn('⚠️  WARNING: this build CANNOT be shipped or distributed (GitHub auth will not work).');
+      console.warn('⚠️  WARNING: allowed only because ALLOW_DUMMY_GITHUB_CLIENT_ID=1 is set (local spikes/dev).');
+    } else {
+      console.error('❌ GITHUB_CLIENT_ID is set to a known dummy/placeholder value ("%s").', clientId);
+      console.error('   Dummy client IDs must never ship — the packaged app would fail GitHub authentication.');
+      console.error('   Fix: set the real client ID in electron-builder.env (gitignored):');
+      console.error('       GITHUB_CLIENT_ID=<your real client ID>');
+      console.error('   Release/CI: the workflow injects the GH_CLIENT_ID secret as GITHUB_CLIENT_ID');
+      console.error('   (GITHUB_* secret names are reserved on GitHub Actions) — see docs/release-workflow.md.');
+      console.error('   Local spikes ONLY: prefix the command with ALLOW_DUMMY_GITHUB_CLIENT_ID=1 to bypass.');
+      process.exit(1);
+    }
+  }
+
   const outputDir = path.join(projectRoot, 'resources', 'config');
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -68,4 +88,8 @@ function main() {
   console.log(`✅ Runtime environment file created at ${outputPath}`);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { main, isDummyClientId };

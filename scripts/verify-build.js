@@ -3,6 +3,31 @@
 const fs = require('fs');
 const path = require('path');
 
+const { isDummyClientId } = require('./lib/client-id-guard');
+
+/**
+ * Validate the GITHUB_CLIENT_ID inside a parsed packaged runtime-env.json.
+ * Exported for unit tests (fixture-based, no real dist/ needed).
+ * @param {unknown} config - parsed runtime-env.json contents
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+function validateRuntimeEnvGithubClientId(config) {
+  const clientId =
+    config && typeof config.GITHUB_CLIENT_ID === 'string'
+      ? config.GITHUB_CLIENT_ID.trim()
+      : '';
+
+  if (!clientId) {
+    return { ok: false, reason: 'GITHUB_CLIENT_ID is missing or empty in packaged runtime-env.json' };
+  }
+
+  if (isDummyClientId(clientId)) {
+    return { ok: false, reason: `GITHUB_CLIENT_ID in packaged runtime-env.json is a known dummy value ("${clientId}")` };
+  }
+
+  return { ok: true };
+}
+
 // Build verification script to ensure all dependencies are correctly packaged
 class BuildVerifier {
   constructor() {
@@ -15,7 +40,7 @@ class BuildVerifier {
 
   getDistPaths() {
     const paths = [];
-    
+
     const builds = [
       'linux-unpacked',
       'AppImage',
@@ -31,7 +56,7 @@ class BuildVerifier {
         if (fs.existsSync(appPath)) {
           paths.push({ type: 'asar-unpacked', path: appPath, build });
         }
-        
+
         const directPath = path.join(buildPath, 'resources', 'app', 'node_modules');
         if (fs.existsSync(directPath)) {
           paths.push({ type: 'direct', path: directPath, build });
@@ -40,6 +65,35 @@ class BuildVerifier {
     });
 
     return paths;
+  }
+
+  getExistingBuildDirs() {
+    return [
+      'linux-unpacked',
+      'win-unpacked'
+    ]
+      .map(build => path.join(this.distBasePath, build))
+      .filter(buildPath => fs.existsSync(buildPath));
+  }
+
+  checkRuntimeEnv(buildPath) {
+    const runtimeEnvPath = path.join(buildPath, 'resources', 'config', 'runtime-env.json');
+
+    if (!fs.existsSync(runtimeEnvPath)) {
+      return {
+        ok: false,
+        reason: `packaged runtime-env.json not found (${path.relative(this.projectRoot, runtimeEnvPath)}) — run "node scripts/generate-runtime-env.js" before building`
+      };
+    }
+
+    let config;
+    try {
+      config = JSON.parse(fs.readFileSync(runtimeEnvPath, 'utf8'));
+    } catch (error) {
+      return { ok: false, reason: `packaged runtime-env.json is not valid JSON: ${error.message}` };
+    }
+
+    return validateRuntimeEnvGithubClientId(config);
   }
 
   checkModule(moduleName, nodeModulesPath) {
@@ -258,6 +312,21 @@ class BuildVerifier {
       }
     });
 
+    console.log('\n🔑 Checking packaged GitHub client ID (runtime-env.json):');
+    this.getExistingBuildDirs().forEach(buildPath => {
+      const build = path.basename(buildPath);
+      const result = this.checkRuntimeEnv(buildPath);
+      if (result.ok) {
+        console.log(`   ✅ ${build}: GITHUB_CLIENT_ID present, not a dummy value`);
+      } else {
+        console.error(`   ❌ ${build}: ${result.reason}`);
+        overallSuccess = false;
+      }
+    });
+    if (this.getExistingBuildDirs().length === 0) {
+      console.log('   ℹ️  No unpacked build dirs found — runtime-env.json check skipped (dist paths reported above).');
+    }
+
     // Check project-root icon sources (multi-entry ICO, stale ICNS absent)
     const projectIcons = this.checkProjectIcons();
     let projectIconsOk = true;
@@ -289,8 +358,11 @@ class BuildVerifier {
   }
 }
 
-// Run the verifier
-const verifier = new BuildVerifier();
-const success = verifier.verifyBuild();
+module.exports = { BuildVerifier, validateRuntimeEnvGithubClientId };
 
-process.exit(success ? 0 : 1);
+if (require.main === module) {
+  const verifier = new BuildVerifier();
+  const success = verifier.verifyBuild();
+
+  process.exit(success ? 0 : 1);
+}
