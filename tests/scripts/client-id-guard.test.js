@@ -7,7 +7,7 @@
  * All client IDs below are fixtures (denylisted dummies or made-up
  * correctly-formatted values) — no real client ID is committed.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
 import { createRequire } from 'module';
 import { spawnSync } from 'child_process';
 import os from 'os';
@@ -30,6 +30,7 @@ const {
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testsDir, '..', '..');
 const generateScript = path.join(projectRoot, 'scripts', 'generate-runtime-env.js');
+const realRuntimeEnvPath = path.join(projectRoot, 'resources', 'config', 'runtime-env.json');
 
 const REAL_FORMAT_IDS = [
   'Iv1.8a61f1b2c3d4e5f6',
@@ -52,17 +53,38 @@ function writeRuntimeEnv(buildDir, config) {
 }
 
 function runGenerateScript(envOverrides) {
-  return spawnSync('node', [generateScript], {
+  const outputPath = path.join(makeTempDir(), 'runtime-env.json');
+  const result = spawnSync('node', [generateScript], {
     cwd: projectRoot,
     encoding: 'utf8',
     timeout: 60000,
-    env: { ...process.env, ...envOverrides }
+    // RUNTIME_ENV_OUTPUT keeps the spawned script away from the real resources/config/runtime-env.json.
+    env: { ...process.env, RUNTIME_ENV_OUTPUT: outputPath, ...envOverrides }
   });
+  return { result, outputPath };
 }
+
+let realRuntimeEnvExistedAtStart = false;
+
+beforeAll(() => {
+  realRuntimeEnvExistedAtStart = fs.existsSync(realRuntimeEnvPath);
+});
 
 afterEach(() => {
   tempDirs.forEach(dir => fs.rmSync(dir, { recursive: true, force: true }));
   tempDirs = [];
+});
+
+afterAll(() => {
+  // Regression guard: spawning generate-runtime-env.js from tests must never create the real
+  // runtime-env.json — it is loaded by src/config/github-config.js in other suites
+  // (tests/ipc/git.test.js, tests/ipc/gitClone-security.test.js) and pollutes their auth behavior.
+  if (!realRuntimeEnvExistedAtStart) {
+    expect(
+      fs.existsSync(realRuntimeEnvPath),
+      'client-id-guard tests created resources/config/runtime-env.json (test-environment pollution)'
+    ).toBe(false);
+  }
 });
 
 describe('isDummyClientId', () => {
@@ -113,7 +135,7 @@ describe('isDummyClientId', () => {
 
 describe('generate-runtime-env.js guard', () => {
   it('exits 1 with an actionable error when GITHUB_CLIENT_ID is a known dummy', () => {
-    const result = runGenerateScript({ GITHUB_CLIENT_ID: 'spike-local-dummy' });
+    const { result } = runGenerateScript({ GITHUB_CLIENT_ID: 'spike-local-dummy' });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('spike-local-dummy');
@@ -122,14 +144,14 @@ describe('generate-runtime-env.js guard', () => {
   });
 
   it('exits 1 for the placeholder dummy your_github_client_id_here', () => {
-    const result = runGenerateScript({ GITHUB_CLIENT_ID: 'your_github_client_id_here' });
+    const { result } = runGenerateScript({ GITHUB_CLIENT_ID: 'your_github_client_id_here' });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('release-workflow');
   });
 
   it('escape hatch ALLOW_DUMMY_GITHUB_CLIENT_ID=1 exits 0 with a loud warning', () => {
-    const result = runGenerateScript({
+    const { result, outputPath } = runGenerateScript({
       GITHUB_CLIENT_ID: 'spike-local-dummy',
       ALLOW_DUMMY_GITHUB_CLIENT_ID: '1'
     });
@@ -138,6 +160,10 @@ describe('generate-runtime-env.js guard', () => {
     const output = `${result.stdout}\n${result.stderr}`;
     expect(output).toContain('WARNING');
     expect(output).toContain('dummy');
+
+    // The write must land on the redirected temp path, proving RUNTIME_ENV_OUTPUT took effect.
+    expect(fs.existsSync(outputPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(outputPath, 'utf8')).GITHUB_CLIENT_ID).toBe('spike-local-dummy');
   });
 });
 

@@ -61,8 +61,10 @@ function main() {
     }
   }
 
-  const outputDir = path.join(projectRoot, 'resources', 'config');
-  fs.mkdirSync(outputDir, { recursive: true });
+  // RUNTIME_ENV_OUTPUT lets tests redirect the output to a temp file so they never write the real resources/config/runtime-env.json.
+  const outputPath = process.env.RUNTIME_ENV_OUTPUT ||
+    path.join(projectRoot, 'resources', 'config', 'runtime-env.json');
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   const runtimeConfig = {
     generatedAt: new Date().toISOString(),
@@ -83,7 +85,6 @@ function main() {
   const gitProvider = (process.env.GIT_PROVIDER || '').trim();
   runtimeConfig.GIT_PROVIDER = gitProvider || 'isomorphic-git';
 
-  const outputPath = path.join(outputDir, 'runtime-env.json');
   fs.writeFileSync(outputPath, JSON.stringify(runtimeConfig, null, 2), 'utf8');
   console.log(`✅ Runtime environment file created at ${outputPath}`);
 }
