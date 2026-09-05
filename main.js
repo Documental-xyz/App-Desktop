@@ -73,6 +73,17 @@ async function initializeServices() {
     await databaseManager.initialize();
     logger.info('✅ Database initialized');
 
+    // One-time migration: canonicalize stored project paths (separators/casing
+    // fix for the Recent Workspaces list). Guarded by a settings flag so it
+    // runs once; a failure must never block startup.
+    try {
+      const { migrateProjectPaths } = require('./src/ipc/projects.js');
+      const migration = await migrateProjectPaths(databaseManager);
+      logger.info(`✅ Project path canonicalization: ${migration.migrated} row(s) updated`);
+    } catch (migrationError) {
+      logger.warn('⚠️ Project path canonicalization skipped:', migrationError.message);
+    }
+
     // Initialize theme service
     logger.info('🎨 Initializing theme service...');
     themeService = new ThemeService({

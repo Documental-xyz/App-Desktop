@@ -104,6 +104,104 @@ async function gitClone(url, dir, options = {}) {
 }
 
 /**
+ * Canonicalize a workspace path before it is persisted or compared.
+ *
+ * Always normalizes separators via `path.resolve`. On Windows only, it also
+ * asks the filesystem for the TRUE on-disk casing via `realpathSync.native`
+ * (plain `realpathSync` may lowercase paths). If the folder does not exist
+ * yet — projects are saved BEFORE the clone creates them — realpath throws
+ * and we gracefully fall back to the resolved path.
+ *
+ * On POSIX the resolved path is returned as-is: `realpath` must NOT be used
+ * there because it would rewrite symlinked home directories (e.g.
+ * `/home` → `/mnt/data/home`), corrupting stored paths.
+ *
+ * @param {string} inputPath - Raw workspace path (any separators/casing)
+ * @param {Object} [options] - Injection point for pure unit tests
+ * @param {string} [options.platform=process.platform] - Platform to behave as
+ * @param {Object} [options.pathModule=path] - Path module (path.win32/path.posix)
+ * @param {Object} [options.fs=fs] - fs-like object exposing realpathSync.native
+ * @returns {string} Canonical path safe to persist
+ */
+function canonicalizeWorkspacePath(inputPath, options = {}) {
+  const pathModule = options.pathModule || path;
+  const fsModule = options.fs || fs;
+  const platform = options.platform || process.platform;
+
+  const resolved = pathModule.resolve(inputPath);
+  if (platform !== 'win32') {
+    return resolved;
+  }
+
+  try {
+    return fsModule.realpathSync.native(resolved);
+  } catch (_error) {
+    // Folder not on disk yet (project saved before clone) or any other
+    // filesystem error — the resolved path is the best canonical form.
+    return resolved;
+  }
+}
+
+/**
+ * Platform-aware equality for workspace paths. Windows filesystems are
+ * case-insensitive, so comparisons there must be case-insensitive too;
+ * POSIX filesystems are (typically) case-sensitive — compare exactly.
+ *
+ * @param {string} a - First joined path
+ * @param {string} b - Second joined path
+ * @param {string} [platform=process.platform] - Platform to behave as
+ * @returns {boolean} Whether the paths denote the same location
+ */
+function workspacePathsEqual(a, b, platform = process.platform) {
+  if (platform === 'win32') {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}
+
+/**
+ * One-time migration: canonicalize every stored `projects.projectPath` row
+ * using {@link canonicalizeWorkspacePath}. Guarded by a settings-table flag
+ * (`pathCanonicalization:v1`) so it runs exactly once per database. Only
+ * rows whose canonical form differs are UPDATEd — no schema change, no
+ * DELETE, `repoFolderName` untouched.
+ *
+ * @param {Object} databaseManager - Initialized DatabaseManager
+ * @param {Object} [options] - Injection point for tests
+ * @param {Function} [options.canonicalize] - Canonicalizer (defaults to canonicalizeWorkspacePath)
+ * @param {string} [options.flagKey='pathCanonicalization:v1'] - Settings guard key
+ * @returns {Promise<{migrated: number, skipped: boolean}>} Migration summary
+ */
+async function migrateProjectPaths(databaseManager, options = {}) {
+  const canonicalize = options.canonicalize || canonicalizeWorkspacePath;
+  const flagKey = options.flagKey || 'pathCanonicalization:v1';
+
+  const existingFlag = await databaseManager.getSetting(flagKey);
+  if (existingFlag !== null && existingFlag !== undefined) {
+    return { migrated: 0, skipped: true };
+  }
+
+  const rows = await databaseManager.all('SELECT id, projectPath FROM projects');
+  let migrated = 0;
+  for (const row of rows) {
+    if (!row.projectPath) {
+      continue;
+    }
+    const canonical = canonicalize(row.projectPath);
+    if (canonical !== row.projectPath) {
+      await databaseManager.run(
+        'UPDATE projects SET projectPath = ? WHERE id = ?',
+        [canonical, row.id]
+      );
+      migrated += 1;
+    }
+  }
+
+  await databaseManager.setSetting(flagKey, new Date().toISOString());
+  return { migrated, skipped: false };
+}
+
+/**
  * Project Management IPC Handlers
  */
 class ProjectHandlers {
@@ -235,7 +333,7 @@ class ProjectHandlers {
           let matchingProject = null;
           for (const project of rows) {
             const fullProjectPath = path.join(project.projectPath, project.repoFolderName || '');
-            if (fullProjectPath === folderPath) {
+            if (workspacePathsEqual(fullProjectPath, folderPath)) {
               matchingProject = project;
               break;
             }
@@ -320,16 +418,17 @@ class ProjectHandlers {
   async saveProject(projectData) {
     try {
       const { projectName, repoUrl, projectPath } = projectData;
+      const canonicalPath = canonicalizeWorkspacePath(projectPath);
       const repoFullName = repoUrl
         ? repoUrl.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
         : null;
       const db = await this.databaseManager.getDatabase();
-      
+
       return new Promise((resolve, reject) => {
         const self = this; // Preserve reference to the class
         db.run(
           `INSERT INTO projects (projectName, repoUrl, repoFullName, projectPath, repoFolderName) VALUES (?, ?, ?, ?, ?)`,
-          [projectName, repoUrl, repoFullName, projectPath, null], // repoFolderName is null initially
+          [projectName, repoUrl, repoFullName, canonicalPath, null], // repoFolderName is null initially
           function (err) {
             if (err) {
               self.logger.error('Error saving project:', err.message);
@@ -515,4 +614,9 @@ class ProjectHandlers {
   }
 }
 
-module.exports = { ProjectHandlers };
+module.exports = {
+  ProjectHandlers,
+  canonicalizeWorkspacePath,
+  workspacePathsEqual,
+  migrateProjectPaths
+};
