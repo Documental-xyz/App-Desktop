@@ -4,6 +4,9 @@
  * @since 1.0.0
  */
 
+// Windows console guard FIRST — modules destructure child_process at load time
+require('./src/main/processes/windows-hide-guard.js').installWindowsHideGuard(require('child_process'), process.platform);
+
 // Load environment variables FIRST - before any other imports
 require('dotenv').config();
 
