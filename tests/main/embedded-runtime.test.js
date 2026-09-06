@@ -167,5 +167,22 @@ describe('EmbeddedRuntimeService', () => {
         delete process.env.SPAWN_TEST_MARKER;
       }
     });
+
+    it('spawns successfully WITHOUT a caller-provided windowsHide (flag forced internally, T4)', async () => {
+      // The windowsHide:true literal inside spawnNodeChild is locked
+      // statically by tests/static-assertions.test.js; this proves the
+      // forced flag never breaks the spawn itself. Uses the PATH-resolved
+      // 'node' (not process.execPath) so the win32 shell-host path — which
+      // has a PRE-EXISTING quoting bug for spaced execPaths like
+      // "C:\Program Files\..." — stays out of the picture (out of scope
+      // for windows-console-elimination; see evidence).
+      const os = require('node:os');
+      const result = await service.spawnNodeChild(
+        'node',
+        ['-e', 'process.exit(0)'],
+        { cwd: os.tmpdir() }
+      );
+      expect(result.exitCode).toBe(0);
+    });
   });
 });
