@@ -317,14 +317,18 @@ class ProcessManager {
           killDescendants: true,
           forceKillAfterDelay: 1500,
           killSignal: 'SIGTERM',
-          cleanup: true
+          cleanup: true,
+          windowsHide: true
         };
-        // The embedded runtime runs CLIs inside electron.exe (GUI subsystem
-        // — it has NO console, so windowsHide is meaningless for it): every
-        // console-subsystem child npm spawns would get its own VISIBLE
-        // console. Spawning through a shell host on win32 gives cmd.exe an
-        // invisible console (windowsHide) that the ENTIRE npm child-tree
-        // inherits. Do not clobber an existing shell option.
+        // windowsHide is pinned explicitly: execa already defaults it to true,
+        // but a future execa major must not be able to silently regress it.
+        // On win32 the embedded runtime spawns through a shell host (cmd.exe)
+        // so the DIRECT console-subsystem child gets one hidden console
+        // instead of flashing a window — electron.exe itself is GUI-subsystem
+        // and never attaches to a console, so nothing is inherited by the npm
+        // child-tree; deeper npm descendants are hidden by the npm-internal
+        // windowsHide patches (@npmcli/promise-spawn, @npmcli/run-script).
+        // Do not clobber an existing shell option.
         const embeddedShellHost = process.platform === 'win32' &&
           typeof actualCommand === 'string' &&
           path.resolve(actualCommand).toLowerCase() === path.resolve(process.execPath).toLowerCase();
@@ -501,7 +505,8 @@ class ProcessManager {
           killDescendants: true,
           forceKillAfterDelay: 1500,
           killSignal: 'SIGTERM',
-          cleanup: true
+          cleanup: true,
+          windowsHide: true
         });
 
         // Race 1 fix: execa's pid is undefined until 'spawn'. Wait for it so

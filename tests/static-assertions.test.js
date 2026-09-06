@@ -50,14 +50,28 @@ describe('Static code invariants', () => {
     const ALLOWLIST = [
       'src/ipc/permissionHandlers.js:391:      const { data } = await octokit.repos.getBranchProtection({ owner, repo, branch });'
     ];
+    // Normalize to repo-relative paths so the allowlist is stable.
+    // On win32, grep prefixes lines with the OS-native search path AND
+    // blindly appends '/' after its trailing separator, producing mixed
+    // doubled slashes (`...src\/ipc/`). Normalize only the file-path part
+    // (up to `.js:<lineno>:`) so the matched source text is untouched.
+    const NORM_ROOT = ROOT.replace(/\\/g, '/');
+    const toRepoRel = (line) => {
+      const m = line.match(/^(.*?\.js):(\d+):([\s\S]*)$/);
+      if (!m) return line.replace(/\\/g, '/');
+      const filePath = m[1].replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+      const rel = filePath.startsWith(NORM_ROOT + '/')
+        ? filePath.slice(NORM_ROOT.length + 1)
+        : filePath;
+      return `${rel}:${m[2]}:${m[3]}`;
+    };
     const result = execSync(
       `grep -rn "getBranchProtection" ${path.join(ROOT, 'src/')} || true`
     )
       .toString()
       .trim()
-      // Normalize to repo-relative paths so the allowlist is stable
       .split('\n')
-      .filter((line) => line && !ALLOWLIST.includes(line.replace(ROOT + '/', '')))
+      .filter((line) => line && !ALLOWLIST.includes(toRepoRel(line)))
       .join('\n');
     expect(result).toBe('');
   });
@@ -373,14 +387,43 @@ describe('windowsHide static guard over src/', () => {
     expect(violations).toEqual([]);
   });
 
-  it('src/ declares at least 10 windowsHide: true option sites', () => {
-    // Inventory locked by D1a: 2 GitRuntime + 1 nodeDetectionService +
-    // 1 nodeRuntimeManager + 1 killPidTree + 4 windows.js + 1 PlatformService.
+  it('src/ declares at least 18 windowsHide: true option sites', () => {
+    // Inventory locked by D1a + T3: 2 GitRuntime + 1 nodeDetectionService +
+    // 1 nodeRuntimeManager + 1 killPidTree + 4 windows.js + 1 PlatformService
+    // (10 code sites) + 3 T3 execa-seam sites (processManager
+    // runTrackedCommand + startDevServer, embeddedRuntimeService
+    // spawnNodeChild) + 5 comment-text matches (windows-hide-guard.js and
+    // killPidTree.js narrative comments) that the raw regex also counts.
     let count = 0;
     for (const file of walkJsFiles(path.join(ROOT, 'src'))) {
       const content = fs.readFileSync(file, 'utf8');
       count += (content.match(/windowsHide\s*:\s*true/g) || []).length;
     }
-    expect(count).toBeGreaterThanOrEqual(10);
+    expect(count).toBeGreaterThanOrEqual(18);
+  });
+
+  describe('forced windowsHide at the T3 execa spawn seams', () => {
+    const readMasked = (rel) =>
+      maskCommentsAndStrings(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
+
+    it('runTrackedCommand spawnOptions literal pins windowsHide: true', () => {
+      const masked = readMasked('src/ipc/processManager.js');
+      expect(masked).toMatch(/spawnOptions = \{[^}]*windowsHide:\s*true/s);
+    });
+
+    it('startDevServer spawnNodeChild options pin windowsHide: true', () => {
+      const masked = readMasked('src/ipc/processManager.js');
+      const idx = masked.indexOf('.spawnNodeChild(actualNpmPath');
+      expect(idx).toBeGreaterThan(-1);
+      // The options literal ends well within this window (cwd/env/stdio/kill*).
+      expect(masked.slice(idx, idx + 400)).toMatch(/windowsHide:\s*true/);
+    });
+
+    it('spawnNodeChild execa options literal forces windowsHide: true', () => {
+      const masked = readMasked('src/main/services/embeddedRuntimeService.js');
+      const idx = masked.indexOf('return execa(cmd, args, {');
+      expect(idx).toBeGreaterThan(-1);
+      expect(masked.slice(idx, idx + 300)).toMatch(/windowsHide:\s*true/);
+    });
   });
 });

@@ -119,11 +119,14 @@ class EmbeddedRuntimeService {
 
   /**
    * Spawn a child process using the embedded runtime's env scrub.
-   * All options except `env` are passed through to execa verbatim
-   * (killDescendants, cleanup, windowsHide, cwd, stdio, ...).
-   * On win32, spawns through a shell host when cmd is the embedded runtime
-   * (electron.exe has no console, so windowsHide is meaningless for it —
-   * cmd.exe gets the invisible console the whole npm child-tree inherits).
+   * All options except `env` and `windowsHide` are passed through to execa
+   * verbatim (killDescendants, cleanup, cwd, stdio, ...). windowsHide is
+   * forced to true regardless of caller options: execa already defaults it
+   * to true, but pinning guards against a future execa major changing the
+   * default, and npm child-trees must never flash console windows on win32.
+   * On win32, spawns through a shell host when cmd is the embedded runtime:
+   * electron.exe is GUI-subsystem and never attaches to a console, so the
+   * shell host gives the direct cmd.exe child a single hidden console.
    * @param {string} cmd - Executable path (no shell interpolation)
    * @param {string[]} args - Arguments array
    * @param {Object} [opts] - execa options; `env` defaults to process.env and is scrubbed
@@ -131,18 +134,21 @@ class EmbeddedRuntimeService {
    */
   spawnNodeChild(cmd, args, opts = {}) {
     const { env, ...rest } = opts;
-    // The embedded runtime runs CLIs inside electron.exe (GUI subsystem — it
-    // has NO console, so windowsHide is meaningless for it): every
-    // console-subsystem child npm spawns would get its own VISIBLE console.
-    // Spawning through a shell host on win32 gives cmd.exe an invisible
-    // console (windowsHide) that the ENTIRE npm child-tree inherits.
+    // The embedded runtime runs CLIs inside electron.exe, a GUI-subsystem
+    // binary that never attaches to a console. On win32 we spawn through a
+    // shell host (cmd.exe) so the DIRECT console-subsystem child gets one
+    // hidden console (windowsHide) instead of flashing a window — nothing
+    // is inherited by the npm child-tree; deeper npm descendants are hidden
+    // by the npm-internal windowsHide patches (@npmcli/promise-spawn,
+    // @npmcli/run-script).
     const viaShellHost = process.platform === 'win32' &&
       typeof cmd === 'string' && path.resolve(cmd).toLowerCase() === path.resolve(process.execPath).toLowerCase();
     return execa(cmd, args, {
       ...rest,
       shell: viaShellHost || rest.shell || false,
       env: this.buildChildEnv(env || process.env),
-      extendEnv: false
+      extendEnv: false,
+      windowsHide: true
     });
   }
 }
