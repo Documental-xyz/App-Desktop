@@ -114,7 +114,7 @@ async function openEditorWithContext(window) {
 }
 
 test.describe('Fechar Ambiente — ghost BrowserViews (plan: fechar-ambiente-ghost-browserviews)', () => {
-  test('AC8 [RED today] fluxo exato do usuário: fechar ambiente → cards de index.html mortos (clique engolido pelo fantasma)', async () => {
+  test('AC8 fluxo exato do usuário: fechar ambiente → cards de index.html mortos (clique engolido pelo fantasma)', async () => {
     test.setTimeout(120000);
     const { electronApp, window } = await launchApp();
     try {
@@ -142,30 +142,37 @@ test.describe('Fechar Ambiente — ghost BrowserViews (plan: fechar-ambiente-gho
     await window.waitForURL(/index\.html/, { timeout: 20000 });
 
     // Instrument the "Criar novo" card (index.html:133) so a swallowed
-    // click is distinguishable from a navigation failure.
+    // click is distinguishable from a navigation failure. The proof flag
+    // MUST live in sessionStorage, not window state: a SUCCESSFUL click
+    // navigates this same tab to repo-select.html, destroying the document
+    // where a window flag lives — a post-click evaluate then reads the
+    // fresh page (flag undefined) and fails even though the click worked.
+    // sessionStorage is same-origin and survives the same-tab navigation,
+    // keeping the click-time flag readable after landing on repo-select.
     await window.evaluate(() => {
-      window.__cardClicked = false;
+      sessionStorage.removeItem('__cardClicked');
       const card = document.querySelector('[data-navigate="repo-select.html"]');
-      card.addEventListener('click', () => { window.__cardClicked = true; });
+      card.addEventListener('click', () => { sessionStorage.setItem('__cardClicked', '1'); });
     });
     const card = window.locator('[data-navigate="repo-select.html"]');
     await expect(card).toBeVisible({ timeout: 5000 });
 
-    // (6)+(7) click the card with a short timeout — TODAY the ghost
-    // BrowserView (re-attached by the set-all-browser-view-visibility race
-    // during navigate) covers everything below the 64px header and swallows
-    // the input: the page never sees the click and repo-select.html never
-    // loads. This is the user bug, end to end.
+    // (6)+(7) click the card with a short timeout. With the ghost
+    // BrowserView bug (pre-fix), the view re-attached by the visibility
+    // race during navigate covers everything below the 64px header and
+    // swallows the input: the page never sees the click, the flag is never
+    // set and repo-select.html never loads. Post-fix both proofs hold:
+    // the click reaches the page AND the navigation completes.
     await card.click({ timeout: 5000 });
-    const cardClicked = await window.evaluate(() => window.__cardClicked === true);
-    expect(cardClicked, 'card click reached the index.html page (not swallowed by ghost BrowserView)').toBe(true);
     await window.waitForURL(/repo-select\.html/, { timeout: 5000 });
+    const cardClicked = await window.evaluate(() => sessionStorage.getItem('__cardClicked') === '1');
+    expect(cardClicked, 'card click reached the index.html page (not swallowed by ghost BrowserView)').toBe(true);
     } finally {
       await quitApp(electronApp);
     }
   });
 
-  test('AC9 [GREEN today] overlay normal intacto: menu → Ajuda → fechar; tabs do header continuam clicáveis', async () => {
+  test('AC9 overlay normal intacto: menu → Ajuda → fechar; tabs do header continuam clicáveis', async () => {
     test.setTimeout(120000);
     const { electronApp, window } = await launchApp();
     try {
