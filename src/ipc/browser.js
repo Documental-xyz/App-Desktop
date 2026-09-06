@@ -99,6 +99,33 @@ class BrowserHandlers {
   }
 
   /**
+   * Look up BrowserViews for the window that sent the IPC event WITHOUT
+   * ever creating them. State operations (bounds, visibility, reload,
+   * capture...) from a dying renderer must be no-ops once navigate tore
+   * the window views down — recreating them here is the ghost-BrowserViews
+   * race (views stacked over the next page swallowing input).
+   * @param {Object} event - IPC event object
+   * @returns {Object} Object containing editorView and viewerView (both
+   *   null when the resolved window has no live views entry)
+   */
+  lookupBrowserViewsForEvent(event) {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) {
+      // Fallback to main window for backward compatibility (lookup-only:
+      // never create — an absent entry means the views are dead)
+      const mainWindow = this.windowManager.getMainWindow();
+      if (mainWindow && this.windowBrowserViews.has(mainWindow)) {
+        return this.windowBrowserViews.get(mainWindow);
+      }
+      return { editorView: null, viewerView: null };
+    }
+    if (this.windowBrowserViews.has(window)) {
+      return this.windowBrowserViews.get(window);
+    }
+    return { editorView: null, viewerView: null };
+  }
+
+  /**
    * Track BrowserView loading and broadcast completion
    * @param {BrowserView} view - BrowserView instance
    * @param {string} viewName - Name of the view ('editor' or 'viewer')
@@ -179,11 +206,13 @@ class BrowserHandlers {
    * @param {BrowserViewBounds} bounds - Bounds to set
    */
   setBrowserViewBounds(event, viewName, bounds) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const view = viewName === 'editor' ? editorView : viewerView;
+    if (!view) return; // dead views (post-teardown IPC): no-op, never recreate
+
     const win = BrowserWindow.fromWebContents(event.sender);
-    
-    if (view && win) {
+
+    if (win) {
       const [, contentHeight] = win.getContentSize();
       const maxBottom = contentHeight - FOOTER_HEIGHT;
       const proposedBottom = bounds.y + bounds.height;
@@ -224,11 +253,13 @@ class BrowserHandlers {
    * @param {boolean} visible - Whether to show or hide the view
    */
   setBrowserViewVisibility(event, viewName, visible) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const view = viewName === 'editor' ? editorView : viewerView;
+    if (!view) return; // dead views (post-teardown IPC): no-op, never recreate
+
     const window = BrowserWindow.fromWebContents(event.sender);
-    
-    if (view && window) {
+
+    if (window) {
       if (visible) {
         window.addBrowserView(view);
       } else {
@@ -244,7 +275,14 @@ class BrowserHandlers {
    * @param {boolean} visible - Whether to show or hide all views
    */
   setAllBrowserViewVisibility(event, visible) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
+
+    if (!editorView && !viewerView) {
+      // Expected after navigate teardown: late renderer IPCs hit dead views — no-op.
+      this.logger.debug(`Set all BrowserViews visibility: ${visible} (no-op: no live BrowserViews for this window)`);
+      return;
+    }
+
     const window = BrowserWindow.fromWebContents(event.sender);
     
     if (editorView && window) {
@@ -273,19 +311,17 @@ class BrowserHandlers {
    * @returns {Promise<string|null>} Base64 data URL of the screenshot
    */
   async captureBrowserViewPage(event, viewName) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const view = viewName === 'editor' ? editorView : viewerView;
-    
-    if (view) {
-      try {
-        const image = await view.webContents.capturePage();
-        return image.toDataURL(); // Convert NativeImage to base64 data URL
-      } catch (error) {
-        this.logger.error(`Error capturing page for ${viewName} view:`, error);
-        return null;
-      }
+    if (!view) return null; // dead views (post-teardown IPC): no-op, never recreate
+
+    try {
+      const image = await view.webContents.capturePage();
+      return image.toDataURL(); // Convert NativeImage to base64 data URL
+    } catch (error) {
+      this.logger.error(`Error capturing page for ${viewName} view:`, error);
+      return null;
     }
-    return null;
   }
 
   /**
@@ -295,11 +331,12 @@ class BrowserHandlers {
    * @returns {boolean} Whether navigation was successful
    */
   browserViewGoBack(event, viewName) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const window = BrowserWindow.fromWebContents(event.sender);
     const view = viewName === 'editor' ? editorView : viewerView;
-    
-    if (view && !view.webContents.isDestroyed() && view.webContents.canGoBack()) {
+    if (!view) return false; // dead views (post-teardown IPC): no-op, never recreate
+
+    if (!view.webContents.isDestroyed() && view.webContents.canGoBack()) {
       this.trackBrowserViewLoad(view, viewName, window);
       view.webContents.goBack();
       return true;
@@ -314,11 +351,12 @@ class BrowserHandlers {
    * @returns {boolean} Whether reload was successful
    */
   browserViewReload(event, viewName) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const window = BrowserWindow.fromWebContents(event.sender);
     const view = viewName === 'editor' ? editorView : viewerView;
-    
-    if (view && !view.webContents.isDestroyed()) {
+    if (!view) return false; // dead views (post-teardown IPC): no-op, never recreate
+
+    if (!view.webContents.isDestroyed()) {
       this.trackBrowserViewLoad(view, viewName, window);
       
       // For editor (Sveltia), use reloadIgnoringCache to prevent "Loading site data..." freeze
@@ -341,10 +379,11 @@ class BrowserHandlers {
    * @returns {string|null} Current URL
    */
   getBrowserViewUrl(event, viewName) {
-    const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
+    const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
     const view = viewName === 'editor' ? editorView : viewerView;
-    
-    if (view && !view.webContents.isDestroyed()) {
+    if (!view) return null; // dead views (post-teardown IPC): no-op, never recreate
+
+    if (!view.webContents.isDestroyed()) {
       return view.webContents.getURL();
     }
     return null;
@@ -357,8 +396,15 @@ class BrowserHandlers {
    */
   async clearBrowserCache(event) {
     try {
-      const { editorView, viewerView } = this.getBrowserViewsForEvent(event);
-      
+      const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
+
+      if (!editorView && !viewerView) {
+        // No live views (e.g. post-teardown): success no-op — the "Limpar
+        // cache" modal must not surface an error for a dead window state.
+        this.logger.debug('Browser cache clear skipped: no live BrowserViews for this window');
+        return { success: true };
+      }
+
       const clearViewCache = async (view) => {
         if (view && !view.webContents.isDestroyed()) {
           // Clear cache
