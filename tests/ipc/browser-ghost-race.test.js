@@ -14,8 +14,10 @@
  *      BrowserViews, re-attaching them to the window (addBrowserView
  *      :252/:260) — ghost views stacked over index.html that swallow input.
  *
- * These tests MUST FAIL against current production code (RED proof).
- * The Layer 2 fix (Task 4) should turn them GREEN without edits here.
+ * GREEN post-fix: these contracts lock the race dead. They document the
+ * RED proof from the TDD phase — pre-fix, each assertion below failed
+ * against the then-current production code; the Layer 2 fix (Task 4)
+ * turned them GREEN without edits here.
  *
  * @author Documental Team
  * @since 1.0.0
@@ -190,11 +192,12 @@ describe('AC1 — ghost race: set-all-browser-view-visibility(true) after naviga
     // The late IPC from the dying renderer ("Fechar Ambiente" microtask #2):
     browserHandlers.setAllBrowserViewVisibility(mockEvent, true);
 
-    // RED proof — current code resurrects 2 ghost views via
-    // getBrowserViewsForEvent → getOrCreateBrowserViews [browser.js:48]:
-    expect(BrowserViewCtor).not.toHaveBeenCalled(); // FAILS today: 2 ghosts created
-    expect(browserHandlers.windowBrowserViews.size).toBe(0); // FAILS today: map repopulated
-    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // FAILS today: ghosts re-attached (browser.js:252/:260)
+    // Guard: the late visibility IPC must stay a pure lookup — never
+    // resurrect views via getBrowserViewsForEvent → getOrCreateBrowserViews
+    // [browser.js:48] (pre-fix it created 2 ghosts here):
+    expect(BrowserViewCtor).not.toHaveBeenCalled(); // guard: no BrowserView constructed after teardown
+    expect(browserHandlers.windowBrowserViews.size).toBe(0); // guard: map stays empty
+    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // guard: nothing re-attached
   });
 });
 
@@ -209,13 +212,14 @@ describe('AC2 — ghost race: setBrowserViewBounds/setBrowserViewVisibility on d
     browserHandlers.setBrowserViewVisibility(mockEvent, 'view', true);
 
     const ghosts = ghostViews();
-    // RED proof — current code recreates the pair and mutates the ghosts:
-    expect(ghosts).toHaveLength(0); // FAILS today: 2 ghosts created
+    // Guard: dead views are never recreated nor mutated (pre-fix the
+    // pair came back and the ghosts got mutated):
+    expect(ghosts).toHaveLength(0); // guard: no views created after teardown
     for (const ghost of ghosts) {
-      expect(ghost.setBounds).not.toHaveBeenCalled(); // (unreachable while RED) guards the fix
+      expect(ghost.setBounds).not.toHaveBeenCalled(); // guard: no bounds on ghosts (vacuous while empty — locks the fix)
     }
-    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // FAILS today: ghost viewer re-attached [browser.js:233]
-    expect(browserHandlers.windowBrowserViews.size).toBe(0); // FAILS today: map repopulated
+    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // guard: nothing re-attached
+    expect(browserHandlers.windowBrowserViews.size).toBe(0); // guard: map stays empty
   });
 });
 
@@ -247,10 +251,11 @@ describe('AC5 — ghost race: main-window fallback (fromWebContents → null) mu
 
     browserHandlers.setAllBrowserViewVisibility(mockEvent, true);
 
-    // RED proof — the fallback path [browser.js:90-96] re-enters
-    // getOrCreateBrowserViews and creates a fresh ghost pair:
-    expect(BrowserViewCtor).not.toHaveBeenCalled(); // FAILS today: 2 ghosts via fallback
-    expect(browserHandlers.windowBrowserViews.size).toBe(0); // FAILS today: map repopulated
-    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // guards the fix (window is null today, so nothing attaches — yet)
+    // Guard: the fallback path [browser.js:90-96] must stay a pure
+    // lookup — never re-enter getOrCreateBrowserViews for a fresh ghost
+    // pair (pre-fix it did):
+    expect(BrowserViewCtor).not.toHaveBeenCalled(); // guard: no BrowserView constructed via fallback
+    expect(browserHandlers.windowBrowserViews.size).toBe(0); // guard: map stays empty
+    expect(mockWindow.addBrowserView).not.toHaveBeenCalled(); // guard: nothing attached via the fallback
   });
 });

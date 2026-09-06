@@ -213,7 +213,8 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
 
     // …[Task 6] and a SECOND teardown pass must remove the race's ghosts:
     // map empty, ghosts detached (bounds collapsed) and their webContents
-    // closed. TODAY THIS FAILS — nothing after loadFile cleans the map.
+    // closed — GREEN post-fix: the second pass in loadFile's .catch
+    // harvests the ghost, nothing survives after settle.
     expect(browserHandlers.windowBrowserViews.size).toBe(0);
     for (const ghost of ghostViews) {
       expect(ghost.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 });

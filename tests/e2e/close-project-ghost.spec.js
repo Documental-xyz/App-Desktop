@@ -5,13 +5,14 @@
  * Reproduces the EXACT user flow against the REAL Electron app (main.js +
  * real IPC + real BrowserViews) via Playwright's _electron:
  *
- * AC8 [RED today]: main.html with an open project → menu → "Fechar
+ * AC8 [GREEN post-fix]: main.html with an open project → menu → "Fechar
  *   Ambiente" → confirm → index.html → click the "Criar novo" card
- *   ([data-navigate="repo-select.html"]) → the click is swallowed by the
- *   ghost BrowserView re-attached during the navigate race, so the URL
- *   never changes. Fails on current code; turns GREEN after the 3-layer fix.
+ *   ([data-navigate="repo-select.html"]) → the click reaches the page and
+ *   repo-select.html loads. Pre-fix, the ghost BrowserView re-attached
+ *   during the navigate race swallowed the click so the URL never changed;
+ *   GREEN after the 3-layer fix.
  *
- * AC9 [GREEN today]: the normal overlay cycle (menu → Help modal → close)
+ * AC9 [GREEN]: the normal overlay cycle (menu → Help modal → close)
  *   leaves the header tab buttons fully clickable — regression guard so the
  *   fix cannot break the legitimate overlay path.
  *
@@ -114,59 +115,59 @@ async function openEditorWithContext(window) {
 }
 
 test.describe('Fechar Ambiente — ghost BrowserViews (plan: fechar-ambiente-ghost-browserviews)', () => {
-  test('AC8 fluxo exato do usuário: fechar ambiente → cards de index.html mortos (clique engolido pelo fantasma)', async () => {
+  test('AC8 fluxo exato do usuário: fechar ambiente → clique no card de index.html chega à página (não engolido pelo fantasma)', async () => {
     test.setTimeout(120000);
     const { electronApp, window } = await launchApp();
     try {
-    await openEditorWithContext(window);
+      await openEditorWithContext(window);
 
-    // (2) open the header dropdown menu
-    const menuButton = window.locator('header button:has(span.material-icons:text-is("menu"))');
-    await menuButton.click();
+      // (2) open the header dropdown menu
+      const menuButton = window.locator('header button:has(span.material-icons:text-is("menu"))');
+      await menuButton.click();
 
-    // (3) menu item "Fechar Ambiente" (x-text main.menu_close_project;
-    //     pt-BR renders "Fechar Ambiente" — main.html:2072-2077)
-    const closeItem = window.locator('div[x-show="menuOpen"] a:has(span[x-text="__t(\'main.menu_close_project\')"])');
-    await expect(closeItem).toBeVisible({ timeout: 5000 });
-    await closeItem.click();
+      // (3) menu item "Fechar Ambiente" (x-text main.menu_close_project;
+      //     pt-BR renders "Fechar Ambiente" — main.html:2072-2077)
+      const closeItem = window.locator('div[x-show="menuOpen"] a:has(span[x-text="__t(\'main.menu_close_project\')"])');
+      await expect(closeItem).toBeVisible({ timeout: 5000 });
+      await closeItem.click();
 
-    // (4) confirmation modal (x-show closeProjectModalOpen) → orange confirm
-    //     button calls confirmCloseProject() (main.html:2469-2478)
-    const confirmButton = window.locator(
-      'div[x-show="closeProjectModalOpen"] button[x-text="__t(\'main.close_project_confirm\')"]'
-    );
-    await expect(confirmButton).toBeVisible({ timeout: 5000 });
-    await confirmButton.click();
+      // (4) confirmation modal (x-show closeProjectModalOpen) → orange confirm
+      //     button calls confirmCloseProject() (main.html:2469-2478)
+      const confirmButton = window.locator(
+        'div[x-show="closeProjectModalOpen"] button[x-text="__t(\'main.close_project_confirm\')"]'
+      );
+      await expect(confirmButton).toBeVisible({ timeout: 5000 });
+      await confirmButton.click();
 
-    // (5) same-window navigation back to the environment selection screen
-    await window.waitForURL(/index\.html/, { timeout: 20000 });
+      // (5) same-window navigation back to the environment selection screen
+      await window.waitForURL(/index\.html/, { timeout: 20000 });
 
-    // Instrument the "Criar novo" card (index.html:133) so a swallowed
-    // click is distinguishable from a navigation failure. The proof flag
-    // MUST live in sessionStorage, not window state: a SUCCESSFUL click
-    // navigates this same tab to repo-select.html, destroying the document
-    // where a window flag lives — a post-click evaluate then reads the
-    // fresh page (flag undefined) and fails even though the click worked.
-    // sessionStorage is same-origin and survives the same-tab navigation,
-    // keeping the click-time flag readable after landing on repo-select.
-    await window.evaluate(() => {
-      sessionStorage.removeItem('__cardClicked');
-      const card = document.querySelector('[data-navigate="repo-select.html"]');
-      card.addEventListener('click', () => { sessionStorage.setItem('__cardClicked', '1'); });
-    });
-    const card = window.locator('[data-navigate="repo-select.html"]');
-    await expect(card).toBeVisible({ timeout: 5000 });
+      // Instrument the "Criar novo" card (index.html:133) so a swallowed
+      // click is distinguishable from a navigation failure. The proof flag
+      // MUST live in sessionStorage, not window state: a SUCCESSFUL click
+      // navigates this same tab to repo-select.html, destroying the document
+      // where a window flag lives — a post-click evaluate then reads the
+      // fresh page (flag undefined) and fails even though the click worked.
+      // sessionStorage is same-origin and survives the same-tab navigation,
+      // keeping the click-time flag readable after landing on repo-select.
+      await window.evaluate(() => {
+        sessionStorage.removeItem('__cardClicked');
+        const card = document.querySelector('[data-navigate="repo-select.html"]');
+        card.addEventListener('click', () => { sessionStorage.setItem('__cardClicked', '1'); });
+      });
+      const card = window.locator('[data-navigate="repo-select.html"]');
+      await expect(card).toBeVisible({ timeout: 5000 });
 
-    // (6)+(7) click the card with a short timeout. With the ghost
-    // BrowserView bug (pre-fix), the view re-attached by the visibility
-    // race during navigate covers everything below the 64px header and
-    // swallows the input: the page never sees the click, the flag is never
-    // set and repo-select.html never loads. Post-fix both proofs hold:
-    // the click reaches the page AND the navigation completes.
-    await card.click({ timeout: 5000 });
-    await window.waitForURL(/repo-select\.html/, { timeout: 5000 });
-    const cardClicked = await window.evaluate(() => sessionStorage.getItem('__cardClicked') === '1');
-    expect(cardClicked, 'card click reached the index.html page (not swallowed by ghost BrowserView)').toBe(true);
+      // (6)+(7) click the card with a short timeout. With the ghost
+      // BrowserView bug (pre-fix), the view re-attached by the visibility
+      // race during navigate covers everything below the 64px header and
+      // swallows the input: the page never sees the click, the flag is never
+      // set and repo-select.html never loads. Post-fix both proofs hold:
+      // the click reaches the page AND the navigation completes.
+      await card.click({ timeout: 5000 });
+      await window.waitForURL(/repo-select\.html/, { timeout: 5000 });
+      const cardClicked = await window.evaluate(() => sessionStorage.getItem('__cardClicked') === '1');
+      expect(cardClicked, 'card click reached the index.html page (not swallowed by ghost BrowserView)').toBe(true);
     } finally {
       await quitApp(electronApp);
     }
@@ -176,33 +177,33 @@ test.describe('Fechar Ambiente — ghost BrowserViews (plan: fechar-ambiente-gho
     test.setTimeout(120000);
     const { electronApp, window } = await launchApp();
     try {
-    await openEditorWithContext(window);
+      await openEditorWithContext(window);
 
-    // open menu → Help modal (main.html:2087 helpModalOpen trigger)
-    await window.locator('header button:has(span.material-icons:text-is("menu"))').click();
-    const helpItem = window.locator('div[x-show="menuOpen"] a:has(span[x-text="__t(\'main.menu_help\')"])');
-    await expect(helpItem).toBeVisible({ timeout: 5000 });
-    await helpItem.click();
+      // open menu → Help modal (main.html:2087 helpModalOpen trigger)
+      await window.locator('header button:has(span.material-icons:text-is("menu"))').click();
+      const helpItem = window.locator('div[x-show="menuOpen"] a:has(span[x-text="__t(\'main.menu_help\')"])');
+      await expect(helpItem).toBeVisible({ timeout: 5000 });
+      await helpItem.click();
 
-    const helpModal = window.locator('div[x-show="helpModalOpen"]');
-    await expect(helpModal).toBeVisible({ timeout: 5000 });
+      const helpModal = window.locator('div[x-show="helpModalOpen"]');
+      await expect(helpModal).toBeVisible({ timeout: 5000 });
 
-    // close it via the "Entendido" button (main.html:2439)
-    await window.locator('div[x-show="helpModalOpen"] button[x-text="__t(\'common.understand\')"]').click();
-    await expect(helpModal).toBeHidden({ timeout: 5000 });
+      // close it via the "Entendido" button (main.html:2439)
+      await window.locator('div[x-show="helpModalOpen"] button[x-text="__t(\'common.understand\')"]').click();
+      await expect(helpModal).toBeHidden({ timeout: 5000 });
 
-    // header tab buttons (main.html:1821-1828) must remain fully clickable:
-    // switch to "view" tab → ring-2 active state appears on it…
-    const viewTab = window.locator('header button:has(span.material-icons:text-is("visibility"))');
-    const editorTab = window.locator('header button:has(span.material-icons:text-is("edit"))');
-    await viewTab.click({ timeout: 5000 });
-    await expect(viewTab).toHaveClass(/ring-2/, { timeout: 5000 });
-    await expect(editorTab).not.toHaveClass(/ring-2/, { timeout: 5000 });
+      // header tab buttons (main.html:1821-1828) must remain fully clickable:
+      // switch to "view" tab → ring-2 active state appears on it…
+      const viewTab = window.locator('header button:has(span.material-icons:text-is("visibility"))');
+      const editorTab = window.locator('header button:has(span.material-icons:text-is("edit"))');
+      await viewTab.click({ timeout: 5000 });
+      await expect(viewTab).toHaveClass(/ring-2/, { timeout: 5000 });
+      await expect(editorTab).not.toHaveClass(/ring-2/, { timeout: 5000 });
 
-    // …and back to "editor"
-    await editorTab.click({ timeout: 5000 });
-    await expect(editorTab).toHaveClass(/ring-2/, { timeout: 5000 });
-    await expect(viewTab).not.toHaveClass(/ring-2/, { timeout: 5000 });
+      // …and back to "editor"
+      await editorTab.click({ timeout: 5000 });
+      await expect(editorTab).toHaveClass(/ring-2/, { timeout: 5000 });
+      await expect(viewTab).not.toHaveClass(/ring-2/, { timeout: 5000 });
     } finally {
       await quitApp(electronApp);
     }
