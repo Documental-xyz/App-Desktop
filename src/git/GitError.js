@@ -1,7 +1,8 @@
 /**
  * @fileoverview Normalized error type for the GitProvider abstraction.
  * Carries operation/provider context, a SANITIZED stderr (tokens removed),
- * and a normalized errorType ('timeout'|'auth'|'network'|'conflict'|'unknown')
+ * and a normalized errorType
+ * ('timeout'|'auth'|'network'|'conflict'|'large_file'|'unknown')
  * so retry/backoff logic works uniformly across providers (PRD §26).
  * @since 1.0.0
  */
@@ -49,25 +50,51 @@ function sanitize(text) {
 // ─── Error type classification ────────────────────────────────────────────────
 
 /**
- * @typedef {'timeout'|'auth'|'network'|'conflict'|'unknown'} ErrorType
+ * @typedef {'timeout'|'auth'|'network'|'conflict'|'large_file'|'unknown'} ErrorType
  */
 
-/** @type {Array<[RegExp, ErrorType]>} Message/code → errorType rules, in priority order */
+/**
+ * Message/code → errorType rules, in priority order (first match wins).
+ *
+ * Precedence (Task 5 of publish-update-resilience):
+ *  1. large_file — GitHub server-side size policy. MUST precede conflict:
+ *     GH large-file stderr contains "[remote rejected]", which the bare
+ *     `rejected` conflict pattern would otherwise swallow.
+ *  2. auth — unambiguous credential rejections (401/403 win over the broad
+ *     network wording "unable to access … 403").
+ *  3. timeout — explicit timeout wording wins over network: a connection
+ *     that timed out (ETIMEDOUT, "Connection timed out", curl 28) is the
+ *     more actionable diagnosis and stays retriable.
+ *  4. network — DNS/connectivity failures (Node syscalls or git text).
+ *  5. conflict — server refuses the update.
+ *
+ * Exit codes are AUXILIARY only (128 fatal / 129 usage never invent a
+ * class) — granularity comes from the stderr text, never the exit code.
+ *
+ * @type {Array<[RegExp, ErrorType]>}
+ */
 const CLASSIFICATION_RULES = [
-  // network: DNS/connectivity failures (Node syscalls or git text)
-  [/ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH/i, 'network'],
-  [/could not resolve host|network (error|is unreachable)|connection (refused|reset|timed out)|failed to connect|unable to access/i, 'network'],
-  // auth: credentials rejected
-  [/\b401\b|\b403\b|authentication failed|authentication required|invalid username or password|not authorized|permission denied|access denied|terminal prompts disabled/i, 'auth'],
-  // conflict: server refuses update
+  // large_file: GitHub pre-receive size policy (GH001/GH002) + the generic
+  // "too large" remote rejection. The remote-rejected+too-large pairs are
+  // matched on the SAME LINE to avoid classifying unrelated "too large" text.
+  [/exceeds (?:github'?s )?(?:file size limit|the maximum allowed size)|this file is larger than|GH00[12]|remote[ -]rejected[^\n]*too[ _-]?large|too[ _-]?large[^\n]*remote[ -]rejected/i, 'large_file'],
+  // auth: credentials rejected (refined — could-not-read-Username prompt)
+  [/\b40[13]\b|authentication (?:failed|required)|invalid username or (?:password|token|access token)|could not read username|terminal prompts disabled|not authorized|permission denied|access denied/i, 'auth'],
+  // timeout: explicit timeout wording / cancellation abort (refined — owns
+  // ETIMEDOUT and "connection timed out"; checked before network)
+  [/\bAbortError\b|\baborted\b|ETIMEDOUT|timed[ -]?out|timeout/i, 'timeout'],
+  // network: DNS/connectivity failures (refined — early EOF / RPC failed /
+  // connection closed; timeout patterns live above)
+  [/ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|could not resolve host|network (?:error|is unreachable)|connection (?:refused|reset)|connection was closed|early EOF|RPC failed|failed to connect|unable to access/i, 'network'],
+  // conflict: server refuses update (unchanged)
   [/non-fast-forward|fetch first|rejected|cannot lock ref|already exists|merge conflict|divergent branches/i, 'conflict'],
-  // timeout: cancellation/abort
-  [/AbortError|aborted|operation timed out|timeout|timed out/i, 'timeout'],
 ];
 
 /**
  * Classify a raw error (Error object, string, or dugite result fields) into
  * a normalized ErrorType by inspecting message/code/exitCode/stderr.
+ * Exit codes are AUXILIARY evidence only — the class always comes from the
+ * stderr/message text (see CLASSIFICATION_RULES precedence notes).
  *
  * @static
  * @param {Error|string|{ message?: string, code?: string|number, stderr?: string, exitCode?: number }} raw
@@ -92,6 +119,41 @@ function classifyError(raw) {
     }
   }
   return 'unknown';
+}
+
+// ─── Offending-file extraction (large_file) ───────────────────────────────────
+
+/**
+ * GitHub pre-receive rejections NAME the offending files:
+ *   remote: error: File assets/videos/demo.mp4 is 150.28 MB; this exceeds
+ *   GitHub's file size limit of 100.00 MB
+ * The path is everything between "File" and the " is <size> MB" clause.
+ * Input is SANITIZED first (paths reach the renderer — Task 11).
+ *
+ * @param {string} [stderr]
+ * @returns {string[]} unique offending paths, [] when not extractable
+ */
+const OFFENDING_FILE_RE = /(?:^|\n)[ \t]*(?:remote:[ \t]*)?error:[ \t]*File[ \t]+(.+?)[ \t]+is[ \t]+[\d.]+[ \t]*[KMG]i?B\b/gi;
+
+/**
+ * Extract the file paths GitHub blamed for a large-file push rejection.
+ *
+ * @param {string} [stderr] - Raw or sanitized git stderr
+ * @returns {string[]} deduped paths ([] when stderr carries none)
+ */
+function extractOffendingFiles(stderr) {
+  if (!stderr) {
+    return [];
+  }
+  const safe = sanitize(stderr) || '';
+  const out = [];
+  for (const match of safe.matchAll(OFFENDING_FILE_RE)) {
+    const file = match[1].trim().replace(/^['"]|['"]$/g, '');
+    if (file && !out.includes(file)) {
+      out.push(file);
+    }
+  }
+  return out;
 }
 
 // ─── GitError ─────────────────────────────────────────────────────────────────
@@ -141,9 +203,11 @@ class GitError extends Error {
 // Static helper on the class (also exported standalone for convenience).
 GitError.classifyError = classifyError;
 GitError.sanitize = sanitize;
+GitError.extractOffendingFiles = extractOffendingFiles;
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = GitError;
 module.exports.GitError = GitError;
 module.exports.classifyError = classifyError;
 module.exports.sanitize = sanitize;
+module.exports.extractOffendingFiles = extractOffendingFiles;

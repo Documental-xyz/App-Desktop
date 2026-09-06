@@ -11,6 +11,7 @@ const path = require('path');
 const { GitOperations } = require('./gitOperations.js');
 const { GitService } = require('../git/GitService.js');
 const { createGitProvider } = require('../git/GitProviderFactory.js');
+const { enrichFailureResult } = require('./gitErrorMessages.js');
 
 // Resilient import: fallback to 120s if gitFlowTypes.js is unavailable yet.
 const {
@@ -1705,7 +1706,7 @@ class GitHandlers {
     }
     if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
       this.sendOutput(`❌ ${error.message}`);
-      return { success: false, code: error.code, error: error.message };
+      return enrichFailureResult({ success: false, code: error.code, error: error.message }, error);
     }
     let errorMessage = error.message || 'Erro desconhecido ao publicar';
     let code;
@@ -1720,7 +1721,7 @@ class GitHandlers {
     this.sendOutput(`❌ Erro ao publicar: ${errorMessage}`);
     const result = { success: false, error: errorMessage };
     if (code) result.code = code;
-    return result;
+    return enrichFailureResult(result, error);
   }
 
   /**
@@ -1895,7 +1896,7 @@ class GitHandlers {
       }
       if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
         this.sendOutput(`❌ ${error.message}`);
-        return { success: false, code: error.code, error: error.message };
+        return enrichFailureResult({ success: false, code: error.code, error: error.message }, error);
       }
       this.logger.error('Error in gitRefresh:', error);
       let errorMessage = error.message || 'Erro desconhecido ao atualizar';
@@ -1905,7 +1906,7 @@ class GitHandlers {
         errorMessage = 'Erro de rede. Verifique sua conexão.';
       }
       this.sendOutput(`❌ Erro ao atualizar: ${errorMessage}`);
-      return { success: false, error: errorMessage };
+      return enrichFailureResult({ success: false, error: errorMessage }, error);
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
@@ -2351,7 +2352,7 @@ class GitHandlers {
         const forbiddenMsg =
           'Push rejeitado pelo GitHub (403). Verifique permissões do token ou se a branch main está protegida.';
         this.sendOutput(`❌ ${forbiddenMsg}`);
-        return { success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg };
+        return enrichFailureResult({ success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg }, error);
       }
       this.logger.error('Error in gitPublishMain:', error);
       return this._publishErrorToResult(error);
