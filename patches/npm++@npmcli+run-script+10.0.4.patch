@@ -1,0 +1,12 @@
+diff --git a/node_modules/npm/node_modules/@npmcli/run-script/lib/make-spawn-args.js b/node_modules/npm/node_modules/@npmcli/run-script/lib/make-spawn-args.js
+index 1c9f02c..ab26ec8 100644
+--- a/node_modules/npm/node_modules/@npmcli/run-script/lib/make-spawn-args.js
++++ b/node_modules/npm/node_modules/@npmcli/run-script/lib/make-spawn-args.js
+@@ -45,6 +45,7 @@ const makeSpawnArgs = options => {
+     stdio,
+     cwd: path,
+     shell: scriptShell,
++    windowsHide: true,
+   }
+ 
+   return [cmd, args, spawnOpts]

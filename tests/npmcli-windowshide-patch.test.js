@@ -58,11 +58,40 @@ describe('npmcli windowsHide patch guard', () => {
     });
   });
 
+  describe('@npmcli/run-script patch file', () => {
+    // Intentional defense-in-depth alongside the promise-spawn patch:
+    // promise-spawn is the single choke point for ALL npm-internal spawns;
+    // run-script pins the lifecycle path explicitly in case a future npm
+    // refactor reroutes it.
+    it('patches/ has a patch for npm/@npmcli/run-script', () => {
+      expect(findPatchFile(/^npm\+\+@npmcli\+run-script\+.+\.patch$/)).not.toBeNull();
+    });
+
+    it('patch adds windowsHide: true as an added (+) line', () => {
+      const file = findPatchFile(/^npm\+\+@npmcli\+run-script\+.+\.patch$/);
+      expect(file, 'patch file must exist before content check').not.toBeNull();
+      const content = readFileSync(file, 'utf8');
+      expect(content).toMatch(/^\+.*windowsHide:\s*true/m);
+    });
+  });
+
   describe('installed @npmcli/promise-spawn is patched', () => {
     it('node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js contains windowsHide: true', () => {
       const target = join(
         root,
         'node_modules', 'npm', 'node_modules', '@npmcli', 'promise-spawn', 'lib', 'index.js'
+      );
+      expect(existsSync(target), 'bundled package must be installed').toBe(true);
+      const content = readFileSync(target, 'utf8');
+      expect(content).toMatch(/windowsHide:\s*true/);
+    });
+  });
+
+  describe('installed @npmcli/run-script is patched', () => {
+    it('node_modules/npm/node_modules/@npmcli/run-script/lib/make-spawn-args.js contains windowsHide: true', () => {
+      const target = join(
+        root,
+        'node_modules', 'npm', 'node_modules', '@npmcli', 'run-script', 'lib', 'make-spawn-args.js'
       );
       expect(existsSync(target), 'bundled package must be installed').toBe(true);
       const content = readFileSync(target, 'utf8');
