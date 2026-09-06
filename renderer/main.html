@@ -1796,7 +1796,7 @@ clearingCache: false,
         this.editorScreenshot = null;
     },
     async handleOverlayChange(isOpen) {
-        if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do "Fechar Ambiente")
+        if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do Fechar Ambiente)
         const currentSeq = ++this.overlaySequence;
 
         if (isOpen) {

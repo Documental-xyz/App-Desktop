@@ -10,19 +10,22 @@
  * cleanupWindowBrowserViews idempotency and real setAllBrowserViewVisibility
  * get-or-create semantics are exercised.
  *
- * Bug chain reproduced here (plan: fechar-ambiente-ghost-browserviews):
+ * Bug chain covered here (plan: fechar-ambiente-ghost-browserviews):
  *  1. navigate('index.html') tears the window's views down (map empties)
  *     and starts loadFile (async).
  *  2. DURING the flight, main.html's $watch('isAnyOverlayOpen') microtask
- *     fires set-all-browser-view-visibility(true) → getOrCreateBrowserViews
- *     RE-CREATES views on the empty map and re-attaches them (ghost).
- *  3. Today nothing removes those re-created views after loadFile settles
- *     → they stay stacked over index.html and swallow every click below
- *     the 64px header. Task 6 adds the second teardown pass in
- *     .then/.catch of system.js navigate().
+ *     used to fire set-all-browser-view-visibility(true), whose
+ *     get-or-create semantics RE-CREATED views on the empty map and
+ *     re-attached them (the ghost). Layer 2 made all readers pure
+ *     lookups, closing that factory — so the race tests below seed the
+ *     ghost DIRECTLY via getOrCreateBrowserViews mid-flight, proving
+ *     that even a seeded ghost is harvested by the second pass.
+ *  3. Task 6 added the second teardown pass in .then/.catch of
+ *     system.js navigate(): nothing survives after loadFile settles.
  *
- * RED EXPECTED (pre-fix): tests marked [RED] fail — the second pass does
- * not exist yet. Manual-idempotency tests marked [GREEN] already pass.
+ * GREEN (post-fix): all 5 tests pass — Layer 1 kills the renderer
+ * trigger, Layer 2 kills the main-process factory, Layer 3 harvests
+ * whatever escapes.
  * @author Documental Team
  * @since 1.0.0
  */
@@ -181,7 +184,7 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
     );
   });
 
-  it('[RED] race: views re-created DURING the loadFile flight are cleaned automatically after reject', async () => {
+  it('[GREEN] race: ghost seeded DURING the loadFile flight is cleaned automatically after reject', async () => {
     const deferred = makeDeferredLoadFile();
     bindWindow(makeMockWindow(deferred.loadFile));
     seedRealViews(mockWindow);
@@ -189,12 +192,17 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
     systemHandlers.navigate(mockEvent, 'index.html');
     await flush(); // first teardown ran; loadFile pending
 
-    // THE RACE (bug chain step 2): main.html's overlay microtask re-creates
-    // views on the freshly-emptied map and re-attaches them over the page.
-    browserHandlers.setAllBrowserViewVisibility(mockEvent, true);
+    // THE RACE (bug chain step 2, post-Layer 2 seeding): Layer 2 turned
+    // set-all-visibility into a pure lookup, closing the ghost factory —
+    // so the ghost is now seeded DIRECTLY the way the old factory did it
+    // under the hood: a get-or-create call mid-flight re-creates the pair
+    // on the freshly-emptied map and re-attaches it over the page. This
+    // proves that EVEN a seeded ghost survives only until the second pass.
+    const ghostPair = browserHandlers.getOrCreateBrowserViews(mockWindow);
+    mockWindow.addBrowserView(ghostPair.editorView);
+    mockWindow.addBrowserView(ghostPair.viewerView);
     expect(browserHandlers.windowBrowserViews.size).toBe(1); // ghost entry exists
-    const ghostViews = BrowserViewCtor.mock.instances.slice(-2);
-    expect(mockWindow.addBrowserView).toHaveBeenCalledWith(ghostViews[0]);
+    const ghostViews = [ghostPair.editorView, ghostPair.viewerView];
 
     // loadFile settles → .catch runs → navigate-failed is sent…
     deferred.reject(new Error('net::ERR_FILE_NOT_FOUND'));
@@ -215,7 +223,7 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
     expect(mockWindow.removeBrowserView).toHaveBeenCalledWith(ghostViews[1]);
   });
 
-  it('[RED] race: views re-created during the flight are cleaned automatically after SUCCESS too', async () => {
+  it('[GREEN] race: ghost seeded during the flight is cleaned automatically after SUCCESS too', async () => {
     let settleLoad;
     bindWindow(makeMockWindow(() => new Promise((resolve) => { settleLoad = resolve; })));
     seedRealViews(mockWindow);
@@ -223,7 +231,9 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
     systemHandlers.navigate(mockEvent, 'index.html');
     await flush();
 
-    browserHandlers.setAllBrowserViewVisibility(mockEvent, true);
+    const ghostPair = browserHandlers.getOrCreateBrowserViews(mockWindow);
+    mockWindow.addBrowserView(ghostPair.editorView);
+    mockWindow.addBrowserView(ghostPair.viewerView);
     expect(browserHandlers.windowBrowserViews.size).toBe(1);
 
     settleLoad();
@@ -235,14 +245,16 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
     expect(browserHandlers.windowBrowserViews.size).toBe(0);
   });
 
-  it('[RED] after the race is cleaned, setAllBrowserViewVisibility(true) is a no-op — never re-creates views', async () => {
+  it('[GREEN] after the race is cleaned, setAllBrowserViewVisibility(true) is a no-op — never re-creates views', async () => {
     const deferred = makeDeferredLoadFile();
     bindWindow(makeMockWindow(deferred.loadFile));
     seedRealViews(mockWindow);
 
     systemHandlers.navigate(mockEvent, 'index.html');
     await flush();
-    browserHandlers.setAllBrowserViewVisibility(mockEvent, true); // race
+    const ghostPair = browserHandlers.getOrCreateBrowserViews(mockWindow);
+    mockWindow.addBrowserView(ghostPair.editorView);
+    mockWindow.addBrowserView(ghostPair.viewerView);
     deferred.reject(new Error('boom'));
     await flushAll();
 
@@ -255,12 +267,13 @@ describe('AC6 — navigate() teardown: double-pass idempotency + race recovery',
 
     // Post-navigation visibility flips (overlays on index.html, teardown
     // echoes…) must NOT resurrect views on the empty map — Layer 2 pure
-    // lookup. TODAY this RE-CREATES 2 BrowserViews (the ghost factory).
+    // lookup: no BrowserView constructed, map stays empty, nothing
+    // attached. addBrowserView is cleared first so the seed attachments
+    // above don't pollute the pure-lookup assertion.
+    mockWindow.addBrowserView.mockClear();
     expect(() => browserHandlers.setAllBrowserViewVisibility(mockEvent, true)).not.toThrow();
     expect(BrowserViewCtor.mock.instances.length).toBe(createdSoFar);
     expect(browserHandlers.windowBrowserViews.size).toBe(0);
-    expect(mockWindow.addBrowserView).not.toHaveBeenCalledWith(
-      BrowserViewCtor.mock.instances[BrowserViewCtor.mock.instances.length - 1]
-    );
+    expect(mockWindow.addBrowserView).not.toHaveBeenCalled();
   });
 });
