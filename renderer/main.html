@@ -1703,6 +1703,7 @@ clearingCache: false,
         }
     },
     updateBrowserViewBounds() {
+        if (this.isNavigating) { return; } // cobre resize e watchers de layout, que chamam isto diretamente durante a navegação
         const headerHeight = 64; // matches h-16 header
         const windowWidth = window.innerWidth;
         const windowHeight = window.innerHeight;
@@ -1795,6 +1796,7 @@ clearingCache: false,
         this.editorScreenshot = null;
     },
     async handleOverlayChange(isOpen) {
+        if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do "Fechar Ambiente")
         const currentSeq = ++this.overlaySequence;
 
         if (isOpen) {
