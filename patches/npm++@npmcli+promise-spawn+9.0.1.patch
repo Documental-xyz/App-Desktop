@@ -1,0 +1,13 @@
+diff --git a/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js b/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js
+index 1faf62c..b0257e2 100644
+--- a/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js
++++ b/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js
+@@ -36,7 +36,7 @@ const promiseSpawn = (cmd, args, opts = {}, extra = {}) => {
+     reject(Object.assign(er, resultError))
+   }
+ 
+-  const proc = spawn(cmd, args, opts)
++  const proc = spawn(cmd, args, { ...opts, windowsHide: true })
+   promise.stdin = proc.stdin
+   promise.process = proc
+ 
