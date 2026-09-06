@@ -120,6 +120,12 @@ jobs:
         env:
           GIT_PROVIDER: dugite
 
+      # Guard the npm-internal windowsHide patch-package patches on every
+      # release leg (pure-node fs test — portable across bash and cmd.exe,
+      # unlike tests/static-assertions.test.js which shells out to grep).
+      - name: Test (npmcli windowsHide patch guards)
+        run: npx vitest run tests/npmcli-windowshide-patch.test.js
+
       # Must run BEFORE any build:* script — `npm run build:env` consumes
       # electron-builder.env (and the electron-builder CLI injects it as env
       # vars) to produce resources/config/runtime-env.json, so the file must
