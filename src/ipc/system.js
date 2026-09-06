@@ -439,6 +439,14 @@ async getHomeDirectory() {
         window.loadFile(rendererPath)
           .then(() => {
             this.logger.info(`✅ Page loaded successfully: ${page}`);
+            // Second idempotent teardown pass: delayed IPCs from the dying
+            // renderer may have re-attached views during the loadFile flight
+            // ('Fechar Ambiente' race); the has() guard in cleanupWindowBrowserViews
+            // makes this a no-op when nothing was re-attached. Guarded the same
+            // way as the first pass: never tear down when ENTERING main.html.
+            if (path.basename(String(page)) !== 'main.html') {
+              this._teardownWindowBrowserViews(window);
+            }
             // Remove the close prevention handler after successful load
             window.removeListener('close', closeHandler);
             event.sender.send('navigate-complete', page);
@@ -446,6 +454,14 @@ async getHomeDirectory() {
           .catch(error => {
             this.logger.error(`❌ Failed to load page: ${error.message}`);
             this.logger.error(`❌ Error details:`, error);
+            // Second idempotent teardown pass: delayed IPCs from the dying
+            // renderer may have re-attached views during the loadFile flight
+            // ('Fechar Ambiente' race); the has() guard in cleanupWindowBrowserViews
+            // makes this a no-op when nothing was re-attached. Guarded the same
+            // way as the first pass: never tear down when ENTERING main.html.
+            if (path.basename(String(page)) !== 'main.html') {
+              this._teardownWindowBrowserViews(window);
+            }
             // Remove the close prevention handler on error
             window.removeListener('close', closeHandler);
             // Notify the renderer so it resets its isNavigating flags —

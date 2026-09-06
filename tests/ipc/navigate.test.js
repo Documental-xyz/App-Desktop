@@ -108,10 +108,15 @@ describe('navigate() — same-window workspace switch (D3)', () => {
     handlers.navigate(mockEvent, 'index.html');
     await flush();
 
-    expect(browserHandlers.cleanupWindowBrowserViews).toHaveBeenCalledTimes(1);
+    // AC6 (fechar-ambiente-ghost-browserviews): teardown runs TWICE — once
+    // before loadFile, once idempotent after it settles — so views re-attached
+    // during the navigation race are reaped (Task 6 Layer 3).
+    expect(browserHandlers.cleanupWindowBrowserViews).toHaveBeenCalledTimes(2);
     expect(browserHandlers.cleanupWindowBrowserViews).toHaveBeenCalledWith(mockWindow);
     expect(browserHandlers.cleanupWindowBrowserViews.mock.invocationCallOrder[0])
       .toBeLessThan(mockWindow.loadFile.mock.invocationCallOrder[0]);
+    expect(browserHandlers.cleanupWindowBrowserViews.mock.invocationCallOrder[1])
+      .toBeGreaterThan(mockWindow.loadFile.mock.invocationCallOrder[0]);
   });
 
   it('does NOT tear down BrowserViews when navigating TO main.html', async () => {
