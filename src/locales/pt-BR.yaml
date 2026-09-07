@@ -567,6 +567,14 @@ main:
   git_exec_step_merging: "Integrando alterações"
   git_exec_step_pushing: "Publicando"
   git_exec_step_finalizing: "Finalizando"
+  # Labels do stepper por estágio real (T2/T10) — consumidas via
+  # mt('main.git_exec_stage_' + stage). 'preparing' resolve flow-aware
+  # através de git_exec_step_committing/git_exec_step_checking acima.
+  git_exec_stage_fetching: "Buscando alterações"
+  git_exec_stage_merging: "Integrando alterações"
+  git_exec_stage_pushing: "Publicando alterações"
+  git_exec_stage_finalizing: "Finalizando"
+  git_exec_stage_restoring: "Restaurando estado original"
   git_exec_success: "Concluído!"
   git_exec_error_generic: "Algo deu errado. Tente novamente."
   git_exec_error_network: "Problema de rede. Verifique sua conexão."
@@ -576,7 +584,6 @@ main:
   git_exec_error_main_missing: "Repositório mal configurado: branch main não encontrada."
   git_exec_preflight_checking: "Verificando permissões..."
   git_exec_actions_notice: "Actions serão disparadas"
-  git_exec_fast_path_badge: "Modo rápido"
   git_exec_error_push_rejected: "O repositório remoto tem novidades. Clique em Atualizar para baixar as mudanças e tente novamente."
   git_exec_error_no_upstream: "A branch 'preview' ainda não existe no repositório remoto. Publique primeiro para criá-la."
   git_exec_error_backup_failed: "Não foi possível criar um backup de segurança da sua área de trabalho. Nada foi alterado. Tente novamente."
@@ -584,6 +591,21 @@ main:
   git_exec_retry_refresh_btn: "Atualizar"
   git_exec_error_token_expired: "O tempo para decidir expirou. Nada foi alterado — repita a operação original para tentar de novo."
   git_exec_error_invalid_token: "Essa decisão não é mais válida. Nada foi alterado — repita a operação original para tentar de novo."
+  # Erros amigáveis (T5) — main.git_exec_error_<classe>_{title,hint},
+  # consumidas via errorTitleKey/errorHintKey de src/ipc/gitErrorMessages.js
+  git_exec_error_large_file_title: "Arquivo grande demais para o GitHub"
+  git_exec_error_large_file_hint: "O GitHub bloqueia arquivos maiores que 100 MB. Remova ou reduza os arquivos problemáticos, ou versione-os com Git LFS (https://git-lfs.github.com) e publique novamente. Nada foi perdido — seus commits estão salvos."
+  git_exec_error_timeout_title: "A conexão expirou"
+  git_exec_error_timeout_hint: "A operação excedeu o tempo limite. Verifique sua conexão com a internet e tente novamente — nada foi perdido."
+  git_exec_error_auth_title: "Falha na autenticação"
+  git_exec_error_auth_hint: "O GitHub rejeitou as credenciais. Entre novamente e tente de novo — nada foi perdido."
+  git_exec_error_network_title: "Problema de rede"
+  git_exec_error_network_hint: "Não foi possível conectar ao GitHub. Verifique sua conexão com a internet e tente novamente — nada foi perdido."
+  git_exec_error_conflict_title: "A branch remota tem novos commits"
+  git_exec_error_conflict_hint: "Atualize primeiro para integrar as mudanças remotas e depois publique novamente — nada foi perdido."
+  git_exec_error_generic_title: "A operação git falhou"
+  git_exec_error_generic_hint: "A operação falhou inesperadamente. Você pode tentar novamente — nada foi perdido."
+  git_exec_error_files_label: "Arquivos acima do limite de tamanho:"
   conflict_title: "Alterações precisam da sua decisão"
   conflict_desc: "As duas versões mudaram os mesmos arquivos. Escolha como mesclar."
   conflict_files_label: "Arquivos em conflito"
@@ -618,6 +640,28 @@ main:
   git_exec_success_title: "Concluído com Sucesso"
   git_exec_failure_title: "Operação Falhou"
   git_exec_close_btn: "Fechar"
+  # Banner de cancelamento + linha de restauração em andamento (T10/T11)
+  git_exec_cancelled_title: "Operação cancelada"
+  git_exec_state_restoring: "Restaurando o estado original…"
+  # Notificações de restauração (T7/T11)
+  git_exec_restore_ok: "O estado original do seu repositório foi restaurado — nada foi perdido."
+  git_exec_restore_ok_from: "Restaurado do backup: {branch}"
+  git_exec_restore_partial: "Workspace restaurado parcialmente — alguns arquivos podem estar em um estado intermediário."
+  git_exec_restore_aborted_title: "A restauração automática não pôde ser concluída"
+  git_exec_restore_aborted_hint: "Para proteger seus dados, a restauração automática foi interrompida. Restaure manualmente pelo config.html (gerenciar backups) — nada foi perdido."
+  git_exec_restore_push_landed: "A publicação pode ter chegado ao servidor remoto — ela foi verificada e mantida em sincronia."
+  # Visualizador de logs brutos da operação (T11)
+  git_exec_view_logs_btn: "Ver logs brutos"
+  git_exec_logs_title: "Logs brutos da operação"
+  git_exec_logs_hide_btn: "Ocultar logs brutos"
+  git_exec_logs_copy_btn: "Copiar"
+  git_exec_logs_copy_hint: "Copie o log completo para colar em uma issue ou pedido de suporte"
+  git_exec_logs_copied: "Copiado ✓"
+  git_exec_logs_loading: "Carregando logs…"
+  git_exec_logs_unavailable: "Log indisponível — pode ter expirado (mantido por 30 minutos) ou não ter sido capturado para esta operação."
+  git_exec_logs_retry_btn: "Tentar novamente"
+  git_exec_logs_empty: "Nenhum comando foi capturado para esta operação."
+  git_exec_logs_no_output: "Nenhuma saída capturada."
   # Publish modal (additional)
   publish_modal_desc: "Selecione a branch de destino e opcionalmente adicione detalhes do commit."
 

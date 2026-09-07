@@ -340,6 +340,15 @@ create:
   # Errors
   error_cancel_delete: "Error canceling and deleting workspace: {error}"
   error_cancel: "Error canceling workspace: {error}"
+  # Template-based repository creation
+  template_starting: "Starting repository creation…"
+  template_creating: "Creating repository from template…"
+  template_ready: "Repository created successfully!"
+  template_error: "Error creating repository: {error}"
+  template_not_found: "Template unavailable. Contact support."
+  template_no_permission: "No permission to create repositories in this organization."
+  template_name_taken: "A repository with this name already exists at the destination."
+  template_invalid_scope: "Your token does not allow creating private repositories. Please sign in again."
 
 open:
   page_title: "Documental - Reopening Workspace"
@@ -552,6 +561,14 @@ main:
   git_exec_step_merging: "Integrating changes"
   git_exec_step_pushing: "Publishing"
   git_exec_step_finalizing: "Finishing"
+  # Real-stage stepper labels (T2/T10) — consumed via
+  # mt('main.git_exec_stage_' + stage). 'preparing' resolves flow-aware
+  # through git_exec_step_committing/git_exec_step_checking above.
+  git_exec_stage_fetching: "Fetching changes"
+  git_exec_stage_merging: "Integrating changes"
+  git_exec_stage_pushing: "Publishing changes"
+  git_exec_stage_finalizing: "Finalizing"
+  git_exec_stage_restoring: "Restoring the original state"
   git_exec_success: "Done!"
   git_exec_error_generic: "Something went wrong. Try again."
   git_exec_error_network: "Network problem. Check your connection."
@@ -561,7 +578,6 @@ main:
   git_exec_error_main_missing: "Misconfigured repository: main branch not found."
   git_exec_preflight_checking: "Checking permissions..."
   git_exec_actions_notice: "Actions will be triggered"
-  git_exec_fast_path_badge: "Fast-forward"
   git_exec_error_push_rejected: "The remote repository has updates. Click Update to pull them, then try again."
   git_exec_error_no_upstream: "The 'preview' branch doesn't exist on the remote yet. Publish first to create it."
   git_exec_error_backup_failed: "Could not create a safety backup of your workspace. Nothing was changed. Try again."
@@ -569,6 +585,21 @@ main:
   git_exec_retry_refresh_btn: "Update"
   git_exec_error_token_expired: "The decision time expired. Nothing was changed — please repeat the original operation to try again."
   git_exec_error_invalid_token: "This decision is no longer valid. Nothing was changed — please repeat the original operation to try again."
+  # Friendly error copy (T5) — main.git_exec_error_<class>_{title,hint},
+  # consumed via errorTitleKey/errorHintKey from src/ipc/gitErrorMessages.js
+  git_exec_error_large_file_title: "File too large for GitHub"
+  git_exec_error_large_file_hint: "GitHub blocks files larger than 100 MB. Remove or shrink the offending file(s), or track them with Git LFS (https://git-lfs.github.com), then publish again. Nothing was lost — your commits are safe."
+  git_exec_error_timeout_title: "Connection timed out"
+  git_exec_error_timeout_hint: "The operation timed out. Check your internet connection and try again — nothing was lost."
+  git_exec_error_auth_title: "Authentication failed"
+  git_exec_error_auth_hint: "GitHub rejected the credentials. Sign in again and try again — nothing was lost."
+  git_exec_error_network_title: "Network problem"
+  git_exec_error_network_hint: "GitHub could not be reached. Check your internet connection and try again — nothing was lost."
+  git_exec_error_conflict_title: "The remote branch has new commits"
+  git_exec_error_conflict_hint: "Refresh first to integrate the remote changes, then publish again — nothing was lost."
+  git_exec_error_generic_title: "Git operation failed"
+  git_exec_error_generic_hint: "The operation failed unexpectedly. You can try again — nothing was lost."
+  git_exec_error_files_label: "Files over the size limit:"
   conflict_title: "Changes need your decision"
   conflict_desc: "Both versions changed the same files. Choose how to merge them."
   conflict_files_label: "Conflicted files"
@@ -602,6 +633,28 @@ main:
   git_exec_success_title: "Completed Successfully"
   git_exec_failure_title: "Operation Failed"
   git_exec_close_btn: "Close"
+  # Cancelled banner + restore-in-progress line (T10/T11)
+  git_exec_cancelled_title: "Operation cancelled"
+  git_exec_state_restoring: "Restoring the original state…"
+  # Restore notifications (T7/T11)
+  git_exec_restore_ok: "The original state of your repository was restored — nothing was lost."
+  git_exec_restore_ok_from: "Restored from backup: {branch}"
+  git_exec_restore_partial: "Workspace partially restored — some files may be in an intermediate state."
+  git_exec_restore_aborted_title: "Automatic restore could not complete"
+  git_exec_restore_aborted_hint: "To protect your data the automatic restore was aborted. Restore manually from config.html (manage backups) — nothing was lost."
+  git_exec_restore_push_landed: "The publish may have reached the remote server — it was verified and kept in sync."
+  # Raw operation logs viewer (T11)
+  git_exec_view_logs_btn: "View raw logs"
+  git_exec_logs_title: "Raw operation logs"
+  git_exec_logs_hide_btn: "Hide raw logs"
+  git_exec_logs_copy_btn: "Copy"
+  git_exec_logs_copy_hint: "Copy the full log to paste into an issue or support request"
+  git_exec_logs_copied: "Copied ✓"
+  git_exec_logs_loading: "Loading logs…"
+  git_exec_logs_unavailable: "Log not available — it may have expired (kept for 30 minutes) or was not captured for this operation."
+  git_exec_logs_retry_btn: "Try again"
+  git_exec_logs_empty: "No commands were captured for this operation."
+  git_exec_logs_no_output: "No output captured."
   # Publish modal (additional)
   publish_modal_desc: "Select the target branch and optionally add commit details."
 

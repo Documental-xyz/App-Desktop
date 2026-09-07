@@ -340,6 +340,15 @@ create:
   # Errors
   error_cancel_delete: "Error al cancelar y eliminar entorno: {error}"
   error_cancel: "Error al cancelar entorno: {error}"
+  # Creación de repositorio a partir de plantilla
+  template_starting: "Iniciando la creación del repositorio…"
+  template_creating: "Creando el repositorio a partir de la plantilla…"
+  template_ready: "¡Repositorio creado con éxito!"
+  template_error: "Error al crear el repositorio: {error}"
+  template_not_found: "Plantilla no disponible. Contacte con soporte."
+  template_no_permission: "Sin permiso para crear repositorios en esta organización."
+  template_name_taken: "Ya existe un repositorio con este nombre en el destino."
+  template_invalid_scope: "Su token no permite crear repositorios privados. Vuelva a autenticarse."
 
 open:
   page_title: "Documental - Reabriendo Espacio de Trabajo"
@@ -551,6 +560,14 @@ main:
   git_exec_step_merging: "Integrando cambios"
   git_exec_step_pushing: "Publicando"
   git_exec_step_finalizing: "Finalizando"
+  # Etiquetas del stepper por etapa real (T2/T10) — consumidas via
+  # mt('main.git_exec_stage_' + stage). 'preparing' resuelve flow-aware
+  # a través de git_exec_step_committing/git_exec_step_checking arriba.
+  git_exec_stage_fetching: "Obteniendo cambios"
+  git_exec_stage_merging: "Integrando cambios"
+  git_exec_stage_pushing: "Publicando cambios"
+  git_exec_stage_finalizing: "Finalizando"
+  git_exec_stage_restoring: "Restaurando el estado original"
   git_exec_success: "¡Listo!"
   git_exec_error_generic: "Algo salió mal. Inténtelo de nuevo."
   git_exec_error_network: "Problema de red. Verifique su conexión."
@@ -560,7 +577,6 @@ main:
   git_exec_error_main_missing: "Repositorio mal configurado: rama main no encontrada."
   git_exec_preflight_checking: "Verificando permisos..."
   git_exec_actions_notice: "Actions se dispararán"
-  git_exec_fast_path_badge: "Modo rápido"
   git_exec_error_push_rejected: "El repositorio remoto tiene novedades. Haz clic en Actualizar para descargarlas e inténtalo de nuevo."
   git_exec_error_no_upstream: "La rama 'preview' aún no existe en el repositorio remoto. Publica primero para crearla."
   git_exec_error_backup_failed: "No se pudo crear una copia de seguridad de tu espacio de trabajo. No se cambió nada. Inténtalo de nuevo."
@@ -568,6 +584,21 @@ main:
   git_exec_retry_refresh_btn: "Actualizar"
   git_exec_error_token_expired: "El tiempo para decidir expiró. No se cambió nada — repita la operación original para volver a intentarlo."
   git_exec_error_invalid_token: "Esta decisión ya no es válida. No se cambió nada — repita la operación original para volver a intentarlo."
+  # Errores amigables (T5) — main.git_exec_error_<clase>_{title,hint},
+  # consumidas via errorTitleKey/errorHintKey de src/ipc/gitErrorMessages.js
+  git_exec_error_large_file_title: "Archivo demasiado grande para GitHub"
+  git_exec_error_large_file_hint: "GitHub bloquea archivos mayores de 100 MB. Elimine o reduzca los archivos problemáticos, o agrégelos con Git LFS (https://git-lfs.github.com) y publique de nuevo. No se perdió nada — sus commits están a salvo."
+  git_exec_error_timeout_title: "Se agotó el tiempo de espera"
+  git_exec_error_timeout_hint: "La operación superó el tiempo límite. Compruebe su conexión a internet e inténtelo de nuevo — no se perdió nada."
+  git_exec_error_auth_title: "Error de autenticación"
+  git_exec_error_auth_hint: "GitHub rechazó las credenciales. Inicie sesión de nuevo e inténtelo de nuevo — no se perdió nada."
+  git_exec_error_network_title: "Problema de red"
+  git_exec_error_network_hint: "No se pudo conectar con GitHub. Compruebe su conexión a internet e inténtelo de nuevo — no se perdió nada."
+  git_exec_error_conflict_title: "La rama remota tiene nuevos commits"
+  git_exec_error_conflict_hint: "Actualice primero para integrar los cambios remotos y luego publique de nuevo — no se perdió nada."
+  git_exec_error_generic_title: "La operación de git falló"
+  git_exec_error_generic_hint: "La operación falló inesperadamente. Puede intentarlo de nuevo — no se perdió nada."
+  git_exec_error_files_label: "Archivos que superan el límite de tamaño:"
   conflict_title: "Los cambios necesitan su decisión"
   conflict_desc: "Ambas versiones modificaron los mismos archivos. Elija cómo combinarlos."
   conflict_files_label: "Archivos en conflicto"
@@ -601,6 +632,28 @@ main:
   git_exec_success_title: "Completado con Éxito"
   git_exec_failure_title: "Operación Fallida"
   git_exec_close_btn: "Cerrar"
+  # Banner de cancelación + línea de restauración en curso (T10/T11)
+  git_exec_cancelled_title: "Operación cancelada"
+  git_exec_state_restoring: "Restaurando el estado original…"
+  # Notificaciones de restauración (T7/T11)
+  git_exec_restore_ok: "El estado original de su repositorio fue restaurado — no se perdió nada."
+  git_exec_restore_ok_from: "Restaurado desde la copia de seguridad: {branch}"
+  git_exec_restore_partial: "Workspace restaurado parcialmente — algunos archivos pueden quedar en un estado intermedio."
+  git_exec_restore_aborted_title: "La restauración automática no se pudo completar"
+  git_exec_restore_aborted_hint: "Para proteger sus datos, la restauración automática se abortó. Restaure manualmente desde config.html (gestionar copias de seguridad) — no se perdió nada."
+  git_exec_restore_push_landed: "La publicación pudo haber llegado al servidor remoto — se verificó y se mantuvo sincronizado."
+  # Visor de logs en bruto de la operación (T11)
+  git_exec_view_logs_btn: "Ver logs en bruto"
+  git_exec_logs_title: "Logs en bruto de la operación"
+  git_exec_logs_hide_btn: "Ocultar logs en bruto"
+  git_exec_logs_copy_btn: "Copiar"
+  git_exec_logs_copy_hint: "Copie el log completo para pegarlo en un issue o una solicitud de soporte"
+  git_exec_logs_copied: "Copiado ✓"
+  git_exec_logs_loading: "Cargando logs…"
+  git_exec_logs_unavailable: "Log no disponible — puede haber expirado (se conserva 30 minutos) o no haberse capturado para esta operación."
+  git_exec_logs_retry_btn: "Intentar de nuevo"
+  git_exec_logs_empty: "No se capturó ningún comando para esta operación."
+  git_exec_logs_no_output: "No se capturó ninguna salida."
   # Publish modal (additional)
   publish_modal_desc: "Selecciona la rama de destino y opcionalmente agrega detalles del commit."
 
