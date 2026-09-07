@@ -237,10 +237,25 @@ clearingCache: false,
           errorHintKey: null,
           offendingFiles: [],
           // T7 restore outcome extras (additive — consumed by the terminal
-          // banners; PARTIAL keeps its own line, restoreAborted is T11's).
+          // restore banner, Task 11).
           partial: false,
           restoreAborted: null,
           restoreHint: '',
+          restoredFrom: null,  // backup branch a full restore came from
+          remoteOid: null,     // remote tip for the push-landed partial case
+          restoreInfo: '',     // backend context line (partial / verify cases)
+          restoreDetails: null, // {branch, head, dirtyFiles, mergeInProgress} (PARTIAL)
+          // Raw-log viewer (Task 11): the journal lookup needs the
+          // operationId AFTER the terminal event cleared the association
+          // (stale-event protection) — rawLogOpId preserves it.
+          rawLogOpId: null,
+          rawLogs: {
+              open: false,       // accordion toggle (footer button)
+              loading: false,
+              unavailable: false, // LOG_NOT_FOUND / invoke failure → retry
+              entries: [],        // journal entries — BACKEND-SANITIZED, rendered as-is
+              copied: false,      // clipboard feedback (2s)
+          },
       },
       // DISPLAY mirror of src/ipc/gitFlowTypes.js STAGE_LISTS (T2 contract):
       // stage IDS only, for the real-stage stepper. Totals are NOT trusted
@@ -252,15 +267,17 @@ clearingCache: false,
       },
       // Inline EN fallbacks for the T5 friendly-error keys
       // (main.git_exec_error_<class>_{title,hint}) — mirrors
-      // src/ipc/gitErrorMessages.js fallbackTitle/fallbackHint verbatim.
-      // TEMPORARY until Task 12 adds the keys to the 3 locales.
+      // src/ipc/gitErrorMessages.js fallbackTitle/fallbackHint + severity
+      // VERBATIM (large_file/auth/unknown = 'error';
+      // timeout/network/conflict = 'warning'). TEMPORARY until Task 12
+      // adds the keys to the 3 locales.
       gitExecErrorFallbacks: {
-          large_file: { title: 'File too large for GitHub', hint: 'GitHub blocks files larger than 100 MB. Remove or shrink the offending file(s), or track them with Git LFS (https://git-lfs.github.com), then publish again. Nothing was lost — your commits are safe.' },
-          timeout: { title: 'Connection timed out', hint: 'The operation timed out. Check your internet connection and try again — nothing was lost.' },
-          auth: { title: 'Authentication failed', hint: 'GitHub rejected the credentials. Sign in again and retry — nothing was lost.' },
-          network: { title: 'Network problem', hint: 'GitHub could not be reached. Check your internet connection and try again — nothing was lost.' },
-          conflict: { title: 'The remote branch has new commits', hint: 'Refresh first to integrate the remote changes, then publish again — nothing was lost.' },
-          unknown: { title: 'Git operation failed', hint: 'The operation failed unexpectedly. You can try again — nothing was lost.' },
+          large_file: { severity: 'error', title: 'File too large for GitHub', hint: 'GitHub blocks files larger than 100 MB. Remove or shrink the offending file(s), or track them with Git LFS (https://git-lfs.github.com), then publish again. Nothing was lost — your commits are safe.' },
+          timeout: { severity: 'warning', title: 'Connection timed out', hint: 'The operation timed out. Check your internet connection and try again — nothing was lost.' },
+          auth: { severity: 'error', title: 'Authentication failed', hint: 'GitHub rejected the credentials. Sign in again and retry — nothing was lost.' },
+          network: { severity: 'warning', title: 'Network problem', hint: 'GitHub could not be reached. Check your internet connection and try again — nothing was lost.' },
+          conflict: { severity: 'warning', title: 'The remote branch has new commits', hint: 'Refresh first to integrate the remote changes, then publish again — nothing was lost.' },
+          unknown: { severity: 'error', title: 'Git operation failed', hint: 'The operation failed unexpectedly. You can try again — nothing was lost.' },
       },
       // Conflict strategy decision modal (conflict-strategy-modal Task 4).
       // Opened ONLY from finishGitExecModal when a sync flow returns the
@@ -876,7 +893,7 @@ clearingCache: false,
                 if (idx < g.currentStep) status = 'done';
                 else if (idx === g.currentStep) {
                     // failed → × at the stage that died; cancelled → hollow
-                    // circle (honestly "not completed"); complete → done.
+                    // circle (honestly 'not completed'); complete → done.
                     status = g.terminal === 'failed' ? 'error'
                         : (g.terminal === 'cancelled' ? 'pending' : 'done');
                 }
@@ -931,6 +948,41 @@ clearingCache: false,
         const fb = this.gitExecErrorFallbacks[g.errorClass] || this.gitExecErrorFallbacks.unknown;
         return this.mt(g.errorHintKey, fb.hint);
     },
+    gitExecErrorSeverity() {
+        // T5 contract: severity rides the errorClass (large_file/auth/
+        // unknown = error; timeout/network/conflict = warning) — mirrored
+        // from src/ipc/gitErrorMessages.js (the result carries the class
+        // only). Unclassified failures render as 'error'.
+        const g = this.gitExecution;
+        const fb = g.errorClass ? this.gitExecErrorFallbacks[g.errorClass] : null;
+        return (fb && fb.severity) || 'error';
+    },
+    gitExecErrorColor() {
+        // Design token for the failure banner chrome (border/icon/title).
+        return this.gitExecErrorSeverity() === 'warning'
+            ? 'var(--color-accent-orange)'
+            : 'var(--color-danger)';
+    },
+    gitExecRestorePartialDetail() {
+        // One-line PARTIAL summary from T7's restoreDetails
+        // ({branch, head, dirtyFiles[], mergeInProgress}).
+        const d = this.gitExecution.restoreDetails;
+        if (!d || typeof d !== 'object') return '';
+        const parts = [];
+        if (d.branch) parts.push(String(d.branch));
+        if (d.head) parts.push('head ' + String(d.head).slice(0, 7));
+        if (Array.isArray(d.dirtyFiles)) parts.push(d.dirtyFiles.length + ' file(s)');
+        if (d.mergeInProgress) parts.push('merge in progress');
+        return parts.join(' · ');
+    },
+    formatJournalTime(timestamp) {
+        // Journal entries carry epoch-ms timestamps (Task 3 contract) →
+        // [HH:MM:SS.mmm] local time for the command header line.
+        const d = new Date(Number(timestamp));
+        if (isNaN(d.getTime())) return '?';
+        const p = (n, w) => String(n).padStart(w || 2, '0');
+        return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
+    },
     gitExecEscape() {
         // ESC/X matrix (Task 10): terminal → close; running → explicit
         // cancel request (NEVER a silent close); preflight/restoring/
@@ -973,6 +1025,12 @@ clearingCache: false,
         this.gitExecution.partial = false;
         this.gitExecution.restoreAborted = null;
         this.gitExecution.restoreHint = '';
+        this.gitExecution.restoredFrom = null;
+        this.gitExecution.remoteOid = null;
+        this.gitExecution.restoreInfo = '';
+        this.gitExecution.restoreDetails = null;
+        this.gitExecution.rawLogOpId = null;
+        this.gitExecution.rawLogs = { open: false, loading: false, unavailable: false, entries: [], copied: false };
     },
     finishGitExecModal(result) {
         // Typed CONFLICT_PENDING (conflict-strategy-modal Task 4): the flow
@@ -1007,6 +1065,18 @@ clearingCache: false,
         this.gitExecution.partial = !!result.partial;
         this.gitExecution.restoreAborted = result.restoreAborted || null;
         this.gitExecution.restoreHint = result.restoreHint || '';
+        this.gitExecution.restoredFrom = result.restoredFrom || null;
+        this.gitExecution.remoteOid = result.remoteOid || null;
+        this.gitExecution.restoreInfo = result.restoreInfo || '';
+        if (result.restoreDetails) {
+            this.gitExecution.restoreDetails = result.restoreDetails;
+        }
+        // Task 11: the raw-log viewer lives past the terminal clear —
+        // preserve the operationId (journal key) if the terminal event has
+        // not already stashed it.
+        if (this.gitExecution.operationId && !this.gitExecution.rawLogOpId) {
+            this.gitExecution.rawLogOpId = this.gitExecution.operationId;
+        }
         if (result.success) {
             // Complete: all stages done, stageIndex=stageTotal +
             // percentage=100 → full bar.
@@ -1050,12 +1120,115 @@ clearingCache: false,
         this.gitExecution.partial = false;
         this.gitExecution.restoreAborted = null;
         this.gitExecution.restoreHint = '';
+        this.gitExecution.restoredFrom = null;
+        this.gitExecution.remoteOid = null;
+        this.gitExecution.restoreInfo = '';
+        this.gitExecution.restoreDetails = null;
+        this.gitExecution.rawLogOpId = null;
+        this.gitExecution.rawLogs = { open: false, loading: false, unavailable: false, entries: [], copied: false };
     },
     cancelGitExec() {
         // Guardrails (Task 10): a second request while one is settling is
         // a no-op, and the restoring recovery can never be interrupted.
         if (this.gitExecution.cancelling || this.gitExecution.restoring) return;
         window.electronAPI.cancelGitOperation();
+    },
+    // ─── Raw-log viewer (Task 11) ────────────────────────────────────────────
+    // Journal entries come from getOperationLog(operationId) — already
+    // SANITIZED by the backend (Task 3); the renderer renders them as-is
+    // and NEVER re-sanitizes (double sanitization would corrupt the output).
+    toggleRawLogs() {
+        const g = this.gitExecution;
+        g.rawLogs.open = !g.rawLogs.open;
+        // First open (or a retry after LOG_NOT_FOUND): fetch the journal.
+        if (g.rawLogs.open && g.rawLogs.entries.length === 0 && !g.rawLogs.unavailable) {
+            this.fetchOperationLog();
+        }
+    },
+    openRawLogs() {
+        // Force-open entry point from contextual affordances (e.g. the
+        // restore-aborted banner's 'raw logs' link).
+        const g = this.gitExecution;
+        if (!g.rawLogs.open) {
+            g.rawLogs.open = true;
+            if (g.rawLogs.entries.length === 0 && !g.rawLogs.unavailable) {
+                this.fetchOperationLog();
+            }
+        }
+    },
+    async fetchOperationLog() {
+        const g = this.gitExecution;
+        const opId = g.rawLogOpId || g.operationId;
+        if (!opId || !window.electronAPI || typeof window.electronAPI.getOperationLog !== 'function') {
+            g.rawLogs.unavailable = true;
+            return;
+        }
+        g.rawLogs.loading = true;
+        g.rawLogs.unavailable = false;
+        try {
+            const result = await window.electronAPI.getOperationLog(opId);
+            if (result && result.success && Array.isArray(result.entries)) {
+                // Per-entry accordion flag (mutable copy — the journal's
+                // frozen shape stays the backend's contract).
+                g.rawLogs.entries = result.entries.map((e) => ({ ...e, open: false }));
+            } else {
+                // {success:false, code:'LOG_NOT_FOUND'} — the journal TTL
+                // (30min post-terminal) may have expired, or the operation
+                // was never journaled.
+                g.rawLogs.unavailable = true;
+            }
+        } catch (_e) {
+            g.rawLogs.unavailable = true;
+        } finally {
+            g.rawLogs.loading = false;
+        }
+    },
+    serializeRawLogs() {
+        // Plain-text serialization for clipboard (issue/support paste):
+        // one header line per command + indented stdout/stderr blocks.
+        const g = this.gitExecution;
+        return g.rawLogs.entries.map((e) => {
+            const args = Array.isArray(e.args) ? e.args.join(' ') : '';
+            const exit = (e.exitCode === null || e.exitCode === undefined) ? '?' : e.exitCode;
+            const dur = (e.durationMs === null || e.durationMs === undefined) ? '?' : e.durationMs;
+            const lines = ['[' + this.formatJournalTime(e.timestamp) + '] $ git ' + args + ' → exit ' + exit + ' (' + dur + 'ms)'];
+            if (e.stdout) lines.push('  stdout:', String(e.stdout).replace(/^/gm, '    '));
+            if (e.stderr) lines.push('  stderr:', String(e.stderr).replace(/^/gm, '    '));
+            return lines.join('\n');
+        }).join('\n\n');
+    },
+    async copyRawLogsToClipboard() {
+        const g = this.gitExecution;
+        if (g.rawLogs.entries.length === 0) return;
+        const text = this.serializeRawLogs();
+        let copied = false;
+        // Primary: async clipboard API (secure context).
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                copied = true;
+            }
+        } catch (_e) { /* fall through to the legacy path */ }
+        // Fallback: hidden textarea + execCommand('copy') (older Electron
+        // renderer / non-secure context).
+        if (!copied) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                copied = document.execCommand('copy');
+                document.body.removeChild(ta);
+            } catch (_e2) { copied = false; }
+        }
+        if (copied) {
+            g.rawLogs.copied = true;
+            if (this._rawLogCopyTimer) clearTimeout(this._rawLogCopyTimer);
+            this._rawLogCopyTimer = setTimeout(() => { g.rawLogs.copied = false; }, 2000);
+        }
     },
     // git:progress event → gitExecution FSM (Task 9). Payload contract (T2):
     // {projectId, operationId, flow, stage, stageIndex, stageTotal, message,
@@ -1091,6 +1264,15 @@ clearingCache: false,
             // later — do not race it with half-empty data here.
             if (payload.terminal) {
                 this.gitExecution.restored = payload.restored;
+                if (payload.restoreDetails) {
+                    this.gitExecution.restoreDetails = payload.restoreDetails;
+                }
+                // Task 11: stash the journal key BEFORE dropping the
+                // association — the raw-log viewer opens at terminal phase
+                // (getOperationLog needs the id the clear below erases).
+                if (this.gitExecution.operationId) {
+                    this.gitExecution.rawLogOpId = this.gitExecution.operationId;
+                }
                 this.gitExecution.operationId = null;
                 // currentStep/totalSteps are NOT taken from the terminal
                 // payload (sendProgress synthesizes stageIndex=stageTotal
@@ -2504,7 +2686,10 @@ clearingCache: false,
      → body → action footer. Same structure as the Conflict/Setup/Refresh
      modals. X follows the ESC matrix (running → cancel, terminal → close). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
-  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+  <!-- max-height + internal scroll (Task 11): the terminal state with the
+       raw-log viewer expanded can exceed short viewports — the footer
+       actions must stay reachable without resizing the window. -->
+  <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md" style="max-height: 90vh; overflow-y: auto;">
     <!-- Shell header -->
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
@@ -2612,43 +2797,158 @@ clearingCache: false,
       </div>
       <p class="text-base font-semibold" style="color: var(--color-primary);" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
     </div>
-    <!-- Cancelled Banner (terminal cancelled — neutral; restored text per
-         T7: true | 'PARTIAL' | false/undefined = no extra line) -->
+    <!-- Cancelled Banner (terminal cancelled — neutral; restore outcomes
+         render in the dedicated Restore Notification Banner below, for
+         failed AND cancelled terminals alike) -->
     <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'cancelled'" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-muted-dark) 15%, transparent); border: 2px solid var(--color-muted-dark);">
       <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-muted-dark); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-muted-dark) 40%, transparent);">
         <span class="material-symbols-outlined text-white text-3xl">cancel</span>
       </div>
       <p class="text-base font-semibold text-text-dark" x-text="mt('main.git_exec_cancelled_title', 'Operation cancelled')"></p>
-      <p x-show="gitExecution.restored === true" class="text-sm mt-2 text-muted-dark" x-text="mt('main.git_exec_cancelled_restored', 'Your workspace was restored — nothing was lost.')"></p>
-      <p x-show="gitExecution.restored === 'PARTIAL'" class="text-sm mt-2" style="color: var(--color-accent-orange);" x-text="mt('main.git_exec_cancelled_partial', 'Workspace partially restored — some files may be in an intermediate state.')"></p>
     </div>
-    <!-- Failure Banner (terminal failed) — Task 10 SLOTS: friendly
-         title/hint/offendingFiles arrive via the T5-enriched invoke result;
-         Task 11 wires the full copy and the raw-log viewer. -->
-    <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 2px solid var(--color-danger);">
-      <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-danger); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-danger) 40%, transparent);">
+    <!-- Failure Banner (terminal failed) — friendly copy from the T5-enriched
+         result (errorTitleKey/errorHintKey + inline EN fallbacks), severity
+         chrome per errorClass (T5 map: error → danger, warning → orange),
+         offendingFiles list (e.g. GH001 oversized paths). -->
+    <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" class="mb-4 p-5 rounded-lg text-center"
+         :style="{ backgroundColor: 'color-mix(in srgb, ' + gitExecErrorColor() + ' 10%, transparent)', border: '2px solid ' + gitExecErrorColor() }">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
+           :style="{ backgroundColor: gitExecErrorColor(), boxShadow: '0 4px 12px color-mix(in srgb, ' + gitExecErrorColor() + ' 40%, transparent)' }">
         <span class="material-symbols-outlined text-white text-3xl">cancel</span>
       </div>
-      <p class="text-base font-semibold" style="color: var(--color-danger);" x-text="gitExecErrorTitle()"></p>
-      <p x-show="gitExecErrorHint()" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecErrorHint()"></p>
-      <p x-show="!gitExecErrorHint() && gitExecution.error" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecution.error"></p>
-      <!-- offendingFiles slot (e.g. GH001 oversized paths — T11 links the
-           raw-log viewer) -->
+      <p class="text-base font-semibold" :style="{ color: gitExecErrorColor() }" x-text="gitExecErrorTitle()"></p>
+      <p x-show="gitExecErrorHint()" class="text-sm mt-2" :style="{ color: 'color-mix(in srgb, ' + gitExecErrorColor() + ' 70%, white)' }" x-text="gitExecErrorHint()"></p>
+      <p x-show="!gitExecErrorHint() && gitExecution.error" class="text-sm mt-2" :style="{ color: 'color-mix(in srgb, ' + gitExecErrorColor() + ' 70%, white)' }" x-text="gitExecution.error"></p>
+      <!-- offendingFiles (GH001 "remote: error: File <path> is <size> MB")
+           — the actionable list, monospace paths like the conflict list -->
       <div x-show="gitExecution.offendingFiles.length > 0" class="mt-3 text-left">
+        <p class="text-xs font-medium mb-1" :style="{ color: gitExecErrorColor() }" x-text="mt('main.git_exec_error_files_label', 'Files over the size limit:')"></p>
         <ul class="max-h-24 overflow-y-auto bg-background-dark border border-border-default rounded-md p-2 space-y-1">
           <template x-for="file in gitExecution.offendingFiles" :key="file">
             <li class="flex items-center gap-2 text-xs text-text-dark font-mono">
-              <span class="material-symbols-outlined text-sm" style="color: var(--color-danger);">description</span>
-              <span class="truncate" x-text="file"></span>
+              <span class="material-symbols-outlined text-sm flex-shrink-0" :style="{ color: gitExecErrorColor() }">description</span>
+              <span class="truncate" :title="file" x-text="file"></span>
             </li>
           </template>
         </ul>
       </div>
     </div>
 
+    <!-- Restore Notification Banner (Task 11 — T7 auto-restore outcomes,
+         additive; shown on failed AND cancelled terminals):
+           restored===true  → green "original state restored, nothing lost"
+                              + discrete backup branch name (restoredFrom)
+           restored==='PARTIAL' → orange + restoreDetails summary
+           restoreAborted (SAFETY_BACKUP_FAILED) → red + manual config.html
+                              path (backend restoreHint) + raw-logs link
+           partial (push-landed) → orange "may have reached the server" -->
+    <template x-if="gitExecution.phase === 'terminal' && gitExecution.terminal !== 'complete'">
+      <div>
+        <div x-show="gitExecution.restored === true" class="mb-4 p-4 rounded-lg flex items-start gap-3 text-left" style="background-color: color-mix(in srgb, var(--color-success) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-success) 45%, transparent);">
+          <span class="material-symbols-outlined flex-shrink-0" style="color: var(--color-success);">settings_backup_restore</span>
+          <div>
+            <p class="text-sm font-medium" style="color: var(--color-success);" x-text="mt('main.git_exec_restore_ok', 'The original state of your repository was restored — nothing was lost.')"></p>
+            <p x-show="gitExecution.restoredFrom" class="text-xs mt-1 text-muted-dark font-mono" x-text="mt('main.git_exec_restore_ok_from', 'Restored from backup: {branch}').replace('{branch}', gitExecution.restoredFrom || '')"></p>
+          </div>
+        </div>
+        <div x-show="gitExecution.restored === 'PARTIAL'" class="mb-4 p-4 rounded-lg flex items-start gap-3 text-left" style="background-color: color-mix(in srgb, var(--color-accent-orange) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-accent-orange) 50%, transparent);">
+          <span class="material-symbols-outlined flex-shrink-0" style="color: var(--color-accent-orange);">warning</span>
+          <div>
+            <p class="text-sm font-medium" style="color: var(--color-accent-orange);" x-text="mt('main.git_exec_restore_partial', 'Workspace partially restored — some files may be in an intermediate state.')"></p>
+            <p x-show="gitExecRestorePartialDetail()" class="text-xs mt-1 text-muted-dark font-mono" x-text="gitExecRestorePartialDetail()"></p>
+          </div>
+        </div>
+        <div x-show="gitExecution.restoreAborted" class="mb-4 p-4 rounded-lg flex items-start gap-3 text-left" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-danger) 50%, transparent);">
+          <span class="material-symbols-outlined flex-shrink-0" style="color: var(--color-danger);">report</span>
+          <div>
+            <p class="text-sm font-medium" style="color: var(--color-danger);" x-text="mt('main.git_exec_restore_aborted_title', 'Automatic restore could not complete')"></p>
+            <p class="text-xs mt-1 text-muted-dark" x-text="gitExecution.restoreHint || mt('main.git_exec_restore_aborted_hint', 'To protect your data the automatic restore was aborted. Restore manually from config.html (manage backups) — nothing was lost.')"></p>
+            <button @click="openRawLogs()" class="text-xs mt-1 flex items-center gap-1 hover:underline" style="color: var(--color-danger);">
+              <span class="material-icons" style="font-size: 13px;">terminal</span>
+              <span x-text="mt('main.git_exec_view_logs_btn', 'View raw logs')"></span>
+            </button>
+          </div>
+        </div>
+        <div x-show="gitExecution.partial" class="mb-4 p-4 rounded-lg flex items-start gap-3 text-left" style="background-color: color-mix(in srgb, var(--color-accent-orange) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-accent-orange) 50%, transparent);">
+          <span class="material-symbols-outlined flex-shrink-0" style="color: var(--color-accent-orange);">cloud_upload</span>
+          <div>
+            <p class="text-sm font-medium" style="color: var(--color-accent-orange);" x-text="gitExecution.restoreInfo || mt('main.git_exec_restore_push_landed', 'The publish may have reached the remote server — it was verified and kept in sync.')"></p>
+            <p x-show="gitExecution.remoteOid" class="text-xs mt-1 text-muted-dark font-mono" x-text="'remote → ' + (gitExecution.remoteOid || '')"></p>
+          </div>
+        </div>
+      </div>
+    </template>
+
     <!-- Overlaid binaries notice -->
     <div x-show="gitExecution.binariesResolved > 0" class="mb-4 p-3 bg-yellow-900 bg-opacity-30 border border-yellow-600 rounded-md">
       <p class="text-xs text-yellow-400" x-text="$store.i18n.t('main.git_exec_binaries_notice', {count: gitExecution.binariesResolved})"></p>
+    </div>
+
+    <!-- Raw Operation Log Viewer (Task 11) — journal entries via
+         getOperationLog(rawLogOpId); backend-sanitized (Task 3), rendered
+         AS-IS. Console-panel <pre> precedent: text-xs font-mono
+         whitespace-pre-wrap. Entries accordion open per command line. -->
+    <div x-show="gitExecution.rawLogs.open" class="mb-4 rounded-lg border border-border-default bg-background-dark overflow-hidden">
+      <div class="flex items-center justify-between px-3 py-2 bg-surface-secondary border-b border-border-subtle">
+        <span class="text-xs font-medium text-text-dark flex items-center gap-2 min-w-0">
+          <span class="material-symbols-outlined text-sm text-muted-dark flex-shrink-0">terminal</span>
+          <span class="truncate" x-text="mt('main.git_exec_logs_title', 'Raw operation logs')"></span>
+        </span>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span x-show="gitExecution.rawLogs.copied" class="text-xs" style="color: var(--color-success);" x-text="mt('main.git_exec_logs_copied', 'Copied ✓')"></span>
+          <button x-show="!gitExecution.rawLogs.loading && gitExecution.rawLogs.entries.length > 0" @click="copyRawLogsToClipboard()"
+                  class="text-xs px-2 py-1 rounded bg-surface-dark hover:bg-muted-dark text-text-dark flex items-center gap-1"
+                  :title="mt('main.git_exec_logs_copy_hint', 'Copy the full log to paste into an issue or support request')">
+            <span class="material-icons" style="font-size: 14px;">content_copy</span>
+            <span x-text="mt('main.git_exec_logs_copy_btn', 'Copy')"></span>
+          </button>
+        </div>
+      </div>
+      <div class="max-h-64 overflow-y-auto">
+        <template x-if="gitExecution.rawLogs.loading">
+          <div class="flex items-center gap-2 px-3 py-3 text-xs text-muted-dark">
+            <span class="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+            <span x-text="mt('main.git_exec_logs_loading', 'Loading logs…')"></span>
+          </div>
+        </template>
+        <template x-if="!gitExecution.rawLogs.loading && gitExecution.rawLogs.unavailable">
+          <div class="px-3 py-3 flex items-center justify-between gap-2">
+            <span class="text-xs text-muted-dark" x-text="mt('main.git_exec_logs_unavailable', 'Log not available — it may have expired (kept for 30 minutes) or was not captured for this operation.')"></span>
+            <button @click="fetchOperationLog()" class="text-xs px-2 py-1 rounded bg-surface-secondary hover:bg-muted-dark text-text-dark flex items-center gap-1 flex-shrink-0">
+              <span class="material-icons" style="font-size: 14px;">refresh</span>
+              <span x-text="mt('main.git_exec_logs_retry_btn', 'Try again')"></span>
+            </button>
+          </div>
+        </template>
+        <template x-if="!gitExecution.rawLogs.loading && !gitExecution.rawLogs.unavailable && gitExecution.rawLogs.entries.length === 0">
+          <div class="px-3 py-3 text-xs text-muted-dark" x-text="mt('main.git_exec_logs_empty', 'No commands were captured for this operation.')"></div>
+        </template>
+        <template x-if="!gitExecution.rawLogs.loading && !gitExecution.rawLogs.unavailable && gitExecution.rawLogs.entries.length > 0">
+          <div class="divide-y divide-border-subtle">
+            <template x-for="(entry, idx) in gitExecution.rawLogs.entries" :key="entry.seq !== undefined ? entry.seq : idx">
+              <div>
+                <button @click="entry.open = !entry.open" class="w-full text-left px-3 py-1.5 hover:bg-surface-secondary flex items-start gap-2">
+                  <span class="material-symbols-outlined text-sm text-muted-dark flex-shrink-0" x-text="entry.open ? 'expand_less' : 'expand_more'"></span>
+                  <span class="text-xs font-mono break-all leading-5 min-w-0">
+                    <span class="text-muted-dark" x-text="'[' + formatJournalTime(entry.timestamp) + '] '"></span><span x-text="'$ git ' + ((entry.args && entry.args.length) ? entry.args.join(' ') : '')"></span><span x-text="' → exit ' + ((entry.exitCode === null || entry.exitCode === undefined) ? '?' : entry.exitCode) + ' (' + ((entry.durationMs === null || entry.durationMs === undefined) ? '?' : entry.durationMs) + 'ms)'" :style="{ color: (entry.exitCode === 0) ? 'var(--color-success)' : 'var(--color-danger)' }"></span>
+                  </span>
+                </button>
+                <div x-show="entry.open" class="px-3 pb-2 space-y-2">
+                  <div x-show="entry.stdout">
+                    <p class="text-[10px] font-medium text-muted-dark mb-0.5">stdout</p>
+                    <pre class="text-xs text-muted-dark whitespace-pre-wrap font-mono bg-surface-dark rounded p-2 max-h-40 overflow-y-auto border border-border-subtle" x-text="entry.stdout"></pre>
+                  </div>
+                  <div x-show="entry.stderr">
+                    <p class="text-[10px] font-medium mb-0.5" style="color: var(--color-danger);">stderr</p>
+                    <pre class="text-xs whitespace-pre-wrap font-mono bg-surface-dark rounded p-2 max-h-40 overflow-y-auto border border-border-subtle" style="color: color-mix(in srgb, var(--color-danger) 80%, white);" x-text="entry.stderr"></pre>
+                  </div>
+                  <p x-show="!entry.stdout && !entry.stderr" class="text-xs text-muted-dark italic" x-text="mt('main.git_exec_logs_no_output', 'No output captured.')"></p>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
     </div>
 
     <!-- Shell action footer -->
@@ -2664,14 +2964,12 @@ clearingCache: false,
               :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : (gitExecution.terminal === 'cancelled' ? 'bg-muted-dark hover:bg-muted' : 'bg-red-600 hover:bg-red-500')"
                class="px-4 py-2 text-white rounded-md text-sm font-medium"
                x-text="$store.i18n.t('main.git_exec_close_btn')"></button>
-      <!-- Raw-log viewer placeholder — Task 11 wires the real handler.
-           Shown DISABLED with a "coming soon" tooltip until then (visible
-           stub documents the recovery affordance on every failure). -->
-      <button x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" disabled
-              :title="mt('main.git_exec_logs_coming_soon', 'Coming soon — Task 11')"
-              class="px-4 py-2 bg-muted-dark text-white rounded-md text-sm font-medium opacity-50 cursor-not-allowed flex items-center gap-2">
+      <!-- Raw-log viewer toggle (Task 11): accordion inside the modal —
+           first open fetches the journal via getOperationLog. -->
+      <button x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" @click="toggleRawLogs()"
+              class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium flex items-center gap-2">
         <span class="material-icons text-sm">terminal</span>
-        <span x-text="mt('main.git_exec_view_logs_btn', 'View raw logs')"></span>
+        <span x-text="gitExecution.rawLogs.open ? mt('main.git_exec_logs_hide_btn', 'Hide raw logs') : mt('main.git_exec_view_logs_btn', 'View raw logs')"></span>
       </button>
       <!-- Guided recovery for typed PUSH_REJECTED: refresh pulls remote updates -->
       <button x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed' && gitExecution.errorCode === 'PUSH_REJECTED'" @click="retryGitExecWithRefresh()"
