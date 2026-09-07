@@ -69,6 +69,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installManagedNode: (options) => ipcRenderer.invoke('node:install', options),
   onNodeInstallProgress: (callback) => ipcRenderer.on('node:install-progress', (event, payload) => callback(payload)),
   onGitProgress: (callback) => ipcRenderer.on('git:progress', (event, payload) => callback(payload)),
+  /**
+   * Repository state changed underneath the renderer (Task 7 auto-restore
+   * engine): a failed/cancelled sync operation restored the repo from a
+   * backup. Payload: { projectId, reason: 'auto-restore'|'auto-restore-partial',
+   * operationId }. T9 subscribes with an existence guard.
+   */
+  onGitStateChanged: (callback) => ipcRenderer.on('git:state-changed', (event, payload) => callback(payload)),
 
   // Git branch management functions
   listBranches: (projectId) => ipcRenderer.invoke('git:list-branches', projectId),

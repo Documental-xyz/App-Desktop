@@ -50,11 +50,16 @@ const {
 })();
 
 // Resilient import: GitSafety wrapper for destructive ops (backup + recover).
-const { GitSafety: _GitSafetyClass, createObjectStyleOps: _createObjectStyleOps } = (() => {
+const {
+  GitSafety: _GitSafetyClass,
+  createObjectStyleOps: _createObjectStyleOps,
+  shouldRestore: _shouldRestore,
+  verifyRemoteState: _verifyRemoteState,
+} = (() => {
   try {
     return require('./gitSafety.js');
   } catch (_e) {
-    return { GitSafety: null, createObjectStyleOps: null };
+    return { GitSafety: null, createObjectStyleOps: null, shouldRestore: null, verifyRemoteState: null };
   }
 })();
 
@@ -656,10 +661,16 @@ class GitHandlers {
    * failure/cancel. 'failed' reports the stage where the operation died
    * (op.stage fallback 'failed'); 'complete'/'cancelled' use their own
    * stage names. Nothing may be emitted after the terminal.
+   *
+   * `extra` (Task 7) merges additive payload fields into the terminal
+   * event — `restored: true|false|'PARTIAL'`, `partial`,
+   * `restoreAborted` — without touching the frozen base shape.
+   *
    * @param {'complete'|'cancelled'|'failed'} kind
+   * @param {object} [extra] - additive payload fields (restore outcome)
    * @private
    */
-  _emitTerminal(op, kind, message) {
+  _emitTerminal(op, kind, message, extra) {
     if (!op || op.terminalEmitted) return;
     op.terminalEmitted = true;
     const stage = kind === 'failed' ? (op.stage || 'failed') : kind;
@@ -673,6 +684,7 @@ class GitHandlers {
         : kind === 'cancelled' ? 'Operação cancelada.' : 'Operação falhou.'),
       percentage: kind === 'complete' ? 100 : null,
       terminal: kind,
+      ...(extra || {}),
     });
     // Task 3: arm the journal's 30-min post-terminal expiry (light hook —
     // the entry stays readable for post-mortem diagnosis via
@@ -687,23 +699,202 @@ class GitHandlers {
    * Map a flow result to its terminal kind and emit it (exactly-once via
    * _emitTerminal). Returns the result so handlers can
    * `return this._emitTerminalFromResult(op, result)`.
+   *
+   * Task 7: additive restore-outcome fields on the result
+   * (restored/partial/restoreAborted/restoreSkipped/restoreDetails) ride
+   * along on the terminal payload.
    * @private
    */
   _emitTerminalFromResult(op, result) {
     if (op && !op.terminalEmitted) {
+      const restoreFields = {};
+      for (const key of ['restored', 'partial', 'restoreAborted', 'restoreSkipped', 'restoreDetails']) {
+        if (result && result[key] !== undefined) {
+          restoreFields[key] = result[key];
+        }
+      }
       if (result && result.cancelled) {
-        this._emitTerminal(op, 'cancelled', result.message);
+        this._emitTerminal(op, 'cancelled', result.message, restoreFields);
       } else if (result && (result.conflictPending || result.code === 'CONFLICT_PENDING')) {
         // The in-flight operation ends lockless awaiting the user's
         // strategy decision; the resume mints a NEW operationId.
         this._emitTerminal(op, 'cancelled', 'Conflito detectado — aguardando decisão do usuário.');
       } else if (result && result.success === false) {
-        this._emitTerminal(op, 'failed', result.error || result.message);
+        this._emitTerminal(op, 'failed', result.error || result.message, restoreFields);
       } else {
         this._emitTerminal(op, 'complete');
       }
     }
     return result;
+  }
+
+  /**
+   * Emit the auto-restore 'restoring' stage WITHOUT clobbering op.stage:
+   * the frozen Task-2 contract says the terminal 'failed' event reports
+   * the stage where the OPERATION died (e.g. 'pushing'), and the restore
+   * is recovery, not a flow stage transition. Emitted directly (not via
+   * sendProgress) so stageIndex stays CLAMPED to the failing stage's
+   * index — a stageTotal-indexed event would break the consumers'
+   * stageIndex monotonicity once the terminal re-reports the (lower)
+   * failing-stage index. No `cancelling` flag: the operation's fate is
+   * already sealed, the renderer must show "restoring", not "cancelling".
+   * @private
+   */
+  _emitRestoreStage(op, message) {
+    if (!op || op.terminalEmitted) return;
+    const stages = STAGE_LISTS[op.flow];
+    const idx = Array.isArray(stages) ? stages.indexOf(op.stage) : -1;
+    this.broadcastToWindows('git:progress', {
+      projectId: op.projectId,
+      operationId: op.operationId,
+      flow: op.flow,
+      stage: 'restoring',
+      ...(idx >= 0 ? { stageIndex: idx + 1 } : { stageIndex: stages ? stages.length : null }),
+      ...(stages ? { stageTotal: stages.length } : {}),
+      message,
+      percentage: null,
+    });
+  }
+
+  /**
+   * Build the pure-matrix input (gitSafety.shouldRestore) from the failed
+   * result + caught error. failureClass prefers the T5 enriched
+   * `result.errorClass`; cancelled results (never enriched) use the
+   * pseudo-class 'cancel'.
+   * @private
+   */
+  _failureContextFromResult(op, result, error) {
+    let failureClass = result && typeof result.errorClass === 'string' ? result.errorClass : null;
+    if (!failureClass && error && typeof error.errorType === 'string') failureClass = error.errorType;
+    if (!failureClass && result && result.cancelled) failureClass = 'cancel';
+    if (!failureClass) failureClass = 'unknown';
+    return {
+      failureClass,
+      stage: op && op.stage ? op.stage : 'preparing',
+      code: (result && result.code) || (error && error.code) || undefined,
+      conflictPending: Boolean(result && (result.conflictPending || result.code === 'CONFLICT_PENDING')),
+      cancelled: Boolean(result && result.cancelled),
+    };
+  }
+
+  /**
+   * AUTO-RESTORE orchestrator (Task 7). Called from the failure/cancel
+   * cleanup of the 3 core wrappers' host handlers — ALWAYS inside the
+   * git-lock scope (before releaseGitLock; the engine never acquires the
+   * lock itself). Requires op.flowContext, set by the wrappers once the
+   * flow backup exists (pre-mutation failures have none → no-op, matching
+   * matrix row "falha ANTES do primeiro comando mutante").
+   *
+   * Steps: matrix decision → (VERIFY_THEN_RESTORE: ls-remote first —
+   * remote contains the push → keep state + partial:true) →
+   * gitSafety.autoRestoreFromBackup (probe/safety-backup-with-ABORT/
+   * writeRef+checkout/PARTIAL probe) → invalidate the repo's conflict
+   * tokens → broadcast 'git:state-changed'. The result only ever gains
+   * ADDITIVE fields (restored / partial / restoreAborted / …).
+   *
+   * @param {{flowContext?: object, projectId: *, stage: string|null}} op
+   * @param {string} projectPath
+   * @param {object} result - failure/cancel result (mutated additively)
+   * @param {Error} [error] - the caught error, when the result came from a catch
+   * @returns {Promise<object>} the (additively-enriched) result
+   * @private
+   */
+  async _restoreOnFailure(op, projectPath, result, error) {
+    try {
+      if (!op || !op.flowContext || !result || result.success !== false) return result;
+      if (result.conflictPending || result.code === 'CONFLICT_PENDING') return result;
+
+      const failureContext = this._failureContextFromResult(op, result, error);
+      const decision = _shouldRestore(failureContext);
+      if (decision.action === 'NO') {
+        this.logger.info(`🛟 Auto-restore: matriz → NO (${failureContext.failureClass}@${failureContext.stage})`);
+        return result;
+      }
+      const ops = this._safetyOps();
+      if (!this.gitSafety || !ops || typeof this.gitSafety.autoRestoreFromBackup !== 'function') {
+        return result;
+      }
+      const fc = op.flowContext;
+
+      if (decision.action === 'VERIFY_THEN_RESTORE') {
+        this._emitRestoreStage(op, 'Verificando se a publicação chegou ao repositório remoto...');
+        let expectedOid = null;
+        try {
+          expectedOid = await this.git.resolveRef(projectPath, 'HEAD');
+        } catch (_e) { /* null expectedOid → verified remoteContains stays false */ }
+        const verify = await _verifyRemoteState(
+          this.git, projectPath, fc.targetBranch, expectedOid,
+          fc.auth ? { auth: fc.auth } : {}
+        );
+        if (!verify.verified) {
+          this.logger.warn(`🛟 Auto-restore: remoto não verificável (${verify.error}) — estado mantido (nada foi perdido)`);
+          return {
+            ...result,
+            restored: false,
+            restoreSkipped: 'VERIFY_UNAVAILABLE',
+            restoreInfo: 'Não foi possível verificar o repositório remoto. Nada foi perdido — sincronize quando a conexão voltar.',
+          };
+        }
+        if (verify.remoteContains) {
+          this.logger.info('🛟 Auto-restore: ls-remote contém o push — estado mantido (sucesso parcial)');
+          return {
+            ...result,
+            restored: false,
+            partial: true,
+            remoteOid: verify.remoteOid,
+            restoreInfo: 'A publicação CHEGOU ao repositório remoto apesar do erro — o estado local foi mantido em sincronia.',
+          };
+        }
+      }
+
+      this._emitRestoreStage(op, 'Restaurando o estado original do repositório...');
+      const restore = await this.gitSafety.autoRestoreFromBackup(ops, require('fs'), projectPath, fc);
+
+      if (restore.aborted === 'SAFETY_BACKUP_FAILED') {
+        this.sendOutput('❌ Restauração automática abortada (falha no backup de segurança). Restaure manualmente em config.html → Gerenciar backups.');
+        return {
+          ...result,
+          restored: false,
+          restoreAborted: 'SAFETY_BACKUP_FAILED',
+          restoreHint: 'A restauração automática foi abortada para proteger seus dados (falha ao criar o backup de segurança do estado atual). Restaure manualmente em config.html (gerenciar backups) — nada foi perdido.',
+          ...(restore.journalHint ? { operationId: restore.journalHint } : {}),
+        };
+      }
+      if (restore.aborted) {
+        this.logger.error(`🛟 Auto-restore abortado: ${restore.aborted}`, restore.error);
+        return {
+          ...result,
+          restored: false,
+          restoreAborted: restore.aborted,
+          ...(restore.journalHint ? { operationId: restore.journalHint } : {}),
+        };
+      }
+      if (restore.restored === 'PARTIAL') {
+        this.broadcastToWindows('git:state-changed', {
+          projectId: op.projectId,
+          reason: 'auto-restore-partial',
+          operationId: fc.operationId,
+        });
+        return { ...result, restored: 'PARTIAL', restoreDetails: restore.details };
+      }
+      if (restore.skipped) {
+        return { ...result, restored: false, restoreSkipped: restore.skipped };
+      }
+
+      // Full restore: tokens under stale state die, every window re-reads.
+      this.invalidateConflictsForProject(op.projectId, projectPath);
+      this.broadcastToWindows('git:state-changed', {
+        projectId: op.projectId,
+        reason: 'auto-restore',
+        operationId: fc.operationId,
+      });
+      this.sendOutput(`♻️ Estado original restaurado a partir de ${restore.restoredFrom}.`);
+      return { ...result, restored: true, restoredFrom: restore.restoredFrom };
+    } catch (restoreErr) {
+      // The restore must never mask the original failure result.
+      this.logger.error('Auto-restore falhou (resultado original preservado):', restoreErr);
+      return result;
+    }
   }
 
   /**
@@ -1861,16 +2052,28 @@ class GitHandlers {
    *     detail: { ours, theirs, mergeBase },
    *   }
    *
+   * The internal registry entry additionally carries `projectId` (Task 7):
+   * the auto-restore engine invalidates a repo's tokens selectively when
+   * it moves the repository state out from under a pending decision.
+   *
    * @param {string} projectPath
    * @param {'publish'|'refresh'|'publish-main'} flow
    * @param {{files: string[], ours: string, theirs: string, mergeBase: string|null}} pending
    * @param {object} resumeCtx - { auth, author, who?, targetBranch? } to re-run the flow
+   * @param {string|number|null} [projectId=null] - project the flow runs for
    * @returns {object} typed IPC result
    */
-  _mintConflictPending(projectPath, flow, pending, resumeCtx) {
+  _mintConflictPending(projectPath, flow, pending, resumeCtx, projectId = null) {
     const token = require('crypto').randomBytes(16).toString('hex');
     const expiresAt = Date.now() + RESUME_TOKEN_TTL_MS;
-    this._pendingConflicts.set(token, { ...resumeCtx, projectPath, flow, createdAt: Date.now(), expiresAt });
+    this._pendingConflicts.set(token, {
+      ...resumeCtx,
+      projectId: projectId === undefined ? null : projectId,
+      projectPath,
+      flow,
+      createdAt: Date.now(),
+      expiresAt,
+    });
     this.logger.info(`⛔ Conflito real no fluxo ${flow} (${pending.files.length} arquivo(s)) — aguardando decisão do usuário`);
     this.sendOutput('⚠️ Conflito de mesclagem detectado — escolha como resolver para continuar.');
     return {
@@ -1884,6 +2087,38 @@ class GitHandlers {
       detail: { ours: pending.ours, theirs: pending.theirs, mergeBase: pending.mergeBase },
       error: 'Conflito de mesclagem detectado. Escolha uma estratégia para continuar (as duas versões ficam no histórico).',
     };
+  }
+
+  /**
+   * Selectively invalidate every pending-conflict token of one repository
+   * (Task 7 auto-restore step 4). The restore moves the repo state out
+   * from under any pending decision (the frozen `detail.ours/theirs`
+   * OIDs go stale), so the tokens must die — a later resolve against an
+   * invalidated token returns the frozen INVALID_TOKEN result.
+   *
+   * Entries are matched by projectId (canonical) OR by projectPath
+   * (entries minted before Task 7 carry no projectId).
+   *
+   * @param {string|number|null} projectId
+   * @param {string} [projectPath]
+   * @returns {string[]} invalidated tokens
+   */
+  invalidateConflictsForProject(projectId, projectPath) {
+    const invalidated = [];
+    for (const [token, entry] of Array.from(this._pendingConflicts.entries())) {
+      const byId =
+        projectId !== null && projectId !== undefined &&
+        entry.projectId === projectId;
+      const byPath = Boolean(projectPath) && entry.projectPath === projectPath;
+      if (byId || byPath) {
+        this._pendingConflicts.delete(token);
+        invalidated.push(token);
+      }
+    }
+    if (invalidated.length > 0) {
+      this.logger.info(`⛔ ${invalidated.length} token(s) de conflito invalidados (restore moveu o estado do repositório)`);
+    }
+    return invalidated;
   }
 
   /**
@@ -1920,6 +2155,11 @@ class GitHandlers {
    * retention, Task 4). No hard reset runs post-push — the merge already
    * left the working branch in sync with origin/target.
    *
+   * Task 7: captures the ORIGINAL state (branch/HEAD pre-WIP) and, once
+   * the flow backup exists, records `op.flowContext` — the auto-restore
+   * engine's target (preOpBackupName = the FIRST/flow backup, never an
+   * intermediate _safeResetToOrigin backup).
+   *
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, error?: string}>}
    */
   async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author, conflictStrategy, op }) {
@@ -1927,6 +2167,10 @@ class GitHandlers {
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — publicação recusada (backup obrigatório)');
     }
+    // Task 7: original state BEFORE any mutation (the WIP commit below is
+    // the first mutating command of the flow).
+    const originalBranch = (await this.git.currentBranch(projectPath, { cache: this._gitCache })) || targetBranch;
+    const originalHead = await this.git.resolveRef(projectPath, 'HEAD');
     // Commit-first, BEFORE the backup: _createBackup snapshots a dirty tree
     // onto the backup branch and then force-checks the working branch back
     // out, which WIPES uncommitted edits from the working tree. Committing
@@ -1941,21 +2185,36 @@ class GitHandlers {
       this._opsTreatMissingUpstreamAsUnpushed(ops, targetBranch),
       require('fs'),
       projectPath,
-      () => this._publishCore(projectPath, targetBranch, {
-        localSha,
-        auth,
-        signal: this.getAbortSignal(),
-        author,
-        conflictStrategy,
-        op,
-      }),
+      (backupInfo) => {
+        if (op) {
+          op.flowContext = {
+            projectId: op.projectId,
+            operationId: op.operationId,
+            projectPath,
+            targetBranch,
+            originalBranch,
+            originalHead,
+            preOpBackupName: backupInfo ? backupInfo.name : null,
+            ...(author ? { author } : {}),
+            ...(auth ? { auth } : {}),
+          };
+        }
+        return this._publishCore(projectPath, targetBranch, {
+          localSha,
+          auth,
+          signal: this.getAbortSignal(),
+          author,
+          conflictStrategy,
+          op,
+        });
+      },
       { branch: targetBranch }
     );
 
     if (result && result.conflictPending) {
       return this._mintConflictPending(projectPath, 'publish', result.conflictPending, {
         targetBranch, auth, author,
-      });
+      }, op ? op.projectId : null);
     }
 
     if (result && result.cancelled) {
@@ -2069,10 +2328,14 @@ class GitHandlers {
         author: { name: authorName, email: authorEmail },
         op,
       });
-      return this._emitTerminalFromResult(op, result);
+      return this._emitTerminalFromResult(op, await this._restoreOnFailure(op, projectPath, result));
     } catch (error) {
       this.logger.error('Error pushing to branch:', error);
-      return this._emitTerminalFromResult(op, this._publishErrorToResult(error));
+      const failResult = this._publishErrorToResult(error);
+      return this._emitTerminalFromResult(
+        op,
+        await this._restoreOnFailure(op, projectPath, failResult, error)
+      );
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
@@ -2175,37 +2438,50 @@ class GitHandlers {
         who: login || authorName,
         op,
       });
-      return this._emitTerminalFromResult(op, result);
+      return this._emitTerminalFromResult(op, await this._restoreOnFailure(op, projectPath, result));
     } catch (error) {
-      this._emitTerminal(
+      const failResult = this._refreshErrorToResult(error);
+      // Task 7: auto-restore runs INSIDE the lock, BEFORE the terminal
+      // event (so the terminal can carry `restored`).
+      return this._emitTerminalFromResult(
         op,
-        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
-        error.message,
+        await this._restoreOnFailure(op, projectPath, failResult, error)
       );
-      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-        return {
-          success: false,
-          cancelled: true,
-          message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
-        };
-      }
-      if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
-        this.sendOutput(`❌ ${error.message}`);
-        return enrichFailureResult({ success: false, code: error.code, error: error.message }, error);
-      }
-      this.logger.error('Error in gitRefresh:', error);
-      let errorMessage = error.message || 'Erro desconhecido ao atualizar';
-      if (errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.includes('authentication')) {
-        errorMessage = 'Erro de autenticação. Faça login novamente.';
-      } else if (errorMessage.includes('network') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ETIMEDOUT')) {
-        errorMessage = 'Erro de rede. Verifique sua conexão.';
-      }
-      this.sendOutput(`❌ Erro ao atualizar: ${errorMessage}`);
-      return enrichFailureResult({ success: false, error: errorMessage }, error);
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
     }
+  }
+
+  /**
+   * Map a refresh-flow error to the IPC failure result (extracted from
+   * gitRefresh's catch, Task 7, so the auto-restore hook can run between
+   * result construction and terminal emission). Same mapping as before:
+   * AbortError → cancelled (frozen Block-2 message), GitFlowError/
+   * GitSafetyError → typed code, else friendly-message fallbacks.
+   * @private
+   */
+  _refreshErrorToResult(error) {
+    if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
+      return {
+        success: false,
+        cancelled: true,
+        message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
+      };
+    }
+    if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
+      this.sendOutput(`❌ ${error.message}`);
+      return enrichFailureResult({ success: false, code: error.code, error: error.message }, error);
+    }
+    this.logger.error('Error in gitRefresh:', error);
+    let errorMessage = error.message || 'Erro desconhecido ao atualizar';
+    if (errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.includes('authentication')) {
+      errorMessage = 'Erro de autenticação. Faça login novamente.';
+    } else if (errorMessage.includes('network') || errorMessage.includes('ECONNREFUSED') || errorMessage.includes('ETIMEDOUT')) {
+      errorMessage = 'Erro de rede. Verifique sua conexão.';
+    }
+    this.sendOutput(`❌ Erro ao atualizar: ${errorMessage}`);
+    return enrichFailureResult({ success: false, error: errorMessage }, error);
   }
 
   /**
@@ -2214,6 +2490,9 @@ class GitHandlers {
    * uncommitted edits), then the fetch/merge core, then best-effort
    * pruning. The backup is NEVER deleted on success (7-day retention).
    *
+   * Task 7 (auto-restore): captures the original state pre-WIP and records
+   * `op.flowContext` once the flow backup exists.
+   *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
   async _runRefreshFlow(projectPath, { auth, author, who, conflictStrategy, op }) {
@@ -2221,6 +2500,10 @@ class GitHandlers {
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — atualização recusada (backup obrigatório)');
     }
+
+    // Task 7: original state BEFORE the WIP commit (first mutation).
+    const originalBranch = (await this.git.currentBranch(projectPath, { cache: this._gitCache })) || BRANCH_PREVIEW;
+    const originalHead = await this.git.resolveRef(projectPath, 'HEAD');
 
     // 1. WIP auto-commit FIRST: protects the dirty tree (see class JSDoc)
     //    and makes the commit "unpushed", forcing the backup branch.
@@ -2233,20 +2516,35 @@ class GitHandlers {
       this._opsTreatMissingUpstreamAsUnpushed(ops, BRANCH_PREVIEW),
       require('fs'),
       projectPath,
-      () => this._refreshCore(projectPath, {
-        auth,
-        signal: this.getAbortSignal(),
-        author,
-        conflictStrategy,
-        op,
-      }),
+      (backupInfo) => {
+        if (op) {
+          op.flowContext = {
+            projectId: op.projectId,
+            operationId: op.operationId,
+            projectPath,
+            targetBranch: BRANCH_PREVIEW,
+            originalBranch,
+            originalHead,
+            preOpBackupName: backupInfo ? backupInfo.name : null,
+            ...(author ? { author } : {}),
+            ...(auth ? { auth } : {}),
+          };
+        }
+        return this._refreshCore(projectPath, {
+          auth,
+          signal: this.getAbortSignal(),
+          author,
+          conflictStrategy,
+          op,
+        });
+      },
       { branch: BRANCH_PREVIEW, author }
     );
 
     if (result && result.conflictPending) {
       return this._mintConflictPending(projectPath, 'refresh', result.conflictPending, {
         auth, author, who,
-      });
+      }, op ? op.projectId : null);
     }
 
     if (result && result.cancelled) {
@@ -2527,10 +2825,14 @@ class GitHandlers {
         author: { name: authorName, email: authorEmail },
         op,
       });
-      return this._emitTerminalFromResult(op, result);
+      return this._emitTerminalFromResult(op, await this._restoreOnFailure(op, projectPath, result));
     } catch (error) {
       this.logger.error('Error in gitPublishPreview:', error);
-      return this._emitTerminalFromResult(op, this._publishErrorToResult(error));
+      const failResult = this._publishErrorToResult(error);
+      return this._emitTerminalFromResult(
+        op,
+        await this._restoreOnFailure(op, projectPath, failResult, error)
+      );
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
@@ -2650,38 +2952,51 @@ class GitHandlers {
         who: login || authorName,
         op,
       });
-      return this._emitTerminalFromResult(op, result);
+      return this._emitTerminalFromResult(op, await this._restoreOnFailure(op, projectPath, result));
     } catch (error) {
-      this._emitTerminal(
+      const failResult = this._publishMainErrorToResult(error);
+      // Task 7: auto-restore runs INSIDE the lock, BEFORE the terminal
+      // event (so the terminal can carry `restored`).
+      return this._emitTerminalFromResult(
         op,
-        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
-        error.message,
+        await this._restoreOnFailure(op, projectPath, failResult, error)
       );
-      if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-        return {
-          success: false,
-          cancelled: true,
-          message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
-        };
-      }
-      const msg = error.message || '';
-      const errData = error.data || (error.cause && error.cause.data);
-      const isForbidden =
-        (errData && (errData.code === 403 || errData.status === 403)) ||
-        (error.message && /403|forbidden/i.test(error.message)) ||
-        msg.includes('protected branch');
-      if (isForbidden) {
-        const forbiddenMsg =
-          'Push rejeitado pelo GitHub (403). Verifique permissões do token ou se a branch main está protegida.';
-        this.sendOutput(`❌ ${forbiddenMsg}`);
-        return enrichFailureResult({ success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg }, error);
-      }
-      this.logger.error('Error in gitPublishMain:', error);
-      return this._publishErrorToResult(error);
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
     }
+  }
+
+  /**
+   * Map a publish-main error to the IPC failure result (extracted from
+   * gitPublishMain's catch, Task 7 — same mapping as before, moved so the
+   * auto-restore hook can run between result construction and terminal
+   * emission): AbortError → cancelled, 403/protected-branch → typed
+   * PUSH_FORBIDDEN, else _publishErrorToResult.
+   * @private
+   */
+  _publishMainErrorToResult(error) {
+    if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
+      return {
+        success: false,
+        cancelled: true,
+        message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
+      };
+    }
+    const msg = error.message || '';
+    const errData = error.data || (error.cause && error.cause.data);
+    const isForbidden =
+      (errData && (errData.code === 403 || errData.status === 403)) ||
+      (error.message && /403|forbidden/i.test(error.message)) ||
+      msg.includes('protected branch');
+    if (isForbidden) {
+      const forbiddenMsg =
+        'Push rejeitado pelo GitHub (403). Verifique permissões do token ou se a branch main está protegida.';
+      this.sendOutput(`❌ ${forbiddenMsg}`);
+      return enrichFailureResult({ success: false, code: 'PUSH_FORBIDDEN', error: forbiddenMsg }, error);
+    }
+    this.logger.error('Error in gitPublishMain:', error);
+    return this._publishErrorToResult(error);
   }
 
   /**
@@ -2700,6 +3015,10 @@ class GitHandlers {
       throw new Error('GitSafety indisponível — publicação em main recusada (backup obrigatório)');
     }
 
+    // Task 7: original state BEFORE the WIP commit (first mutation).
+    const originalBranch = (await this.git.currentBranch(projectPath, { cache: this._gitCache })) || BRANCH_PREVIEW;
+    const originalHead = await this.git.resolveRef(projectPath, 'HEAD');
+
     // 1. WIP auto-commit FIRST: protects the dirty tree and stays on the
     //    LOCAL preview branch (never auto-promoted to main).
     const wipMessage = `WIP by ${who} at ${new Date().toISOString()}`;
@@ -2711,25 +3030,43 @@ class GitHandlers {
     //    the core so _safeResetToOrigin can reuse this backup instead of
     //    minting a 2nd branch for the same state (< 5 min, same HEAD,
     //    clean tree — conditions enforced in _assessAndBackup).
+    //    Task 7 (auto-restore): the SAME backupInfo becomes the flow's
+    //    restore target — preOpBackupName is this FIRST backup, never an
+    //    intermediate _safeResetToOrigin branch.
     const { result } = await this.gitSafety.withMandatoryBackup(
       this._opsTreatMissingUpstreamAsUnpushed(ops, BRANCH_PREVIEW),
       require('fs'),
       projectPath,
-      (recentBackup) => this._publishMainCore(projectPath, {
-        auth,
-        signal: this.getAbortSignal(),
-        author,
-        conflictStrategy,
-        op,
-        recentBackup,
-      }),
+      (backupInfo) => {
+        if (op) {
+          op.flowContext = {
+            projectId: op.projectId,
+            operationId: op.operationId,
+            projectPath,
+            targetBranch: BRANCH_MAIN,
+            originalBranch,
+            originalHead,
+            preOpBackupName: backupInfo ? backupInfo.name : null,
+            ...(author ? { author } : {}),
+            ...(auth ? { auth } : {}),
+          };
+        }
+        return this._publishMainCore(projectPath, {
+          auth,
+          signal: this.getAbortSignal(),
+          author,
+          conflictStrategy,
+          op,
+          recentBackup: backupInfo,
+        });
+      },
       { branch: BRANCH_PREVIEW, author }
     );
 
     if (result && result.conflictPending) {
       return this._mintConflictPending(projectPath, 'publish-main', result.conflictPending, {
         auth, author, who,
-      });
+      }, op ? op.projectId : null);
     }
 
     if (result && result.cancelled) {
@@ -3072,7 +3409,10 @@ class GitHandlers {
           conflictStrategy: strategy,
           op,
         });
-        return this._emitTerminalFromResult(op, result);
+        return this._emitTerminalFromResult(
+          op,
+          await this._restoreOnFailure(op, entry.projectPath, result)
+        );
       }
       if (entry.flow === 'refresh') {
         const result = await this._runRefreshFlow(entry.projectPath, {
@@ -3082,7 +3422,10 @@ class GitHandlers {
           conflictStrategy: strategy,
           op,
         });
-        return this._emitTerminalFromResult(op, result);
+        return this._emitTerminalFromResult(
+          op,
+          await this._restoreOnFailure(op, entry.projectPath, result)
+        );
       }
       const result = await this._runPublishMainFlow(entry.projectPath, {
         auth: entry.auth,
@@ -3091,15 +3434,19 @@ class GitHandlers {
         conflictStrategy: strategy,
         op,
       });
-      return this._emitTerminalFromResult(op, result);
-    } catch (error) {
-      this._emitTerminal(
+      return this._emitTerminalFromResult(
         op,
-        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
-        error.message,
+        await this._restoreOnFailure(op, entry.projectPath, result)
       );
+    } catch (error) {
       this.logger.error('Error in gitResolveConflict:', error);
-      return this._publishErrorToResult(error);
+      const failResult = this._publishErrorToResult(error);
+      // Task 7: auto-restore runs INSIDE the lock, BEFORE the terminal
+      // event (so the terminal can carry `restored`).
+      return this._emitTerminalFromResult(
+        op,
+        await this._restoreOnFailure(op, entry.projectPath, failResult, error)
+      );
     } finally {
       this._gitCache = {};
       this.releaseGitLock();

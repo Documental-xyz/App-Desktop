@@ -25,6 +25,7 @@
 
 'use strict';
 
+const path = require('path');
 const {
   BACKUP_BRANCH_PREFIX,
   LOCK_HEARTBEAT_INTERVAL_MS,
@@ -99,6 +100,171 @@ class GitSafetyError extends Error {
 // Backup names are of the form:  backup/<branch>-<shortSha>-<timestamp>
 // We capture the final dash-separated numeric group as the timestamp.
 const BACKUP_TIMESTAMP_SUFFIX = /-(\d+)$/;
+
+// ─── Auto-restore decision matrix (Task 7, publish-update-resilience) ─────────
+
+/**
+ * PURE decision function: given the failure context of a git flow, decide
+ * whether the engine must restore the repository to its pre-operation
+ * state, verify the remote first, or leave it untouched.
+ *
+ * MATRIX (first matching row wins):
+ *
+ * | Failure context                                             | Action                |
+ * |-------------------------------------------------------------|-----------------------|
+ * | CONFLICT_PENDING (conflictPending flag or typed code)       | NO — NEVER (the state |
+ * |                                                             | is resolvable; restore|
+ * |                                                             | would destroy the    |
+ * |                                                             | pending user decision)|
+ * | Failure BEFORE the first mutating command (preflight /      | NO (nothing changed)  |
+ * | BACKUP_FAILED / STATUS_MATRIX_FAILED hard blocks)           |                       |
+ * | Push REJECTED (PUSH_REJECTED / PUSH_FORBIDDEN typed codes,  | RESTORE (nothing      |
+ * | or large_file error class) — definitively did not land      | landed)               |
+ * | Push UNCERTAIN outcome (timeout / network / unknown class   | VERIFY_THEN_RESTORE   |
+ * | or user cancel WHILE the push had started) — ls-remote      | (restore ONLY when    |
+ * | decides: remote contains the attempted commit → keep state  | the remote does NOT   |
+ * | and report partial success                                  | contain the push)     |
+ * | Auth failure (post-mutations: the WIP commit already ran)   | RESTORE               |
+ * | Cancel AFTER a successful push (finalizing stage)           | NO (work already      |
+ * |                                                             | published)            |
+ * | Any other post-mutation failure/cancel (local commit /      | RESTORE (local        |
+ * | checkout / merge / branch mutation failed, fetch-stage      | mutation failed or   |
+ * | network/auth, cancel post-merge pre-push)                   | cancelled mid-flow)   |
+ *
+ * `failureClass` values are the T5 classifyError classes
+ * ('large_file'|'auth'|'timeout'|'network'|'conflict'|'unknown') plus the
+ * pseudo-class 'cancel' for user/timeout aborts (cancelled results are
+ * never enriched, so they carry no errorClass).
+ *
+ * @param {{failureClass?: string, stage?: string|null, code?: string, conflictPending?: boolean, cancelled?: boolean}} failureContext
+ * @returns {{action: 'RESTORE'|'VERIFY_THEN_RESTORE'|'NO', reason: string}}
+ */
+function shouldRestore(failureContext) {
+  const ctx = failureContext || {};
+  const failureClass = ctx.failureClass || 'unknown';
+  const stage = ctx.stage || null;
+  const code = ctx.code || null;
+
+  // Row 5 — CONFLICT_PENDING: NEVER restore (a resolvable state and a
+  // live resumeToken exist; restoring would destroy the user's decision).
+  if (ctx.conflictPending || code === 'CONFLICT_PENDING') {
+    return {
+      action: 'NO',
+      reason: 'CONFLICT_PENDING — estado resolvível: o usuário possui uma decisão pendente (resumeToken válido) e o restore destruiria essa decisão.',
+    };
+  }
+
+  // Row 6 — failure BEFORE the first mutating command: nothing changed.
+  // BACKUP_FAILED / STATUS_MATRIX_FAILED are the Task-5 hard blocks raised
+  // BEFORE the protected operation runs (zero provider mutations); the
+  // 'preflight' stage covers read-only pre-lock validation failures.
+  if (code === 'BACKUP_FAILED' || code === 'STATUS_MATRIX_FAILED' || stage === 'preflight') {
+    return {
+      action: 'NO',
+      reason: 'Falha ANTES do primeiro comando mutante (preflight/status/backup) — nada mudou no repositório.',
+    };
+  }
+
+  // Push-stage rows: the push was started, landing is the question.
+  if (stage === 'pushing') {
+    if (code === 'PUSH_REJECTED' || code === 'PUSH_FORBIDDEN' || failureClass === 'large_file') {
+      return {
+        action: 'RESTORE',
+        reason: 'Push rejeitado pelo remoto (nada foi publicado) — devolver o repositório ao estado original.',
+      };
+    }
+    if (failureClass === 'timeout' || failureClass === 'network' || failureClass === 'unknown' || failureClass === 'cancel') {
+      return {
+        action: 'VERIFY_THEN_RESTORE',
+        reason: 'Resultado do push incerto (timeout/rede/cancel durante o push) — verificar o remoto (ls-remote) e restaurar SOMENTE se o push não chegou.',
+      };
+    }
+    // auth / conflict / anything else at push: the server refused before
+    // landing anything — deterministic RESTORE.
+    return {
+      action: 'RESTORE',
+      reason: `Falha ${failureClass} durante o push — nada foi publicado; devolver o repositório ao estado original.`,
+    };
+  }
+
+  // Cancel AFTER a successful push (finalizing stage): the work is already
+  // on the remote — restoring would desync local from a landed remote.
+  if (ctx.cancelled && stage === 'finalizing') {
+    return {
+      action: 'NO',
+      reason: 'Cancelamento após o push bem-sucedido — o trabalho já foi publicado; nada a desfazer.',
+    };
+  }
+
+  // All remaining post-mutation failures/cancels: local mutation failed
+  // (commit/checkout/merge/branch), fetch-stage auth/network failure
+  // (post-WIP), or a cancel with mutations applied (post-merge pre-push).
+  if (failureClass === 'auth') {
+    return {
+      action: 'RESTORE',
+      reason: 'Falha de autenticação após mutações locais (commit WIP) — devolver o repositório ao estado original.',
+    };
+  }
+  if (ctx.cancelled) {
+    return {
+      action: 'RESTORE',
+      reason: 'Cancelamento com mutações locais aplicadas — devolver o repositório ao estado original.',
+    };
+  }
+  return {
+    action: 'RESTORE',
+    reason: `Mutação local falhou (${failureClass} em '${stage || 'preparing'}') — devolver o repositório ao estado original.`,
+  };
+}
+
+/**
+ * Remote-state verification for the VERIFY_THEN_RESTORE row (Task 7).
+ * Consults the server via `git ls-remote` (read-only) and reports whether
+ * the branch tip equals the commit the failed push ATTEMPTED to land.
+ *
+ * `remoteContains` is an EXACT tip match — a successor tip (our commit
+ * plus someone else's) is conservatively reported as not-containing
+ * (documented limitation: the successor OID is generally not available
+ * locally for an ancestry check without an extra fetch).
+ *
+ * When ls-remote itself fails (network down), `verified: false` is
+ * returned — the caller must KEEP the current state (never wrongly
+ * revert a push that may have landed; nothing is lost either way: every
+ * commit is local plus in a backup branch).
+ *
+ * @param {import('../git/GitService.js').GitService} git - GitService facade
+ * @param {string} projectPath - absolute repo path (remote URL resolution)
+ * @param {string} branch - branch the push targeted
+ * @param {string|null} expectedOid - commit the push attempted to land
+ * @param {{auth?: {token: string}, signal?: AbortSignal}} [opts]
+ * @returns {Promise<{remoteContains: boolean, remoteOid: string|null, verified: boolean, error?: string}>}
+ */
+async function verifyRemoteState(git, projectPath, branch, expectedOid, opts = {}) {
+  let url = null;
+  try {
+    url = await git.getConfig(projectPath, 'remote.origin.url');
+  } catch (err) {
+    return { remoteContains: false, remoteOid: null, verified: false, error: `remote.origin.url: ${err.message}` };
+  }
+  if (!url) {
+    return { remoteContains: false, remoteOid: null, verified: false, error: 'remote.origin.url indisponível' };
+  }
+  try {
+    const refs = await git.listServerRefs(url, {
+      ...(opts.auth ? { auth: opts.auth } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+    const hit = (refs || []).find((r) => r && r.ref === `refs/heads/${branch}`);
+    const remoteOid = hit ? hit.oid : null;
+    return {
+      remoteContains: Boolean(expectedOid) && remoteOid === expectedOid,
+      remoteOid,
+      verified: true,
+    };
+  } catch (err) {
+    return { remoteContains: false, remoteOid: null, verified: false, error: err.message };
+  }
+}
 
 /** Retention window (days) for `backup/*` branches before pruning. */
 const BACKUP_RETENTION_DAYS = 7;
@@ -657,6 +823,200 @@ class GitSafety {
     return { restoredFrom: backupBranch, backupRetained: true };
   }
 
+  // ─── Auto-restore engine (Task 7, publish-update-resilience) ─────────────────
+
+  /**
+   * Restore the repository to its pre-operation state after a flow
+   * failure/cancel. Runs INSIDE the caller's git-lock scope (the wrappers
+   * call it from their failure/cancel cleanup, before releaseGitLock —
+   * never acquires the lock itself).
+   *
+   * Sequence (guardrailed):
+   *  1. PRE-PROBE — cheap skip when the repo is already at the original
+   *     state (branch + HEAD + clean tree + no merge in progress). This
+   *     is the efficient path the plan requires: no backup, no checkout.
+   *  2. SAFETY BACKUP of the CURRENT state FIRST (via _assessAndBackup —
+   *     only created when there is anything to lose). On failure this
+   *     ABORTS the restore (unlike restoreBackup's warn-and-continue):
+   *     an unbacked-up destructive restore is exactly the historical
+   *     data-loss bug. The pre-op backup branch is NEVER deleted here
+   *     (RECOVERY CONTRACT — user-initiated delete or 7-day prune only).
+   *  3. writeRef(originalBranch → pre-op backup tip) + checkout -f. The
+   *     target is flowContext.preOpBackupName — the FIRST (flow) backup,
+   *     never an intermediate _safeResetToOrigin backup. When no pre-op
+   *     backup exists (clean+pushed state, backup was null) the recorded
+   *     originalHead is the target — safe because step 2 already snapped
+   *     the current state. A dead merge (MERGE_HEAD left by a killed
+   *     merge) is cleared around the checkout: `checkout -f` is not
+   *     guaranteed to clear merge metadata across providers.
+   *     On checkout failure: PARTIAL — probe and report the exact state,
+   *     never blind-retry (writeRef may have already moved the branch).
+   *
+   * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
+   * @param {object} fs - filesystem client (node fs in production)
+   * @param {string} projectPath - absolute repo path
+   * @param {{projectId?: string|number|null, operationId?: string|null, preOpBackupName?: string|null,
+   *          originalBranch?: string|null, originalHead?: string|null, author?: object}} flowContext
+   * @returns {Promise<{restored: boolean|'PARTIAL', skipped?: string, aborted?: string,
+   *                    journalHint?: string, safetyBackup?: string|null, restoredFrom?: string,
+   *                    branch?: string, head?: string, details?: object, error?: string}>}
+   */
+  async autoRestoreFromBackup(gitMod, fs, projectPath, flowContext) {
+    const fc = flowContext || {};
+    const originalBranch = fc.originalBranch || null;
+    const journalHint = fc.operationId || null;
+
+    if (!originalBranch) {
+      return { restored: false, aborted: 'NO_RESTORE_TARGET', journalHint };
+    }
+
+    // 1. Pre-probe: already at the original state → skip (cheap path).
+    try {
+      const branch = await gitMod.currentBranch({ fs, dir: projectPath });
+      const head = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' });
+      const mergeInProgress = GitSafety._mergeStateFileExists(fs, projectPath);
+      if (!mergeInProgress && branch === originalBranch && head === fc.originalHead) {
+        try {
+          const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+          const dirty = matrix.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
+          if (dirty.length === 0) {
+            this.logger.info('♻️ Auto-restore pulado — repositório já está no estado original');
+            return { restored: false, skipped: 'ALREADY_AT_ORIGINAL' };
+          }
+        } catch (_probeErr) { /* dirty unknown → proceed (safety first) */ }
+      }
+    } catch (_probeErr) { /* probe failed → proceed (safety first) */ }
+
+    // 2. Safety-backup of the CURRENT state — ABORT on failure (guardrail).
+    let safetyBackup = null;
+    try {
+      const assessment = await this._assessAndBackup(gitMod, fs, projectPath, originalBranch, {
+        branch: originalBranch,
+        ...(fc.author ? { author: fc.author } : {}),
+      });
+      safetyBackup = assessment.backupBranch;
+    } catch (err) {
+      this.logger.error(
+        '❌ Auto-restore ABORTADO — falha ao criar o backup de segurança do estado atual:',
+        err
+      );
+      return {
+        restored: false,
+        aborted: 'SAFETY_BACKUP_FAILED',
+        journalHint,
+        error: err && err.message,
+      };
+    }
+
+    // 3. Resolve the restore target: the FIRST (flow) backup, else the
+    //    recorded originalHead (safe — step 2 already snapped the state).
+    let targetOid = null;
+    let restoredFrom = null;
+    if (fc.preOpBackupName) {
+      try {
+        targetOid = await gitMod.resolveRef({ fs, dir: projectPath, ref: fc.preOpBackupName });
+        restoredFrom = fc.preOpBackupName;
+      } catch (err) {
+        this.logger.error('❌ Auto-restore ABORTADO — backup pré-op irresolvível:', err);
+        return { restored: false, aborted: 'BACKUP_REF_UNRESOLVABLE', journalHint, error: err && err.message };
+      }
+    } else if (fc.originalHead) {
+      targetOid = fc.originalHead;
+      restoredFrom = 'originalHead';
+    }
+    if (!targetOid) {
+      return { restored: false, aborted: 'NO_RESTORE_TARGET', journalHint };
+    }
+
+    GitSafety._clearMergeState(fs, projectPath);
+    try {
+      await gitMod.writeRef({
+        fs,
+        dir: projectPath,
+        ref: 'refs/heads/' + originalBranch,
+        value: targetOid,
+        force: true,
+      });
+      await gitMod.checkout({ fs, dir: projectPath, ref: originalBranch, force: true });
+    } catch (err) {
+      const details = await GitSafety._probeRepoState(gitMod, fs, projectPath);
+      this.logger.error('❌ Auto-restore PARCIAL — writeRef aplicado mas o checkout falhou:', err);
+      return {
+        restored: 'PARTIAL',
+        details,
+        safetyBackup,
+        journalHint,
+        error: err && err.message,
+      };
+    }
+    GitSafety._clearMergeState(fs, projectPath);
+    this.fsSyncSafe(fs, projectPath);
+
+    this.logger.info(`♻️ Auto-restore concluído: ${originalBranch} → ${restoredFrom}`);
+    return { restored: true, restoredFrom, safetyBackup, branch: originalBranch, head: targetOid };
+  }
+
+  /**
+   * Whether a merge/cherry-pick state file exists (a killed merge may
+   * leave MERGE_HEAD behind — the repo is NOT at a clean state even when
+   * the branch/HEAD match the original).
+   * @private
+   * @param {object} fs
+   * @param {string} projectPath
+   * @returns {boolean}
+   */
+  static _mergeStateFileExists(fs, projectPath) {
+    try {
+      return typeof fs.existsSync === 'function'
+        ? Boolean(fs.existsSync(path.join(projectPath, '.git', 'MERGE_HEAD')))
+        : false;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /**
+   * Remove stale merge/cherry-pick metadata (.git/MERGE_HEAD etc.) —
+   * idempotent best-effort. `checkout -f` is not guaranteed to clear it
+   * across providers, and a stale MERGE_HEAD makes every later command
+   * behave as if a merge were in progress.
+   * @private
+   * @param {object} fs
+   * @param {string} projectPath
+   */
+  static _clearMergeState(fs, projectPath) {
+    for (const name of ['MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE', 'CHERRY_PICK_HEAD']) {
+      try {
+        if (typeof fs.rmSync === 'function') {
+          fs.rmSync(path.join(projectPath, '.git', name), { force: true });
+        }
+      } catch (_e) { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Exact-state probe (branch + HEAD + dirty file list) for PARTIAL
+   * reporting. Fields become null when the probe itself fails.
+   * @private
+   * @param {object} gitMod
+   * @param {object} fs
+   * @param {string} projectPath
+   * @returns {Promise<{branch: string|null, head: string|null, dirtyFiles: string[]|null, mergeInProgress: boolean}>}
+   */
+  static async _probeRepoState(gitMod, fs, projectPath) {
+    const state = { branch: null, head: null, dirtyFiles: null, mergeInProgress: false };
+    try { state.branch = await gitMod.currentBranch({ fs, dir: projectPath }); } catch (_e) { /* report null */ }
+    try { state.head = await gitMod.resolveRef({ fs, dir: projectPath, ref: 'HEAD' }); } catch (_e) { /* report null */ }
+    try {
+      const matrix = await gitMod.statusMatrix({ fs, dir: projectPath });
+      state.dirtyFiles = matrix
+        .filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1))
+        .map(([filepath]) => filepath);
+    } catch (_e) { /* report null */ }
+    state.mergeInProgress = GitSafety._mergeStateFileExists(fs, projectPath);
+    return state;
+  }
+
   /**
    * User-initiated backup deletion (from UI).
    *
@@ -754,4 +1114,6 @@ module.exports = {
   BACKUP_BRANCH_PREFIX,
   BACKUP_RETENTION_DAYS,
   createObjectStyleOps,
+  shouldRestore,
+  verifyRemoteState,
 };
