@@ -429,6 +429,22 @@ class GitHandlers {
   }
 
   /**
+   * Renew the lock heartbeat immediately (cancel hardening, Task 6).
+   * Called right before each potentially long git command (fetch
+   * deepen/push) so a fresh 180s stale window opens even if some future
+   * change ever stops the interval from ticking mid-await. The 5s
+   * interval itself keeps running during child_process awaits (Node
+   * timers fire while the event loop waits on a subprocess promise —
+   * empirically proven in tests/ipc/git.cancel-hardening.test.js), so
+   * this is defense-in-depth, not the primary mechanism.
+   */
+  _renewHeartbeat() {
+    if (this.gitSafety && typeof this.gitSafety.renewHeartbeat === 'function') {
+      this.gitSafety.renewHeartbeat();
+    }
+  }
+
+  /**
    * Check if cancellation has been requested
    * @returns {boolean} True if cancellation was requested
    */
@@ -576,7 +592,11 @@ class GitHandlers {
   /**
    * Emit a stage-start progress event (inline at each real stage
    * transition of the instrumented flows). Percentage stays null except
-   * for transfer stages fed by _emitTransferProgress.
+   * for transfer stages fed by _emitTransferProgress. Between
+   * requestCancel() and the operation settling, the payload carries
+   * `cancelling: true` so the renderer (T9/T10) can render
+   * "Cancelando…" while the in-flight git child is being killed
+   * (cancel hardening, Task 6).
    * @private
    */
   _emitStage(op, stage, message, percentage) {
@@ -589,6 +609,7 @@ class GitHandlers {
       stage,
       message,
       percentage: typeof percentage === 'number' ? percentage : null,
+      ...(this.isCancelRequested() ? { cancelling: true } : {}),
     });
   }
 
@@ -626,6 +647,7 @@ class GitHandlers {
       stage: op.stage,
       message: `${percent}%`,
       percentage: percent,
+      ...(this.isCancelRequested() ? { cancelling: true } : {}),
     });
   }
 
@@ -825,15 +847,16 @@ class GitHandlers {
       // 100 keeps the argv-limit guard while cutting batch count 10×.
       const stageErrors = [];
       const BATCH_SIZE = 100;
+      const signal = this.getAbortSignal();
       for (let i = 0; i < dirty.length; i += BATCH_SIZE) {
         const batch = dirty.slice(i, i + BATCH_SIZE);
         await Promise.all(
           batch.map(async ([filepath, , worktreeStatus]) => {
             try {
               if (worktreeStatus) {
-                await this.git.add(projectPath, filepath);
+                await this.git.add(projectPath, filepath, { signal });
               } else {
-                await this.git.remove(projectPath, filepath);
+                await this.git.remove(projectPath, filepath, { signal });
               }
             } catch (fileError) {
               stageErrors.push({ filepath, error: fileError.message });
@@ -855,7 +878,7 @@ class GitHandlers {
       this._gitCache = {};
 
       this.sendOutput(`💾 Commitando: "${commitMessage}"`);
-      const sha = await this.git.commit(projectPath, commitMessage, { author });
+      const sha = await this.git.commit(projectPath, commitMessage, { author, signal });
       this.sendOutput(`✅ Commit criado: ${sha.substring(0, 7)}`);
       return sha;
     } catch (error) {
@@ -1424,17 +1447,17 @@ class GitHandlers {
       this.sendOutput(`📥 Mudando para branch '${targetBranch}'...`);
       try {
         await this._raceTimeout(
-          this.git.checkout(projectPath, targetBranch),
+          this.git.checkout(projectPath, targetBranch, { signal }),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout ${targetBranch}`,
         );
       } catch (_e) {
         await this._raceTimeout(
-          this.git.checkout(projectPath, `origin/${targetBranch}`),
+          this.git.checkout(projectPath, `origin/${targetBranch}`, { signal }),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout origin/${targetBranch}`,
         );
-        await this.git.branch(projectPath, targetBranch, { checkout: true });
+        await this.git.branch(projectPath, targetBranch, { checkout: true, signal });
       }
     }
 
@@ -1442,6 +1465,7 @@ class GitHandlers {
     this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
     let firstPublish = false;
     try {
+      this._renewHeartbeat();
       await this._raceTimeout(
         this.git.fetch(projectPath, {
           remote: 'origin', ref: targetBranch, singleBranch: true, depth: 1,
@@ -1485,6 +1509,7 @@ class GitHandlers {
         // Diverged AND not ahead: deepen the depth:1 fetch so the merge-base
         // exists (shallow tips have no common history to merge from).
         try {
+          this._renewHeartbeat();
           await this._raceTimeout(
             this.git.fetch(projectPath, {
               remote: 'origin', ref: targetBranch, singleBranch: true,
@@ -1497,6 +1522,14 @@ class GitHandlers {
           this._gitCache = {};
         } catch (_deepenErr) {
           // best-effort: the merge below surfaces the real error if any
+        }
+
+        // Cancel raced the deepen (or killed it): the shallow tips now
+        // lack a merge-base, which the conflict gate would misread as a
+        // conflict — stop here instead (same checkpoint pattern as
+        // _refreshCore post-deepen).
+        if (this.isCancelRequested()) {
+          return { cancelled: true };
         }
 
         this._emitStage(op, 'merging', 'Verificando e mesclando alterações...');
@@ -1531,6 +1564,9 @@ class GitHandlers {
             const gate = await this._conflictGate(projectPath, theirRef);
             if (gate) {
               if (!onWorkingBranch && originalBranch) {
+                // Best-effort cleanup: deliberately NO signal — an aborted
+                // signal would throw inside this catch and skip the
+                // conflictPending return (Task 6 decision, see learnings).
                 try {
                   await this.git.checkout(projectPath, originalBranch);
                   this._gitCache = {};
@@ -1559,6 +1595,7 @@ class GitHandlers {
                 ...(!onWorkingBranch && !strat && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
                 message: `Merge publish${conflictStrategy ? ` (${conflictStrategy})` : ''} (${targetBranch}) — ${new Date().toISOString()}`,
                 author,
+                ...(signal ? { signal } : {}),
               }),
               this.STEP_TIMEOUT_MERGE_MS,
               `merge publish ${targetBranch}`,
@@ -1613,7 +1650,7 @@ class GitHandlers {
               await this.git.commit(
                 projectPath,
                 `Merge publish (binary resolved) — ${new Date().toISOString()}`,
-                { author, parent: [targetBranch, otherParent] },
+                { author, parent: [targetBranch, otherParent], ...(signal ? { signal } : {}) },
               );
             }
           }
@@ -1623,7 +1660,7 @@ class GitHandlers {
           // isomorphic-git merge does NOT touch the working tree — materialize
           // HEAD. Safe: the caller wraps this core in withMandatoryBackup.
           await this._raceTimeout(
-            this.git.checkout(projectPath, targetBranch, { force: true }),
+            this.git.checkout(projectPath, targetBranch, { force: true, signal }),
             this.STEP_TIMEOUT_CHECKOUT_MS,
             `materialize ${targetBranch}`,
           );
@@ -1641,6 +1678,7 @@ class GitHandlers {
     this._emitStage(op, 'pushing', `Publicando na branch '${targetBranch}'...`);
     this.sendOutput(`🚀 Publicando na branch '${targetBranch}'...`);
     try {
+      this._renewHeartbeat();
       await this._raceTimeout(
         this.git.push(projectPath, {
           remote: 'origin', branch: targetBranch, remoteRef: targetBranch,
@@ -1664,6 +1702,8 @@ class GitHandlers {
 
     this._emitStage(op, 'finalizing', 'Finalizando publicação (checkout + limpeza)...');
     if (!onWorkingBranch && originalBranch) {
+      // Best-effort cleanup: no signal (Task 6 decision) — the push already
+      // succeeded; a cancel here must not skip-or-fail the return home.
       try {
         await this.git.checkout(projectPath, originalBranch);
         this._gitCache = {};
@@ -1937,7 +1977,15 @@ class GitHandlers {
    */
   _publishErrorToResult(error) {
     if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-      return { success: false, cancelled: true, message: 'Operation aborted' };
+      // User cancel keeps the frozen renderer-facing message (Block 2
+      // characterization); non-user aborts (lock timeout) say "aborted".
+      return {
+        success: false,
+        cancelled: true,
+        message: this.isCancelRequested()
+          ? 'Operation cancelled by user'
+          : 'Operation aborted',
+      };
     }
     if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
       this.sendOutput(`❌ ${error.message}`);
@@ -2103,7 +2151,7 @@ class GitHandlers {
         // after as WIP — no more DIRTY_LOCAL blocking / discard flow.
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
-          this.git.checkout(projectPath, BRANCH_PREVIEW),
+          this.git.checkout(projectPath, BRANCH_PREVIEW, { signal: this.getAbortSignal() }),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout ${BRANCH_PREVIEW}`,
         );
@@ -2135,7 +2183,11 @@ class GitHandlers {
         error.message,
       );
       if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-        return { success: false, cancelled: true, message: 'Operation aborted' };
+        return {
+          success: false,
+          cancelled: true,
+          message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
+        };
       }
       if (error.name === 'GitFlowError' || error.name === 'GitSafetyError') {
         this.sendOutput(`❌ ${error.message}`);
@@ -2228,6 +2280,7 @@ class GitHandlers {
     this._emitStage(op, 'fetching', `Buscando alterações de origin/${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Buscando alterações de origin/${BRANCH_PREVIEW}...`);
     try {
+      this._renewHeartbeat();
       await this._raceTimeout(
         this.git.fetch(projectPath, {
           remote: 'origin', ref: BRANCH_PREVIEW,
@@ -2281,6 +2334,7 @@ class GitHandlers {
     // (shallow tips have no common history to merge from). Best-effort —
     // the merge below surfaces the real error if any.
     try {
+      this._renewHeartbeat();
       await this._raceTimeout(
         this.git.fetch(projectPath, {
           remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true,
@@ -2330,6 +2384,7 @@ class GitHandlers {
             : (oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
           message: `Merge refresh${conflictStrategy ? ` (${conflictStrategy})` : ''} (origin/${BRANCH_PREVIEW}) — ${new Date().toISOString()}`,
           author,
+          ...(signal ? { signal } : {}),
         }),
         this.STEP_TIMEOUT_MERGE_MS,
         `merge refresh origin/${BRANCH_PREVIEW}`,
@@ -2352,7 +2407,7 @@ class GitHandlers {
       await this.git.commit(
         projectPath,
         `Merge refresh (binary resolved) — ${new Date().toISOString()}`,
-        { author, parent: [BRANCH_PREVIEW, originOid] },
+        { author, parent: [BRANCH_PREVIEW, originOid], ...(signal ? { signal } : {}) },
       );
     }
 
@@ -2360,7 +2415,7 @@ class GitHandlers {
     // HEAD. Safe: this core runs inside withMandatoryBackup (Task 5).
     this._emitStage(op, 'finalizing', 'Finalizando atualização (checkout + limpeza)...');
     await this._raceTimeout(
-      this.git.checkout(projectPath, BRANCH_PREVIEW, { force: true }),
+      this.git.checkout(projectPath, BRANCH_PREVIEW, { force: true, signal }),
       this.STEP_TIMEOUT_CHECKOUT_MS,
       `materialize ${BRANCH_PREVIEW}`,
     );
@@ -2455,7 +2510,7 @@ class GitHandlers {
       if (current !== BRANCH_PREVIEW) {
         this.sendOutput(`📥 Mudando para branch ${BRANCH_PREVIEW}...`);
         await this._raceTimeout(
-          this.git.checkout(projectPath, BRANCH_PREVIEW),
+          this.git.checkout(projectPath, BRANCH_PREVIEW, { signal: this.getAbortSignal() }),
           this.STEP_TIMEOUT_CHECKOUT_MS,
           `checkout ${BRANCH_PREVIEW}`,
         );
@@ -2603,7 +2658,11 @@ class GitHandlers {
         error.message,
       );
       if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
-        return { success: false, cancelled: true, message: 'Operation aborted' };
+        return {
+          success: false,
+          cancelled: true,
+          message: this.isCancelRequested() ? 'Operation cancelled by user' : 'Operation aborted',
+        };
       }
       const msg = error.message || '';
       const errData = error.data || (error.cause && error.cause.data);
@@ -2712,6 +2771,7 @@ class GitHandlers {
 
     this._emitStage(op, 'fetching', `Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
+    this._renewHeartbeat();
     await Promise.all([
       this._raceTimeout(
         this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
@@ -2762,6 +2822,7 @@ class GitHandlers {
     // have no common history to merge from). Best-effort — the merge
     // below surfaces the real error if any.
     try {
+      this._renewHeartbeat();
       await Promise.all([
         this._raceTimeout(
           this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
@@ -2790,6 +2851,8 @@ class GitHandlers {
     if (!conflictStrategy) {
       const gate = await this._conflictGate(projectPath, `origin/${BRANCH_PREVIEW}`);
       if (gate) {
+        // Best-effort cleanup: no signal (Task 6 decision) — the
+        // conflictPending return must survive any cancel state.
         try {
           await this._raceTimeout(
             this.git.checkout(projectPath, BRANCH_PREVIEW),
@@ -2818,6 +2881,7 @@ class GitHandlers {
             : (theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {})),
           message: `Promote preview to main${conflictStrategy ? ` (${conflictStrategy})` : ''} — ${new Date().toISOString()}`,
           author,
+          ...(signal ? { signal } : {}),
         }),
         this.STEP_TIMEOUT_MERGE_MS,
         `merge promote ${BRANCH_PREVIEW}→${BRANCH_MAIN}`,
@@ -2849,13 +2913,14 @@ class GitHandlers {
       await this.git.commit(projectPath, `Promote preview to main (binary resolved) — ${new Date().toISOString()}`, {
         author,
         parent: [BRANCH_MAIN, `origin/${BRANCH_PREVIEW}`],
+        ...(signal ? { signal } : {}),
       });
     }
 
     // isomorphic-git merge does NOT touch the working tree — materialize
     // HEAD (main). Safe: this core runs inside withMandatoryBackup.
     await this._raceTimeout(
-      this.git.checkout(projectPath, BRANCH_MAIN, { force: true }),
+      this.git.checkout(projectPath, BRANCH_MAIN, { force: true, signal }),
       this.STEP_TIMEOUT_CHECKOUT_MS,
       `materialize ${BRANCH_MAIN}`,
     );
@@ -2864,6 +2929,7 @@ class GitHandlers {
     this._emitStage(op, 'pushing', `Publicando em ${BRANCH_MAIN}...`);
     this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
     try {
+      this._renewHeartbeat();
       await this._raceTimeout(
         this.git.push(projectPath, {
           remote: 'origin',
@@ -2894,7 +2960,11 @@ class GitHandlers {
 
     // Return to the preview working branch — a plain checkout (we are
     // still inside the withMandatoryBackup guard; the WIP commit and any
-    // local-only commits stay untouched on preview).
+    // local-only commits stay untouched on preview). Deliberately NO
+    // signal (Task 6 decision): the push already succeeded, so a cancel
+    // arriving mid-checkout must neither kill the child nor flip this
+    // into a cancelled result — same rationale as the post-push cleanup
+    // in _publishCore.
     this._emitStage(op, 'finalizing', `Voltando para a branch ${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Voltando para a branch ${BRANCH_PREVIEW}...`);
     await this._raceTimeout(

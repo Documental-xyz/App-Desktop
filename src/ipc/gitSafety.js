@@ -687,6 +687,26 @@ class GitSafety {
   }
 
   /**
+   * Force an immediate heartbeat renewal (cancel hardening, Task 6).
+   * Called by GitHandlers right before each potentially long git command
+   * (fetch deepen/push): refreshes the last-activity timestamp so a full
+   * stale window (180s) opens from NOW, and restarts the interval so the
+   * cadence phase realigns. No-op when the heartbeat is not running —
+   * renewal outside a held lock must never resurrect a stopped heartbeat
+   * (that would mask a dead holder from the NEXT acquire's stale check).
+   */
+  renewHeartbeat() {
+    if (!this._heartbeatInterval || this._lastHeartbeat === null) {
+      return;
+    }
+    this._lastHeartbeat = Date.now();
+    clearInterval(this._heartbeatInterval);
+    this._heartbeatInterval = setInterval(() => {
+      this._lastHeartbeat = Date.now();
+    }, LOCK_HEARTBEAT_INTERVAL_MS);
+  }
+
+  /**
    * Stop the heartbeat timer and clear state. Safe to call when not running.
    */
   stopHeartbeat() {

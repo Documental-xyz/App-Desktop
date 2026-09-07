@@ -497,9 +497,10 @@ class DugiteProvider {
    * @param {Record<string, unknown>} [opts] - Extra options (ignored — no iso-git cache equivalent)
    * @returns {Promise<void>}
    */
-  async add(path, files, _opts = {}) {
+  async add(path, files, opts = {}) {
+    const { signal } = opts;
     const list = Array.isArray(files) ? files : [files];
-    await this._run('add', ['add', '--', ...list], path, { repoPath: path });
+    await this._run('add', ['add', '--', ...list], path, { repoPath: path, signal });
   }
 
   /**
@@ -514,13 +515,14 @@ class DugiteProvider {
    * @param {Record<string, unknown>} [opts]
    * @returns {Promise<void>}
    */
-  async remove(path, files, _opts = {}) {
+  async remove(path, files, opts = {}) {
+    const { signal } = opts;
     const list = Array.isArray(files) ? files : [files];
     await this._run(
       'remove',
       ['rm', '--cached', '-f', '--', ...list],
       path,
-      { repoPath: path }
+      { repoPath: path, signal }
     );
   }
 
@@ -538,7 +540,7 @@ class DugiteProvider {
    * @returns {Promise<string>} Commit OID (40-char SHA-1)
    */
   async commit(path, message, opts = {}) {
-    const { author } = opts;
+    const { author, signal } = opts;
     const identity = [];
     if (author && author.name) {
       identity.push('-c', `user.name=${author.name}`);
@@ -550,7 +552,7 @@ class DugiteProvider {
       'commit',
       [...extra, 'commit', '-m', message],
       path,
-      { repoPath: path }
+      { repoPath: path, signal }
     );
     if (!author && identity.length === 0) {
       // Parity with T10's MissingNameError fallback: iso-git reads ONLY
@@ -566,7 +568,7 @@ class DugiteProvider {
       }
     }
     await run(identity);
-    return this._run('commit', ['rev-parse', 'HEAD'], path, { repoPath: path })
+    return this._run('commit', ['rev-parse', 'HEAD'], path, { repoPath: path, signal })
       .then((out) => out.trim());
   }
 
@@ -582,7 +584,7 @@ class DugiteProvider {
    * @returns {Promise<void>}
    */
   async branch(path, ref, opts = {}) {
-    const { object, checkout, force } = opts;
+    const { object, checkout, force, signal } = opts;
     const args = ['branch'];
     if (force) {
       args.push('--force');
@@ -591,9 +593,9 @@ class DugiteProvider {
     if (object) {
       args.push(object);
     }
-    await this._run('branch', args, path, { repoPath: path });
+    await this._run('branch', args, path, { repoPath: path, signal });
     if (checkout) {
-      await this._run('checkout', ['checkout', ref], path, { repoPath: path });
+      await this._run('checkout', ['checkout', ref], path, { repoPath: path, signal });
     }
   }
 
@@ -628,9 +630,9 @@ class DugiteProvider {
    * @returns {Promise<void>}
    */
   async checkout(path, ref, opts = {}) {
-    const { force, createBranch, noBranch } = opts;
+    const { force, createBranch, noBranch, signal } = opts;
     if (noBranch) {
-      await this._run('checkout', ['branch', ref], path, { repoPath: path });
+      await this._run('checkout', ['branch', ref], path, { repoPath: path, signal });
       return;
     }
     const args = ['checkout'];
@@ -641,7 +643,7 @@ class DugiteProvider {
       args.push('-b', createBranch);
     }
     args.push(ref);
-    await this._run('checkout', args, path, { repoPath: path });
+    await this._run('checkout', args, path, { repoPath: path, signal });
   }
 
   /**
@@ -731,7 +733,7 @@ class DugiteProvider {
   }
 
   async merge(path, theirRef, opts = {}) {
-    const { strategy, ours, theirs, fastForward, mergeDriver, message } = opts;
+    const { strategy, ours, theirs, fastForward, mergeDriver, message, signal } = opts;
     const ref = typeof theirs === 'string' ? theirs : theirRef;
     const args = ['merge', '--no-edit'];
     const favor = strategy === 'theirs' || strategy === 'ours'
@@ -765,7 +767,7 @@ class DugiteProvider {
       args.push('-m', message);
     }
     args.push(ref);
-    const stdout = await this._run('merge', args, path, { repoPath: path });
+    const stdout = await this._run('merge', args, path, { repoPath: path, signal });
     if (/Already up to date/i.test(stdout)) {
       return { alreadyMerged: true };
     }
@@ -776,7 +778,7 @@ class DugiteProvider {
       'merge',
       ['rev-parse', 'HEAD'],
       path,
-      { repoPath: path }
+      { repoPath: path, signal }
     )).trim();
     return { oid };
   }
@@ -824,12 +826,12 @@ class DugiteProvider {
    * @returns {Promise<void>}
    */
   async writeRef(path, ref, oid, opts = {}) {
-    const { force } = opts;
+    const { force, signal } = opts;
     const args = ['update-ref', ref, oid];
     if (force) {
       args.push('--no-deref');
     }
-    await this._run('writeRef', args, path, { repoPath: path });
+    await this._run('writeRef', args, path, { repoPath: path, signal });
   }
 
   /**
@@ -1380,8 +1382,17 @@ class DugiteProvider {
           ...(signal ? { signal } : {}),
         });
       } catch (err) {
-        // dugite rejected (git binary failed to launch — ENOENT etc.).
+        // dugite rejected: launch failures (ENOENT etc.) AND aborts.
+        // An ABORT must NOT be wrapped in a generic GitError — flow catch
+        // blocks dispatch on `error.name === 'AbortError'` to produce
+        // `{success:false, cancelled:true}` (cancel hardening, Task 6).
+        // Rethrow the ORIGINAL error so name/code survive; an
+        // already-aborted signal (cancel raced the launch) counts as a
+        // cancel regardless of the rejection flavor.
         this._notifyCommandObserver(args, { exitCode: null, stdout: '', stderr: err?.message }, startedAt);
+        if (this._isAbortRejection(err, signal)) {
+          throw err;
+        }
         throw new GitError({
           operation,
           provider: PROVIDER_NAME,
@@ -1418,6 +1429,31 @@ class DugiteProvider {
         askpass.cleanup();
       }
     }
+  }
+
+  /**
+   * Whether an exec rejection is an ABORT (user cancel / lock timeout)
+   * rather than a launch failure. Node's execFile delivers an AbortError
+   * (`name: 'AbortError'`, `code: 'ABORT_ERR'`) when the signal fires;
+   * dugite wraps it in ExecError which PRESERVES `code` and keeps the
+   * original as `cause`. A SIGTERM race (child died from the kill before
+   * Node synthesized the AbortError) is covered by the signal.aborted
+   * fallback — the only way the signal fires without the child dying.
+   * @param {unknown} err - exec rejection
+   * @param {AbortSignal} [signal] - the signal forwarded to execFile
+   * @returns {boolean}
+   * @private
+   */
+  _isAbortRejection(err, signal) {
+    if (signal && signal.aborted) {
+      return true;
+    }
+    return Boolean(
+      err && typeof err === 'object' &&
+      (err.name === 'AbortError' ||
+        err.code === 'ABORT_ERR' ||
+        (err.cause && err.cause.name === 'AbortError'))
+    );
   }
 
   /**
