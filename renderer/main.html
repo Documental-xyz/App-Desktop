@@ -183,12 +183,29 @@ clearingCache: false,
       contentReady: false,
       viewerLoaded: false,
       editorLoaded: false,
-      // Unified git execution modal (refresh / publish-preview / publish-main)
+      // Unified git execution modal (refresh / publish-preview / publish-main).
+      // FSM (Task 9): idle → preflight → running → terminal, driven EXCLUSIVELY
+      // by git:progress events from the backend (single source of truth —
+      // STAGE_LISTS lives in src/ipc/gitFlowTypes.js, never here).
       gitExecution: {
           modalOpen: false,
           operationType: null,
-          currentStep: 0,
-          totalSteps: 0,
+          // FSM phase: 'idle' | 'preflight' | 'running' | 'terminal'
+          phase: 'idle',
+          // Terminal outcome: 'complete' | 'cancelled' | 'failed' (phase=terminal)
+          terminal: null,
+          // T7 payload terminal.restored (additive — undefined until it exists)
+          restored: undefined,
+          // Running payload mirrors (backend events only, no local heuristics):
+          stage: null,          // current backend stage id (preparing|fetching|...)
+          percentage: null,     // number|null — null in merging/finalizing (dugite)
+          cancelling: false,    // true between requestCancel and settle (Task 6)
+          // Operation association (multi-window/stale protection — see init):
+          projectId: null,
+          operationId: null,    // adopted from the FIRST matching event
+          // Markup-compatible derived fields (T10 redesigns the modal):
+          currentStep: 0,       // DERIVED: = stageIndex of the latest event
+          totalSteps: 0,        // = stageTotal of the latest event
           stepLabel: '',
           inProgress: false,
           finished: false,
@@ -196,10 +213,9 @@ clearingCache: false,
           error: null,
           errorCode: null,
           binariesResolved: 0,
-          cancelable: true,
-          preflightRunning: false,
+          cancelable: true,     // dead state — T10 removes with modal redesign
+          preflightRunning: false, // true ONLY around the checkPublishMain invoke
           warnings: [],
-          fastPath: false,
       },
       // Conflict strategy decision modal (conflict-strategy-modal Task 4).
       // Opened ONLY from finishGitExecModal when a sync flow returns the
@@ -766,15 +782,18 @@ clearingCache: false,
         return '';
     },
     stepLabelFor(stepIndex) {
+        // Display vocabulary per flow — position mirrors gitFlowTypes
+        // STAGE_LISTS (T2); ordering/progress VALUES come only from events.
+        // preparing = checks/WIP staging (label varies per flow for the user).
         const type = this.gitExecution.operationType;
         if (type === 'refresh') {
-            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
+            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
         }
         if (type === 'publish-preview') {
             return [__t('main.git_exec_step_committing'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
         }
         if (type === 'publish-main') {
-            return [__t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
+            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
         }
         return '';
     },
@@ -786,6 +805,18 @@ clearingCache: false,
     openGitExecModal(type, totalSteps) {
         this.gitExecution.modalOpen = true;
         this.gitExecution.operationType = type;
+        // Execution starts immediately: phase=running — the first backend
+        // event (preparing) lands within milliseconds (Task 9 FSM).
+        this.gitExecution.phase = 'running';
+        this.gitExecution.terminal = null;
+        this.gitExecution.restored = undefined;
+        // Adopt the project this window operates on; the operationId is
+        // adopted later from the FIRST matching event (see handleGitProgress).
+        this.gitExecution.projectId = sessionStorage.getItem('currentProjectId');
+        this.gitExecution.operationId = null;
+        this.gitExecution.stage = null;
+        this.gitExecution.percentage = null;
+        this.gitExecution.cancelling = false;
         this.gitExecution.totalSteps = totalSteps;
         this.gitExecution.currentStep = 1;
         this.gitExecution.inProgress = true;
@@ -795,7 +826,6 @@ clearingCache: false,
         this.gitExecution.binariesResolved = 0;
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
-        this.gitExecution.fastPath = false;
         this.gitExecution.errorCode = null;
     },
     finishGitExecModal(result) {
@@ -806,7 +836,13 @@ clearingCache: false,
             this.openConflictModal(result);
             return;
         }
+        // FSM → terminal. The invoke result is the authority for the outcome;
+        // the terminal git:progress event already cleared the operation
+        // association and stored `restored` (may still be undefined pre-T7).
+        this.gitExecution.phase = 'terminal';
+        this.gitExecution.terminal = result.cancelled ? 'cancelled' : (result.success ? 'complete' : 'failed');
         this.gitExecution.inProgress = false;
+        this.gitExecution.cancelling = false;
         this.gitExecution.finished = true;
         this.gitExecution.currentStep = this.gitExecution.totalSteps;
         this.gitExecution.success = result.success;
@@ -822,17 +858,100 @@ clearingCache: false,
         }
     },
     closeGitExecModal() {
+        // FSM → idle: drop the operation association entirely so a stale
+        // event from a previous operation can never re-attach.
         this.gitExecution.modalOpen = false;
+        this.gitExecution.phase = 'idle';
+        this.gitExecution.terminal = null;
         this.gitExecution.operationType = null;
+        this.gitExecution.projectId = null;
+        this.gitExecution.operationId = null;
+        this.gitExecution.stage = null;
+        this.gitExecution.percentage = null;
+        this.gitExecution.cancelling = false;
         this.gitExecution.error = null;
         this.gitExecution.errorCode = null;
         this.gitExecution.finished = false;
+        this.gitExecution.inProgress = false;
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
-        this.gitExecution.fastPath = false;
     },
     cancelGitExec() {
         window.electronAPI.cancelGitOperation();
+    },
+    // git:progress event → gitExecution FSM (Task 9). Payload contract (T2):
+    // {projectId, operationId, flow, stage, stageIndex, stageTotal, message,
+    //  percentage|null, terminal?, cancelling?} — terminal fires EXACTLY once,
+    // nothing after it. percentage is null in merging/finalizing (dugite does
+    // not stream transfer progress) and must be treated gracefully.
+    handleGitProgress(payload) {
+        try {
+            if (!payload || typeof payload !== 'object') return;
+            if (!this.gitExecution.modalOpen) return;
+            // Multi-window filter: this modal tracks one project only.
+            if (!payload.projectId || String(payload.projectId) !== String(this.gitExecution.projectId)) return;
+            // Operation association (design documented in init): adopt the
+            // first matching event's operationId, ignore foreign ones after.
+            if (this.gitExecution.operationId === null) {
+                this.gitExecution.operationId = payload.operationId || null;
+            } else if (payload.operationId && payload.operationId !== this.gitExecution.operationId) {
+                return;
+            }
+            // Cancel requested but not settled yet (Task 6 heartbeat window).
+            this.gitExecution.cancelling = !!payload.cancelling;
+            // Once this modal settled (phase=terminal), a non-terminal event
+            // can only belong to a NEW operation (possibly from another
+            // window) — never resurrect a finished modal.
+            if (this.gitExecution.phase === 'terminal' && !payload.terminal) return;
+            // Terminal: record T7's restored (additive, may be absent) and
+            // clear the association. The outcome itself (success/error/code)
+            // comes from the invoke result via finishGitExecModal milliseconds
+            // later — do not race it with half-empty data here.
+            if (payload.terminal) {
+                this.gitExecution.restored = payload.restored;
+                this.gitExecution.operationId = null;
+                if (Number.isFinite(payload.stageIndex) && Number.isFinite(payload.stageTotal)) {
+                    this.gitExecution.currentStep = payload.stageIndex;
+                    this.gitExecution.totalSteps = payload.stageTotal;
+                }
+                return;
+            }
+            // Running update — backend events are the ONLY source of progress.
+            this.gitExecution.phase = 'running';
+            this.gitExecution.inProgress = true;
+            this.gitExecution.stage = payload.stage || null;
+            if (Number.isFinite(payload.stageIndex)) {
+                this.gitExecution.currentStep = payload.stageIndex; // DERIVED from event
+            }
+            if (Number.isFinite(payload.stageTotal)) {
+                this.gitExecution.totalSteps = payload.stageTotal;
+            }
+            this.gitExecution.percentage = typeof payload.percentage === 'number'
+                ? payload.percentage
+                : null;
+            if (payload.message) {
+                this.gitExecution.stepLabel = payload.message;
+            }
+        } catch (e) {
+            // An event must never break the modal/console pipeline.
+            console.warn('git:progress handler error (ignored):', e);
+        }
+    },
+    // Alpine calls destroy() when this component is torn down. Removes the
+    // git:progress/git:state-changed listeners so a re-init cannot duplicate
+    // them (best-effort: the contextBridge wrappers do not expose removal
+    // handles today — see the comment next to subscribeGitEvent in init).
+    destroy() {
+        for (const { channel, callback, off } of this._gitEventCleanups || []) {
+            try {
+                if (typeof off === 'function') {
+                    off();
+                } else if (off && typeof off.removeListener === 'function') {
+                    off.removeListener(channel, callback);
+                }
+            } catch (_e) { /* bridge may not expose removal — ignored */ }
+        }
+        this._gitEventCleanups = [];
     },
     translateGitExecError(result) {
         // Typed error codes (Task 6-8 backend contract). PUSH_REJECTED gets
@@ -974,7 +1093,9 @@ clearingCache: false,
         if (!token || this.conflictDecision.resolving) return;
         this.conflictDecision.resolving = true;
         const opType = { publish: 'publish-preview', refresh: 'refresh', 'publish-main': 'publish-main' }[this.conflictDecision.flow] || 'publish-preview';
-        const steps = opType === 'refresh' ? 3 : (opType === 'publish-main' ? 4 : 5);
+        // Totals mirror STAGE_LISTS (T2): refresh=4, publish-main=5,
+        // publish-preview=5 — the first event's stageTotal confirms.
+        const steps = opType === 'refresh' ? 4 : 5;
         this.conflictDecision.open = false;
         this.openGitExecModal(opType, steps);
         try {
@@ -987,7 +1108,7 @@ clearingCache: false,
         }
     },
     async executeRefresh(projectId) {
-        this.openGitExecModal('refresh', 3);
+        this.openGitExecModal('refresh', 4);
         try {
             // No `force` anymore — refresh is always safe (Tasks 6-8):
             // uncommitted changes are auto-committed (WIP) and local commits
@@ -1003,8 +1124,14 @@ clearingCache: false,
             this.precedenceChecking = true;
             this.precedenceError = '';
             try {
+                // Real preflight (Task 9): preflightRunning wraps ONLY the
+                // checkPublishMain invoke — never the operation itself, so
+                // the exec modal shows the stepper (not the spinner) as soon
+                // as publishToMain starts.
+                this.gitExecution.preflightRunning = true;
                 // Call the new IPC channel that runs preflight for main
                 const result = await window.electronAPI.checkPublishMain(projectId);
+                this.gitExecution.preflightRunning = false;
                 if (result && !result.canProceed) {
                     const err = (result.errors || [])[0];
                     if (err) {
@@ -1027,46 +1154,63 @@ clearingCache: false,
                 // Guardrail must BLOCK, not catch-and-continue. If the preflight
                 // check itself is unavailable, we cannot safely proceed — abort.
                 console.error('checkPublishMain failed, blocking publish:', e.message);
+                this.gitExecution.preflightRunning = false;
                 this.precedenceError = 'Não foi possível verificar pré-requisitos. Tente novamente.';
                 this.precedenceChecking = false;
                 return;
             }
             this.precedenceChecking = false;
             this.publishSetupModalOpen = false;
-            this.openGitExecModal('publish-main', 4);
-            this.gitExecution.preflightRunning = true;
+            // Preflight already ran above: open straight at phase=running.
+            this.openGitExecModal('publish-main', 5);
             try {
                 const result = await window.electronAPI.publishToMain(projectId);
-                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal(result);
             } catch (e) {
-                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal({ success: false, error: e.message });
             }
         } else {
             this.publishSetupModalOpen = false;
             this.openGitExecModal('publish-preview', 5);
-            this.gitExecution.preflightRunning = true;
             try {
                 const result = await window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage);
-                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal(result);
             } catch (e) {
-                this.gitExecution.preflightRunning = false;
                 this.finishGitExecModal({ success: false, error: e.message });
             }
         }
     },
     async onPublishMainClick() {
         const projectId = sessionStorage.getItem('currentProjectId');
-        this.openGitExecModal('publish-main', 4);
+        this.openGitExecModal('publish-main', 5);
+        // Real preflight (Task 9): brief spinner phase while checkPublishMain
+        // runs, then the stepper takes over the moment publishToMain starts.
         this.gitExecution.preflightRunning = true;
+        this.gitExecution.phase = 'preflight';
+        let preflight = null;
+        try {
+            preflight = await window.electronAPI.checkPublishMain(projectId);
+        } catch (e) {
+            // Guardrail must BLOCK (same contract as onPublishSetupConfirm).
+            this.gitExecution.preflightRunning = false;
+            this.finishGitExecModal({ success: false, error: e.message });
+            return;
+        }
+        this.gitExecution.preflightRunning = false;
+        if (preflight && !preflight.canProceed) {
+            const err = (preflight.errors || [])[0];
+            this.finishGitExecModal({
+                success: false,
+                code: err ? err.code : null,
+                error: err ? err.message : __t('main.git_exec_error_generic'),
+            });
+            return;
+        }
+        this.gitExecution.phase = 'running';
         try {
             const result = await window.electronAPI.publishToMain(projectId);
-            this.gitExecution.preflightRunning = false;
             this.finishGitExecModal(result);
         } catch (e) {
-            this.gitExecution.preflightRunning = false;
             this.finishGitExecModal({ success: false, error: e.message });
         }
     },
@@ -1181,9 +1325,6 @@ clearingCache: false,
             this.commandOutput += message;
             sessionStorage.setItem('commandOutput', this.commandOutput);
             if (this.gitExecution.modalOpen) {
-                if (message.includes('⚡ Modo rápido') || message.includes('fast-forward') || message.includes('Fast-forward')) {
-                    this.gitExecution.fastPath = true;
-                }
                 if (message.includes('workflows') || message.includes('Actions')) {
                     if (!this.gitExecution.warnings.some((w) => w.includes('Actions'))) {
                         this.gitExecution.warnings.push(__t('main.git_exec_actions_notice'));
@@ -1202,6 +1343,42 @@ clearingCache: false,
                 }
             });
         });
+
+        // git:progress subscription (publish-update-resilience Task 9).
+        //
+        // operationId association design: the operationId is born in the
+        // BACKEND (_beginOperation, together with the single git lock), so
+        // the renderer cannot know it before invoking. Because there is
+        // exactly ONE git operation at a time (unique lock), the renderer:
+        //   (1) subscribes to the channel BEFORE the invoke (here, once);
+        //   (2) when the execution modal opens, ADOPTS the first event whose
+        //       projectId matches (stores its operationId);
+        //   (3) subsequent events with a DIFFERENT operationId are ignored
+        //       (stale/other-window protection);
+        //   (4) on terminal, clears the association.
+        // The invoke RESULT (finishGitExecModal) stays the authority for the
+        // terminal outcome (code/error/binaries); events only drive progress.
+        this._gitEventCleanups = [];
+        const subscribeGitEvent = (channel, wrapper, callback) => {
+            const off = wrapper(callback);
+            // Best-effort cleanup handle: the preload wrapper (contextBridge)
+            // does not expose removeListener today — it may return an
+            // unsubscribe function or ipcRenderer-like handle in the future.
+            this._gitEventCleanups.push({ channel, callback, off });
+        };
+        subscribeGitEvent('git:progress', (cb) => window.electronAPI.onGitProgress(cb),
+            (payload) => this.handleGitProgress(payload));
+
+        // T7 (parallel) emits git:state-changed after branch/status mutations.
+        // Guard tolerates its absence until that side lands.
+        if (window.electronAPI.onGitStateChanged) {
+            subscribeGitEvent('git:state-changed', (cb) => window.electronAPI.onGitStateChanged(cb),
+                () => {
+                    // Silent re-fetch of branch/commit labels — no modal, no
+                    // user-visible action (reuses the existing loader).
+                    this.loadRepositoryInfo();
+                });
+        }
 
         // Load initial app logs and restore from sessionStorage
         window.electronAPI.getAppLogs().then(initialLogs => {
@@ -2131,12 +2308,6 @@ clearingCache: false,
       </div>
     </div>
 
-    <!-- Fast-Path Badge -->
-    <div x-show="gitExecution.fastPath" class="mb-4 flex items-center gap-2 px-3 py-2 rounded-md" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent);">
-      <span class="material-symbols-outlined text-primary text-lg">bolt</span>
-      <span class="text-sm font-medium" style="color: var(--color-primary);" x-text="$store.i18n.t('main.git_exec_fast_path_badge')"></span>
-    </div>
-
     <!-- Stepper Card -->
     <div class="bg-background-dark rounded-lg p-4 mb-4 border border-border-default">
       <template x-if="gitExecution.preflightRunning">
@@ -2148,8 +2319,7 @@ clearingCache: false,
       <template x-if="!gitExecution.preflightRunning">
         <div>
           <template x-for="i in gitExecution.totalSteps" :key="i">
-            <div class="flex items-center gap-3 py-1.5"
-                 x-show="!(gitExecution.fastPath && stepLabelFor(i) === $store.i18n.t('main.git_exec_step_merging'))">
+            <div class="flex items-center gap-3 py-1.5">
               <div class="flex items-center justify-center w-7 h-7">
                 <template x-if="stepClass(i) === 'active'">
                   <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
@@ -2172,15 +2342,20 @@ clearingCache: false,
       </template>
     </div>
 
-    <!-- Progress Bar -->
+    <!-- Progress Bar (real transfer % when streaming, step-based otherwise) -->
     <div x-show="gitExecution.inProgress" class="mb-4">
       <div class="w-full bg-surface-secondary rounded-full h-2.5 overflow-hidden relative">
         <div class="bg-primary h-full rounded-full transition-all duration-500 relative"
-             :style="{ width: (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }">
+             :style="{ width: gitExecution.percentage !== null
+                 ? Math.max(0, Math.min(100, gitExecution.percentage)) + '%'
+                 : (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }">
           <div class="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
         </div>
       </div>
-      <p class="text-xs text-muted-dark mt-1.5 text-center" x-text="gitExecution.currentStep + ' / ' + gitExecution.totalSteps"></p>
+      <p class="text-xs text-muted-dark mt-1.5 text-center"
+         x-text="gitExecution.percentage !== null
+             ? gitExecution.percentage + '%'
+             : (gitExecution.currentStep + ' / ' + gitExecution.totalSteps)"></p>
     </div>
 
     <!-- Success Banner -->
