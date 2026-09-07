@@ -24,6 +24,7 @@ const {
   STEP_TIMEOUT_MERGE_MS: _IMPORTED_STEP_TIMEOUT_MERGE_MS,
   STEP_TIMEOUT_PUSH_MS: _IMPORTED_STEP_TIMEOUT_PUSH_MS,
   STEP_TIMEOUT_CHECKOUT_MS: _IMPORTED_STEP_TIMEOUT_CHECKOUT_MS,
+  STAGE_LISTS,
 } = (() => {
   try {
     return require('./gitFlowTypes.js');
@@ -38,6 +39,12 @@ const {
       STEP_TIMEOUT_MERGE_MS: 45000,
       STEP_TIMEOUT_PUSH_MS: 60000,
       STEP_TIMEOUT_CHECKOUT_MS: 20000,
+      // Mirror of gitFlowTypes.STAGE_LISTS (publish-update-resilience Task 2)
+      STAGE_LISTS: {
+        refresh: ['preparing', 'fetching', 'merging', 'finalizing'],
+        'publish-preview': ['preparing', 'fetching', 'merging', 'pushing', 'finalizing'],
+        'publish-main': ['preparing', 'fetching', 'merging', 'pushing', 'finalizing'],
+      },
     };
   }
 })();
@@ -116,6 +123,26 @@ const CONFLICT_STRATEGIES = ['MERGE_LOCAL', 'MERGE_REMOTE', 'FULL_LOCAL', 'FULL_
 
 /** Validity window of a conflict resumeToken (15 minutes). */
 const RESUME_TOKEN_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Extract the LAST git transfer percentage from fetch/push output lines
+ * (stderr/sideband) like `Counting objects: 45% (9/20)` or
+ * `remote: Writing objects:  67% (6/9), 1234 KiB | ...`. Used at the
+ * git:progress emission points to report real transfer percentages.
+ *
+ * @param {string} text - Raw (possibly multi-line) git output
+ * @returns {number|null} Last percentage found, or null
+ */
+function parseTransferPercentage(text) {
+  if (typeof text !== 'string' || text === '') return null;
+  const RE = /(?:counting|writing|compressing) objects:\s+(\d+)%/gi;
+  let match = null;
+  let last = null;
+  while ((match = RE.exec(text)) !== null) {
+    last = parseInt(match[1], 10);
+  }
+  return Number.isNaN(last) ? null : last;
+}
 
 /**
  * Typed error for git FLOW failures (Task 6). Mirrors the GitSafetyError
@@ -442,14 +469,41 @@ class GitHandlers {
   }
 
   /**
-   * Send structured progress update to all renderer windows
+   * Send structured progress update to all renderer windows.
+   *
+   * Two payload shapes share this single choke point (publish-update-
+   * resilience Task 2 — the renderer subscription lands in Task 9):
+   *
+   *  1. Instrumented flows (`progress.flow` set — refresh / publish-preview /
+   *     publish-main / push-to-branch publish): the payload is the Task-2
+   *     SUPERSET — { projectId, operationId, flow, stage, stageIndex,
+   *     stageTotal, message, percentage (number|null), terminal? }.
+   *     stageIndex is 1-based from STAGE_LISTS[flow]; terminal stages
+   *     ('complete'|'cancelled'|'failed') are not list members and report
+   *     stageIndex = stageTotal.
+   *  2. Legacy shape (gitPullFromPreview): { stage, current, total, message }
+   *     + the computed percentage — kept untouched for compatibility.
+   *
    * @param {Object} progress - Progress data
    * @param {string} progress.stage - Current stage (checking, staging, committing, fetching, pulling, pushing, complete)
-   * @param {number} progress.current - Current item number
-   * @param {number} progress.total - Total items
+   * @param {number} progress.current - Current item number (legacy)
+   * @param {number} progress.total - Total items (legacy)
    * @param {string} progress.message - Status message
    */
   sendProgress(progress) {
+    if (progress && progress.flow && STAGE_LISTS[progress.flow]) {
+      const stages = STAGE_LISTS[progress.flow];
+      const stageTotal = stages.length;
+      const idx = stages.indexOf(progress.stage);
+      this.broadcastToWindows('git:progress', {
+        ...progress,
+        stageTotal,
+        stageIndex: idx >= 0 ? idx + 1 : stageTotal,
+        percentage: typeof progress.percentage === 'number' ? progress.percentage : null,
+      });
+      return;
+    }
+
     const percentage = progress.total > 0
       ? Math.round((progress.current / progress.total) * 100)
       : 0;
@@ -458,6 +512,129 @@ class GitHandlers {
       ...progress,
       percentage
     });
+  }
+
+  /**
+   * Mint the per-operation progress context (publish-update-resilience
+   * Task 2). Born in the same scope as acquireGitLock — one operationId
+   * per lock acquisition, threaded through the flow bodies as `op`.
+   * @param {number|string|null} projectId
+   * @param {'refresh'|'publish-preview'|'publish-main'} flow
+   * @returns {{projectId, operationId: string, flow: string, stage: string|null, terminalEmitted: boolean}}
+   * @private
+   */
+  _beginOperation(projectId, flow) {
+    return {
+      projectId: projectId === undefined ? null : projectId,
+      operationId: require('crypto').randomUUID(),
+      flow,
+      stage: null,
+      terminalEmitted: false,
+    };
+  }
+
+  /**
+   * Emit a stage-start progress event (inline at each real stage
+   * transition of the instrumented flows). Percentage stays null except
+   * for transfer stages fed by _emitTransferProgress.
+   * @private
+   */
+  _emitStage(op, stage, message, percentage) {
+    if (!op || op.terminalEmitted) return;
+    op.stage = stage;
+    this.sendProgress({
+      projectId: op.projectId,
+      operationId: op.operationId,
+      flow: op.flow,
+      stage,
+      message,
+      percentage: typeof percentage === 'number' ? percentage : null,
+    });
+  }
+
+  /**
+   * Live transfer percentage (fetch/push onProgress) labelled with the
+   * operation's CURRENT stage, so deepen fetches happening inside the
+   * merge phase can never regress the reported stageIndex. Git's transfer
+   * phases (counting/compressing/receiving) each restart at 0% — the
+   * per-stage clamp keeps the reported percentage monotonic.
+   * @private
+   */
+  _emitTransferProgress(op, evt) {
+    if (!op || op.terminalEmitted) return;
+    let percent = null;
+    if (evt && typeof evt === 'object') {
+      if (evt.total && evt.loaded) {
+        percent = Math.round((evt.loaded / evt.total) * 100);
+      } else {
+        percent = parseTransferPercentage(String(evt.rawDetail || evt.message || ''));
+      }
+    } else {
+      percent = parseTransferPercentage(typeof evt === 'string' ? evt : '');
+    }
+    if (percent === null || Number.isNaN(percent)) return;
+    if (op.lastPercentStage !== op.stage) {
+      op.lastPercentStage = op.stage;
+      op.lastPercent = null;
+    }
+    if (op.lastPercent !== null && percent < op.lastPercent) return;
+    op.lastPercent = percent;
+    this.sendProgress({
+      projectId: op.projectId,
+      operationId: op.operationId,
+      flow: op.flow,
+      stage: op.stage,
+      message: `${percent}%`,
+      percentage: percent,
+    });
+  }
+
+  /**
+   * Emit the operation's terminal event — EXACTLY once (guarded), even on
+   * failure/cancel. 'failed' reports the stage where the operation died
+   * (op.stage fallback 'failed'); 'complete'/'cancelled' use their own
+   * stage names. Nothing may be emitted after the terminal.
+   * @param {'complete'|'cancelled'|'failed'} kind
+   * @private
+   */
+  _emitTerminal(op, kind, message) {
+    if (!op || op.terminalEmitted) return;
+    op.terminalEmitted = true;
+    const stage = kind === 'failed' ? (op.stage || 'failed') : kind;
+    this.sendProgress({
+      projectId: op.projectId,
+      operationId: op.operationId,
+      flow: op.flow,
+      stage,
+      message: message || (kind === 'complete'
+        ? 'Operação concluída.'
+        : kind === 'cancelled' ? 'Operação cancelada.' : 'Operação falhou.'),
+      percentage: kind === 'complete' ? 100 : null,
+      terminal: kind,
+    });
+  }
+
+  /**
+   * Map a flow result to its terminal kind and emit it (exactly-once via
+   * _emitTerminal). Returns the result so handlers can
+   * `return this._emitTerminalFromResult(op, result)`.
+   * @private
+   */
+  _emitTerminalFromResult(op, result) {
+    if (op && !op.terminalEmitted) {
+      if (result && result.cancelled) {
+        this._emitTerminal(op, 'cancelled', result.message);
+      } else if (result && (result.conflictPending || result.code === 'CONFLICT_PENDING')) {
+        // The in-flight operation ends lockless awaiting the user's
+        // strategy decision; the resume mints a NEW operationId.
+        this._emitTerminal(op, 'cancelled', 'Conflito detectado — aguardando decisão do usuário.');
+      } else if (result && result.success === false) {
+        this._emitTerminal(op, 'failed', result.error || result.message);
+      } else {
+        this._emitTerminal(op, 'complete');
+      }
+    }
+    return result;
   }
 
   /**
@@ -1184,7 +1361,7 @@ class GitHandlers {
    * @param {string|null} [commitMessage=null] - If provided, commit all changes before pushing
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, error?: string}>}
    */
-  async _publishCore(projectPath, targetBranch, { localSha, auth, signal, author, conflictStrategy }) {
+  async _publishCore(projectPath, targetBranch, { localSha, auth, signal, author, conflictStrategy, op }) {
     const originalBranch = await this.git.currentBranch(projectPath, { cache: this._gitCache });
     const onWorkingBranch = originalBranch === targetBranch;
 
@@ -1212,6 +1389,7 @@ class GitHandlers {
       }
     }
 
+    this._emitStage(op, 'fetching', `Buscando alterações remotas de '${targetBranch}'...`);
     this.sendOutput(`📥 Buscando alterações remotas de '${targetBranch}'...`);
     let firstPublish = false;
     try {
@@ -1219,6 +1397,7 @@ class GitHandlers {
         this.git.fetch(projectPath, {
           remote: 'origin', ref: targetBranch, singleBranch: true, depth: 1,
           ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
         }),
         this.STEP_TIMEOUT_FETCH_MS,
         `fetch origin/${targetBranch}`,
@@ -1261,6 +1440,7 @@ class GitHandlers {
             this.git.fetch(projectPath, {
               remote: 'origin', ref: targetBranch, singleBranch: true,
               ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+              ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
             }),
             this.STEP_TIMEOUT_FETCH_MS,
             `deepen fetch origin/${targetBranch}`,
@@ -1269,6 +1449,8 @@ class GitHandlers {
         } catch (_deepenErr) {
           // best-effort: the merge below surfaces the real error if any
         }
+
+        this._emitStage(op, 'merging', 'Verificando e mesclando alterações...');
 
         // F3-D1: re-check ancestry now that history is complete. Post-recovery
         // topologies (PUSH_REJECTED → guided refresh merge) make origin/target
@@ -1407,12 +1589,14 @@ class GitHandlers {
       return { cancelled: true };
     }
 
+    this._emitStage(op, 'pushing', `Publicando na branch '${targetBranch}'...`);
     this.sendOutput(`🚀 Publicando na branch '${targetBranch}'...`);
     try {
       await this._raceTimeout(
         this.git.push(projectPath, {
           remote: 'origin', branch: targetBranch, remoteRef: targetBranch,
           force: false, ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
         }),
         this.STEP_TIMEOUT_PUSH_MS,
         `push ${targetBranch}`,
@@ -1429,6 +1613,7 @@ class GitHandlers {
     }
     this._gitCache = {};
 
+    this._emitStage(op, 'finalizing', 'Finalizando publicação (checkout + limpeza)...');
     if (!onWorkingBranch && originalBranch) {
       try {
         await this.git.checkout(projectPath, originalBranch);
@@ -1648,7 +1833,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, error?: string}>}
    */
-  async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author, conflictStrategy }) {
+  async _runBackupGuardedPublish(projectPath, targetBranch, { commitMessage, auth, author, conflictStrategy, op }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — publicação recusada (backup obrigatório)');
@@ -1673,6 +1858,7 @@ class GitHandlers {
         signal: this.getAbortSignal(),
         author,
         conflictStrategy,
+        op,
       }),
       { branch: targetBranch }
     );
@@ -1735,19 +1921,15 @@ class GitHandlers {
    * @param {string|null} [commitMessage=null] - If provided, commit all changes before pushing
    * @returns {Promise<{success: boolean, pushed?: boolean, branch?: string, commitSha?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async gitPushToBranch(projectPath, targetBranch, commitMessage = null) {
+  async gitPushToBranch(projectPath, targetBranch, commitMessage = null, projectId = null) {
     if (!this.acquireGitLock()) {
       this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
+    const op = this._beginOperation(projectId, 'publish-preview');
     try {
       this._gitCache = {};
-      this.sendProgress({
-        stage: 'checking',
-        current: 0,
-        total: commitMessage ? 6 : 2,
-        message: 'Verificando status do repositório...',
-      });
+      this._emitStage(op, 'preparing', 'Verificando status do repositório...');
 
       const [token, userConfigured] = await Promise.all([
         this.gitOps.getGitHubToken(),
@@ -1755,7 +1937,7 @@ class GitHandlers {
       ]);
       if (!token) {
         this.sendOutput('❌ Autenticação GitHub necessária. Faça login novamente.');
-        return { success: false, error: 'Autenticação GitHub necessária. Faça login novamente.' };
+        return this._emitTerminalFromResult(op, { success: false, error: 'Autenticação GitHub necessária. Faça login novamente.' });
       }
       if (!userConfigured) {
         this.sendOutput('⚠️ Não foi possível configurar usuário git. Continuando com configuração existente...');
@@ -1772,7 +1954,7 @@ class GitHandlers {
           }
         } catch (preflightErr) {
           if (preflightErr && preflightErr.name === 'AbortError') {
-            return { success: false, cancelled: true, message: 'Operation aborted' };
+            return this._emitTerminalFromResult(op, { success: false, cancelled: true, message: 'Operation aborted' });
           }
           this.logger.warn('gitPushToBranch: preflight threw (continuing):', preflightErr.message);
         }
@@ -1784,14 +1966,16 @@ class GitHandlers {
         this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
 
-      return await this._runBackupGuardedPublish(projectPath, targetBranch, {
+      const result = await this._runBackupGuardedPublish(projectPath, targetBranch, {
         commitMessage,
         auth,
         author: { name: authorName, email: authorEmail },
+        op,
       });
+      return this._emitTerminalFromResult(op, result);
     } catch (error) {
       this.logger.error('Error pushing to branch:', error);
-      return this._publishErrorToResult(error);
+      return this._emitTerminalFromResult(op, this._publishErrorToResult(error));
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
@@ -1859,7 +2043,10 @@ class GitHandlers {
       this.sendOutput('⚠️ Operação Git já em andamento. Aguarde...');
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
+    // operationId is born with the lock — one id per operation (Task 2).
+    const op = this._beginOperation(projectId, 'refresh');
     try {
+      this._emitStage(op, 'preparing', 'Preparando atualização (commit WIP + backup)...');
       const current = await this.git.currentBranch(projectPath, { cache: this._gitCache });
 
       if (current !== BRANCH_PREVIEW) {
@@ -1885,12 +2072,19 @@ class GitHandlers {
         login = (userInfo && userInfo.login) || null;
       } catch (_loginErr) { /* best-effort */ }
 
-      return await this._runRefreshFlow(projectPath, {
+      const result = await this._runRefreshFlow(projectPath, {
         auth: token ? { token } : undefined,
         author: { name: authorName, email: authorEmail },
         who: login || authorName,
+        op,
       });
+      return this._emitTerminalFromResult(op, result);
     } catch (error) {
+      this._emitTerminal(
+        op,
+        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
+        error.message,
+      );
       if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
@@ -1921,7 +2115,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _runRefreshFlow(projectPath, { auth, author, who, conflictStrategy }) {
+  async _runRefreshFlow(projectPath, { auth, author, who, conflictStrategy, op }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — atualização recusada (backup obrigatório)');
@@ -1943,6 +2137,7 @@ class GitHandlers {
         signal: this.getAbortSignal(),
         author,
         conflictStrategy,
+        op,
       }),
       { branch: BRANCH_PREVIEW, author }
     );
@@ -1974,13 +2169,14 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _refreshCore(projectPath, { auth, signal, author, conflictStrategy }) {
+  async _refreshCore(projectPath, { auth, signal, author, conflictStrategy, op }) {
     const headBefore = await this.git.resolveRef(projectPath, 'HEAD');
 
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
 
+    this._emitStage(op, 'fetching', `Buscando alterações de origin/${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Buscando alterações de origin/${BRANCH_PREVIEW}...`);
     try {
       await this._raceTimeout(
@@ -1988,6 +2184,7 @@ class GitHandlers {
           remote: 'origin', ref: BRANCH_PREVIEW,
           singleBranch: true, depth: 1,
           ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
         }),
         this.STEP_TIMEOUT_FETCH_MS,
         `fetch origin/${BRANCH_PREVIEW}`,
@@ -2039,6 +2236,7 @@ class GitHandlers {
         this.git.fetch(projectPath, {
           remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true,
           ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
+          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
         }),
         this.STEP_TIMEOUT_FETCH_MS,
         `deepen fetch origin/${BRANCH_PREVIEW}`,
@@ -2049,6 +2247,8 @@ class GitHandlers {
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
+
+    this._emitStage(op, 'merging', 'Verificando e mesclando alterações...');
 
     // Direction contract (anti-inversion): refresh merges origin/preview
     // INTO the local working branch → ours = LOCAL commits →
@@ -2109,6 +2309,7 @@ class GitHandlers {
 
     // isomorphic-git merge does NOT touch the working tree — materialize
     // HEAD. Safe: this core runs inside withMandatoryBackup (Task 5).
+    this._emitStage(op, 'finalizing', 'Finalizando atualização (checkout + limpeza)...');
     await this._raceTimeout(
       this.git.checkout(projectPath, BRANCH_PREVIEW, { force: true }),
       this.STEP_TIMEOUT_CHECKOUT_MS,
@@ -2191,7 +2392,9 @@ class GitHandlers {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
 
+    const op = this._beginOperation(projectId, 'publish-preview');
     try {
+      this._emitStage(op, 'preparing', 'Preparando publicação (commit + backup)...');
       if (!userConfigured) {
         this.logger.warn('Could not configure git user, proceeding with existing config');
       }
@@ -2214,14 +2417,16 @@ class GitHandlers {
         this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
       ]);
 
-      return await this._runBackupGuardedPublish(projectPath, BRANCH_PREVIEW, {
+      const result = await this._runBackupGuardedPublish(projectPath, BRANCH_PREVIEW, {
         commitMessage,
         auth: { token },
         author: { name: authorName, email: authorEmail },
+        op,
       });
+      return this._emitTerminalFromResult(op, result);
     } catch (error) {
       this.logger.error('Error in gitPublishPreview:', error);
-      return this._publishErrorToResult(error);
+      return this._emitTerminalFromResult(op, this._publishErrorToResult(error));
     } finally {
       this._gitCache = {};
       this.releaseGitLock();
@@ -2320,7 +2525,9 @@ class GitHandlers {
     if (!this.acquireGitLock()) {
       return { success: false, error: 'Git operation already in progress. Please wait.' };
     }
+    const op = this._beginOperation(projectId, 'publish-main');
     try {
+      this._emitStage(op, 'preparing', 'Preparando publicação em main (commit WIP + backup)...');
       const [authorName, authorEmail] = await Promise.all([
         this.git.getConfig(projectPath, 'user.name', { cache: this._gitCache }).then((v) => v || 'documental'),
         this.git.getConfig(projectPath, 'user.email', { cache: this._gitCache }).then((v) => v || 'documental@app'),
@@ -2333,12 +2540,19 @@ class GitHandlers {
         login = (userInfo && userInfo.login) || null;
       } catch (_loginErr) { /* best-effort */ }
 
-      return await this._runPublishMainFlow(projectPath, {
+      const result = await this._runPublishMainFlow(projectPath, {
         auth: { token },
         author: { name: authorName, email: authorEmail },
         who: login || authorName,
+        op,
       });
+      return this._emitTerminalFromResult(op, result);
     } catch (error) {
+      this._emitTerminal(
+        op,
+        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
+        error.message,
+      );
       if (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) {
         return { success: false, cancelled: true, message: 'Operation aborted' };
       }
@@ -2372,7 +2586,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _runPublishMainFlow(projectPath, { auth, author, who, conflictStrategy }) {
+  async _runPublishMainFlow(projectPath, { auth, author, who, conflictStrategy, op }) {
     const ops = this._safetyOps();
     if (!this.gitSafety || !ops) {
       throw new Error('GitSafety indisponível — publicação em main recusada (backup obrigatório)');
@@ -2394,6 +2608,7 @@ class GitHandlers {
         signal: this.getAbortSignal(),
         author,
         conflictStrategy,
+        op,
       }),
       { branch: BRANCH_PREVIEW, author }
     );
@@ -2432,20 +2647,21 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _publishMainCore(projectPath, { auth, signal, author, conflictStrategy }) {
+  async _publishMainCore(projectPath, { auth, signal, author, conflictStrategy, op }) {
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
 
+    this._emitStage(op, 'fetching', `Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Buscando origin/${BRANCH_MAIN} e origin/${BRANCH_PREVIEW}...`);
     await Promise.all([
       this._raceTimeout(
-        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
+        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
         this.STEP_TIMEOUT_FETCH_MS,
         `fetch origin/${BRANCH_MAIN}`,
       ),
       this._raceTimeout(
-        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth }),
+        this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, depth: 1, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
         this.STEP_TIMEOUT_FETCH_MS,
         `fetch origin/${BRANCH_PREVIEW}`,
       ),
@@ -2488,12 +2704,12 @@ class GitHandlers {
     try {
       await Promise.all([
         this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, ...(signal ? { signal } : {}), auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_MAIN, singleBranch: true, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
           this.STEP_TIMEOUT_FETCH_MS,
           `deepen fetch origin/${BRANCH_MAIN}`,
         ),
         this._raceTimeout(
-          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, ...(signal ? { signal } : {}), auth }),
+          this.git.fetch(projectPath, { remote: 'origin', ref: BRANCH_PREVIEW, singleBranch: true, ...(signal ? { signal } : {}), auth, ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}) }),
           this.STEP_TIMEOUT_FETCH_MS,
           `deepen fetch origin/${BRANCH_PREVIEW}`,
         ),
@@ -2504,6 +2720,8 @@ class GitHandlers {
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
+
+    this._emitStage(op, 'merging', `Promovendo ${BRANCH_PREVIEW} → ${BRANCH_MAIN}...`);
 
     // Task 3: preview/main conflict mapping — ours = MAIN, theirs =
     // PREVIEW. MERGE_LOCAL keeps MAIN, MERGE_REMOTE keeps PREVIEW (the
@@ -2581,6 +2799,7 @@ class GitHandlers {
     );
     this._gitCache = {};
 
+    this._emitStage(op, 'pushing', `Publicando em ${BRANCH_MAIN}...`);
     this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
     try {
       await this._raceTimeout(
@@ -2590,6 +2809,7 @@ class GitHandlers {
           force: false,
           ...(signal ? { signal } : {}),
           auth,
+          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
         }),
         this.STEP_TIMEOUT_PUSH_MS,
         `push ${BRANCH_MAIN}`,
@@ -2613,6 +2833,7 @@ class GitHandlers {
     // Return to the preview working branch — a plain checkout (we are
     // still inside the withMandatoryBackup guard; the WIP commit and any
     // local-only commits stay untouched on preview).
+    this._emitStage(op, 'finalizing', `Voltando para a branch ${BRANCH_PREVIEW}...`);
     this.sendOutput(`📥 Voltando para a branch ${BRANCH_PREVIEW}...`);
     await this._raceTimeout(
       this.git.checkout(projectPath, BRANCH_PREVIEW),
@@ -2700,34 +2921,51 @@ class GitHandlers {
       };
     }
     this._pendingConflicts.delete(resumeToken);
+    // Resume = NEW operationId (not a continuation of the paused op).
+    const op = this._beginOperation(
+      entry.projectId ?? null,
+      entry.flow === 'refresh' ? 'refresh' : entry.flow === 'publish-main' ? 'publish-main' : 'publish-preview',
+    );
     try {
       this._gitCache = {};
+      this._emitStage(op, 'preparing', `Retomando fluxo ${entry.flow} (estratégia ${strategy})...`);
       this.sendOutput(`🔀 Retomando fluxo ${entry.flow} com estratégia ${strategy}...`);
       if (entry.flow === 'publish') {
-        return await this._runBackupGuardedPublish(entry.projectPath, entry.targetBranch, {
+        const result = await this._runBackupGuardedPublish(entry.projectPath, entry.targetBranch, {
           // WIP-style message: protects any edits made while the modal was
           // open (commit-first ordering, same as the flow's own WIP).
           commitMessage: `WIP (conflict resume ${strategy}) at ${new Date().toISOString()}`,
           auth: entry.auth,
           author: entry.author,
           conflictStrategy: strategy,
+          op,
         });
+        return this._emitTerminalFromResult(op, result);
       }
       if (entry.flow === 'refresh') {
-        return await this._runRefreshFlow(entry.projectPath, {
+        const result = await this._runRefreshFlow(entry.projectPath, {
           auth: entry.auth,
           author: entry.author,
           who: entry.who,
           conflictStrategy: strategy,
+          op,
         });
+        return this._emitTerminalFromResult(op, result);
       }
-      return await this._runPublishMainFlow(entry.projectPath, {
+      const result = await this._runPublishMainFlow(entry.projectPath, {
         auth: entry.auth,
         author: entry.author,
         who: entry.who,
         conflictStrategy: strategy,
+        op,
       });
+      return this._emitTerminalFromResult(op, result);
     } catch (error) {
+      this._emitTerminal(
+        op,
+        (error.name === 'AbortError' || (error.cause && error.cause.name === 'AbortError')) ? 'cancelled' : 'failed',
+        error.message,
+      );
       this.logger.error('Error in gitResolveConflict:', error);
       return this._publishErrorToResult(error);
     } finally {
@@ -2890,7 +3128,7 @@ class GitHandlers {
     ipcMain.handle('git:push-to-branch', async (event, projectId, targetBranch, commitMessage) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
-        const result = await this.gitPushToBranch(projectPath, targetBranch, commitMessage || null);
+        const result = await this.gitPushToBranch(projectPath, targetBranch, commitMessage || null, projectId);
         return result;
       } catch (error) {
         this.logger.error('Error in git:push-to-branch handler:', error);
@@ -3072,4 +3310,4 @@ class GitHandlers {
   }
 }
 
-module.exports = { GitHandlers, GitFlowError };
+module.exports = { GitHandlers, GitFlowError, parseTransferPercentage };

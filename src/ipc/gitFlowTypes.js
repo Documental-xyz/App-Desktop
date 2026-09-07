@@ -59,6 +59,19 @@ const LOCK_HEARTBEAT_INTERVAL_MS = 5000;
 /** @type {number} Heartbeat older than 3 minutes = stale (process presumed dead) */
 const LOCK_HEARTBEAT_STALE_MS = 180000;
 
+// ─── Progress Stage Constants (publish-update-resilience Task 2) ──────────────
+// Contract invariants for git:progress consumers (T3 journal, T9 renderer,
+// T11 restore banner): stageIndex is the 1-based position in the flow's
+// list; terminal stages ('complete'|'cancelled'|'failed') are NOT list
+// members and report stageIndex = stageTotal. 'verifying'/'restoring'
+// belong to the stage vocabulary for future flows and no current list.
+/** @type {Readonly<Record<string, ReadonlyArray<string>>>} */
+const STAGE_LISTS = Object.freeze({
+  refresh: Object.freeze(['preparing', 'fetching', 'merging', 'finalizing']),
+  'publish-preview': Object.freeze(['preparing', 'fetching', 'merging', 'pushing', 'finalizing']),
+  'publish-main': Object.freeze(['preparing', 'fetching', 'merging', 'pushing', 'finalizing']),
+});
+
 // ─── JSDoc Type Definitions ───────────────────────────────────────────────────
 
 /**
@@ -101,4 +114,5 @@ module.exports = {
   BACKUP_AUTO_CLEAN,
   LOCK_HEARTBEAT_INTERVAL_MS,
   LOCK_HEARTBEAT_STALE_MS,
+  STAGE_LISTS,
 };
