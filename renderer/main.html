@@ -133,6 +133,15 @@
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
         }
+        /* Indeterminate progress pulse (Task 10 unified modal: honest
+           spinner-bar state when the backend streams no percentage) */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
     </style>
 
 </head>
@@ -197,13 +206,14 @@ clearingCache: false,
           // T7 payload terminal.restored (additive — undefined until it exists)
           restored: undefined,
           // Running payload mirrors (backend events only, no local heuristics):
-          stage: null,          // current backend stage id (preparing|fetching|...)
+          stage: null,          // current backend stage id (preparing|fetching|...|restoring)
           percentage: null,     // number|null — null in merging/finalizing (dugite)
           cancelling: false,    // true between requestCancel and settle (Task 6)
+          restoring: false,     // true while the T7 auto-restore stage is active
           // Operation association (multi-window/stale protection — see init):
           projectId: null,
           operationId: null,    // adopted from the FIRST matching event
-          // Markup-compatible derived fields (T10 redesigns the modal):
+          // Markup-compatible derived fields (T10 unified modal):
           currentStep: 0,       // DERIVED: = stageIndex of the latest event
           totalSteps: 0,        // = stageTotal of the latest event
           stepLabel: '',
@@ -213,9 +223,44 @@ clearingCache: false,
           error: null,
           errorCode: null,
           binariesResolved: 0,
-          cancelable: true,     // dead state — T10 removes with modal redesign
           preflightRunning: false, // true ONLY around the checkPublishMain invoke
           warnings: [],
+          // Monotonic progress bar (Task 10): width = ((stageIndex-1) +
+          // subProgress)/stageTotal*100, subProgress = percentage/100 when
+          // streamed else an honest 0.5 midpoint (indeterminate pulse).
+          // NEVER regresses — restoring events re-report a lower index.
+          progress: { width: 0, percentage: null, indeterminate: true },
+          // T5-enriched failure slots (arrive on the invoke result; Task 11
+          // wires the full friendly copy + raw-log viewer behind them):
+          errorClass: null,
+          errorTitleKey: null,
+          errorHintKey: null,
+          offendingFiles: [],
+          // T7 restore outcome extras (additive — consumed by the terminal
+          // banners; PARTIAL keeps its own line, restoreAborted is T11's).
+          partial: false,
+          restoreAborted: null,
+          restoreHint: '',
+      },
+      // DISPLAY mirror of src/ipc/gitFlowTypes.js STAGE_LISTS (T2 contract):
+      // stage IDS only, for the real-stage stepper. Totals are NOT trusted
+      // from here — the first event's stageTotal confirms/slices the list.
+      gitExecStageLists: {
+          refresh: ['preparing', 'fetching', 'merging', 'finalizing'],
+          'publish-preview': ['preparing', 'fetching', 'merging', 'pushing', 'finalizing'],
+          'publish-main': ['preparing', 'fetching', 'merging', 'pushing', 'finalizing'],
+      },
+      // Inline EN fallbacks for the T5 friendly-error keys
+      // (main.git_exec_error_<class>_{title,hint}) — mirrors
+      // src/ipc/gitErrorMessages.js fallbackTitle/fallbackHint verbatim.
+      // TEMPORARY until Task 12 adds the keys to the 3 locales.
+      gitExecErrorFallbacks: {
+          large_file: { title: 'File too large for GitHub', hint: 'GitHub blocks files larger than 100 MB. Remove or shrink the offending file(s), or track them with Git LFS (https://git-lfs.github.com), then publish again. Nothing was lost — your commits are safe.' },
+          timeout: { title: 'Connection timed out', hint: 'The operation timed out. Check your internet connection and try again — nothing was lost.' },
+          auth: { title: 'Authentication failed', hint: 'GitHub rejected the credentials. Sign in again and retry — nothing was lost.' },
+          network: { title: 'Network problem', hint: 'GitHub could not be reached. Check your internet connection and try again — nothing was lost.' },
+          conflict: { title: 'The remote branch has new commits', hint: 'Refresh first to integrate the remote changes, then publish again — nothing was lost.' },
+          unknown: { title: 'Git operation failed', hint: 'The operation failed unexpectedly. You can try again — nothing was lost.' },
       },
       // Conflict strategy decision modal (conflict-strategy-modal Task 4).
       // Opened ONLY from finishGitExecModal when a sync flow returns the
@@ -781,26 +826,118 @@ clearingCache: false,
         if (this.gitExecution.operationType === 'publish-main') return __t('main.git_exec_publishing_main');
         return '';
     },
-    stepLabelFor(stepIndex) {
-        // Display vocabulary per flow — position mirrors gitFlowTypes
-        // STAGE_LISTS (T2); ordering/progress VALUES come only from events.
-        // preparing = checks/WIP staging (label varies per flow for the user).
-        const type = this.gitExecution.operationType;
-        if (type === 'refresh') {
-            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
-        }
-        if (type === 'publish-preview') {
-            return [__t('main.git_exec_step_committing'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
-        }
-        if (type === 'publish-main') {
-            return [__t('main.git_exec_step_checking'), __t('main.git_exec_step_fetching'), __t('main.git_exec_step_merging'), __t('main.git_exec_step_pushing'), __t('main.git_exec_step_finalizing')][stepIndex - 1] || '';
-        }
-        return '';
+    mt(key, fallback) {
+        // Missing-key probe for NEW i18n keys (Task 10 → Task 12):
+        // renderer/i18n.js returns the raw key when a translation is
+        // absent — fall back to the inline EN string until T12 lands.
+        const t = (typeof __t === 'function') ? __t(key) : key;
+        return (!t || t === key) ? fallback : t;
     },
-    stepClass(stepIndex) {
-        if (stepIndex < this.gitExecution.currentStep) return 'completed';
-        if (stepIndex === this.gitExecution.currentStep) return this.gitExecution.inProgress ? 'active' : 'completed';
-        return 'pending';
+    gitExecStageLabel(stage) {
+        // Real-stage stepper vocabulary (T2 STAGE_LISTS ids). Resolution
+        // order: NEW key main.git_exec_stage_<stage> (T12 adds locales) →
+        // EXISTING main.git_exec_step_* key (keeps today's translations) →
+        // inline EN. 'preparing' stays flow-aware (commit wording for
+        // publish-preview, checks otherwise), as in the old stepper.
+        const flow = this.gitExecution.operationType;
+        const existingKey = {
+            preparing: flow === 'publish-preview' ? 'main.git_exec_step_committing' : 'main.git_exec_step_checking',
+            fetching: 'main.git_exec_step_fetching',
+            merging: 'main.git_exec_step_merging',
+            pushing: 'main.git_exec_step_pushing',
+            finalizing: 'main.git_exec_step_finalizing',
+        }[stage];
+        const en = {
+            preparing: flow === 'publish-preview' ? 'Saving your changes' : 'Checking changes',
+            fetching: 'Synchronizing with team',
+            merging: 'Integrating changes',
+            pushing: 'Publishing',
+            finalizing: 'Finishing',
+            restoring: 'Restoring the original state',
+        }[stage];
+        const fresh = this.mt('main.git_exec_stage_' + stage, null);
+        if (fresh) return fresh;
+        if (existingKey) return this.mt(existingKey, en);
+        return en || stage;
+    },
+    gitExecStages() {
+        // Stepper items derived from the ACTIVE flow's real stage list
+        // (T2 contract) + the dynamic 'restoring' append (T7 emits it
+        // OUTSIDE the base list — appended visually when it arrives).
+        // status per item: 'pending' | 'active' | 'done' | 'error'.
+        const g = this.gitExecution;
+        const base = (this.gitExecStageLists[g.operationType] || [])
+            .slice(0, g.totalSteps || undefined);
+        const restoring = g.phase === 'running' && g.stage === 'restoring';
+        const items = base.map((stage, i) => {
+            const idx = i + 1;
+            let status = 'pending';
+            if (g.phase === 'terminal') {
+                if (idx < g.currentStep) status = 'done';
+                else if (idx === g.currentStep) {
+                    // failed → × at the stage that died; cancelled → hollow
+                    // circle (honestly "not completed"); complete → done.
+                    status = g.terminal === 'failed' ? 'error'
+                        : (g.terminal === 'cancelled' ? 'pending' : 'done');
+                }
+            } else if (restoring) {
+                // Recovery is sealed: earlier stages done, the stopping
+                // stage shows × — the appended 'restoring' row is the
+                // live one (spinner).
+                status = idx < g.currentStep ? 'done'
+                    : (idx === g.currentStep ? 'error' : 'pending');
+            } else {
+                if (idx < g.currentStep) status = 'done';
+                else if (idx === g.currentStep) status = 'active';
+            }
+            return { stage, label: this.gitExecStageLabel(stage), status };
+        });
+        if (restoring) {
+            items.push({ stage: 'restoring', label: this.gitExecStageLabel('restoring'), status: 'active' });
+        }
+        return items;
+    },
+    updateGitExecProgress() {
+        // Bar width = ((stageIndex-1) + subProgress)/stageTotal*100 with
+        // subProgress = percentage/100 when streamed, else an honest 0.5
+        // midpoint flagged indeterminate (pulse) — never a fake smooth
+        // fill. MONOTONIC: restoring events re-report the FAILING stage's
+        // (lower) index, so the bar freezes instead of regressing.
+        const g = this.gitExecution;
+        const total = Math.max(1, g.totalSteps || 1);
+        const idx = Math.min(Math.max(g.currentStep || 1, 1), total);
+        const hasPct = this.gitExecution.percentage !== null && Number.isFinite(g.percentage);
+        const sub = hasPct ? Math.max(0, Math.min(100, g.percentage)) / 100 : 0.5;
+        const width = Math.min(100, ((idx - 1) + sub) / total * 100);
+        g.progress = {
+            width: g.progress && g.progress.width > width ? g.progress.width : width,
+            percentage: hasPct ? g.percentage : null,
+            indeterminate: !hasPct,
+        };
+    },
+    gitExecErrorTitle() {
+        // Failed-banner title slot (T11 wires the full copy): T5-enriched
+        // errorTitleKey when present, the generic failure title otherwise.
+        const g = this.gitExecution;
+        if (!g.errorTitleKey) return this.$store.i18n.t('main.git_exec_failure_title');
+        const fb = this.gitExecErrorFallbacks[g.errorClass] || this.gitExecErrorFallbacks.unknown;
+        return this.mt(g.errorTitleKey, fb.title);
+    },
+    gitExecErrorHint() {
+        // Failed-banner hint slot (T11 wires the full copy). Empty string
+        // when the result carried no errorHintKey.
+        const g = this.gitExecution;
+        if (!g.errorHintKey) return '';
+        const fb = this.gitExecErrorFallbacks[g.errorClass] || this.gitExecErrorFallbacks.unknown;
+        return this.mt(g.errorHintKey, fb.hint);
+    },
+    gitExecEscape() {
+        // ESC/X matrix (Task 10): terminal → close; running → explicit
+        // cancel request (NEVER a silent close); preflight/restoring/
+        // cancelling → ignored (operation imminent or recovery in flight —
+        // dismissing would orphan the backend flow).
+        if (this.gitExecution.phase === 'terminal') { this.closeGitExecModal(); return; }
+        if (this.gitExecution.phase === 'running') { this.cancelGitExec(); return; }
     },
     openGitExecModal(type, totalSteps) {
         this.gitExecution.modalOpen = true;
@@ -817,6 +954,7 @@ clearingCache: false,
         this.gitExecution.stage = null;
         this.gitExecution.percentage = null;
         this.gitExecution.cancelling = false;
+        this.gitExecution.restoring = false;
         this.gitExecution.totalSteps = totalSteps;
         this.gitExecution.currentStep = 1;
         this.gitExecution.inProgress = true;
@@ -827,6 +965,14 @@ clearingCache: false,
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
         this.gitExecution.errorCode = null;
+        this.gitExecution.progress = { width: 0, percentage: null, indeterminate: true };
+        this.gitExecution.errorClass = null;
+        this.gitExecution.errorTitleKey = null;
+        this.gitExecution.errorHintKey = null;
+        this.gitExecution.offendingFiles = [];
+        this.gitExecution.partial = false;
+        this.gitExecution.restoreAborted = null;
+        this.gitExecution.restoreHint = '';
     },
     finishGitExecModal(result) {
         // Typed CONFLICT_PENDING (conflict-strategy-modal Task 4): the flow
@@ -843,10 +989,30 @@ clearingCache: false,
         this.gitExecution.terminal = result.cancelled ? 'cancelled' : (result.success ? 'complete' : 'failed');
         this.gitExecution.inProgress = false;
         this.gitExecution.cancelling = false;
+        this.gitExecution.restoring = false;
         this.gitExecution.finished = true;
-        this.gitExecution.currentStep = this.gitExecution.totalSteps;
         this.gitExecution.success = result.success;
         this.gitExecution.errorCode = result.code || null;
+        // T5-enriched failure slots (T11 wires the full friendly copy +
+        // raw-log viewer behind them; bindings exist from Task 10):
+        this.gitExecution.errorClass = result.errorClass || null;
+        this.gitExecution.errorTitleKey = result.errorTitleKey || null;
+        this.gitExecution.errorHintKey = result.errorHintKey || null;
+        this.gitExecution.offendingFiles = Array.isArray(result.offendingFiles) ? result.offendingFiles : [];
+        // T7 restore outcome extras (additive — result mirrors the terminal
+        // event; keep whichever arrived first).
+        if (this.gitExecution.restored === undefined && result.restored !== undefined) {
+            this.gitExecution.restored = result.restored;
+        }
+        this.gitExecution.partial = !!result.partial;
+        this.gitExecution.restoreAborted = result.restoreAborted || null;
+        this.gitExecution.restoreHint = result.restoreHint || '';
+        if (result.success) {
+            // Complete: all stages done, stageIndex=stageTotal +
+            // percentage=100 → full bar.
+            this.gitExecution.currentStep = this.gitExecution.totalSteps;
+            this.gitExecution.progress = { width: 100, percentage: 100, indeterminate: false };
+        }
         if (!result.success) {
             this.gitExecution.error = this.translateGitExecError(result);
         }
@@ -869,14 +1035,26 @@ clearingCache: false,
         this.gitExecution.stage = null;
         this.gitExecution.percentage = null;
         this.gitExecution.cancelling = false;
+        this.gitExecution.restoring = false;
         this.gitExecution.error = null;
         this.gitExecution.errorCode = null;
         this.gitExecution.finished = false;
         this.gitExecution.inProgress = false;
         this.gitExecution.preflightRunning = false;
         this.gitExecution.warnings = [];
+        this.gitExecution.progress = { width: 0, percentage: null, indeterminate: true };
+        this.gitExecution.errorClass = null;
+        this.gitExecution.errorTitleKey = null;
+        this.gitExecution.errorHintKey = null;
+        this.gitExecution.offendingFiles = [];
+        this.gitExecution.partial = false;
+        this.gitExecution.restoreAborted = null;
+        this.gitExecution.restoreHint = '';
     },
     cancelGitExec() {
+        // Guardrails (Task 10): a second request while one is settling is
+        // a no-op, and the restoring recovery can never be interrupted.
+        if (this.gitExecution.cancelling || this.gitExecution.restoring) return;
         window.electronAPI.cancelGitOperation();
     },
     // git:progress event → gitExecution FSM (Task 9). Payload contract (T2):
@@ -898,11 +1076,15 @@ clearingCache: false,
                 return;
             }
             // Cancel requested but not settled yet (Task 6 heartbeat window).
+            // Restoring events carry NO cancelling flag (fate already sealed).
             this.gitExecution.cancelling = !!payload.cancelling;
             // Once this modal settled (phase=terminal), a non-terminal event
             // can only belong to a NEW operation (possibly from another
             // window) — never resurrect a finished modal.
             if (this.gitExecution.phase === 'terminal' && !payload.terminal) return;
+            // T7 auto-restore stage (outside the base STAGE_LIST, stageIndex
+            // clamped to the failing stage) → stepper appends the row.
+            this.gitExecution.restoring = !payload.terminal && payload.stage === 'restoring';
             // Terminal: record T7's restored (additive, may be absent) and
             // clear the association. The outcome itself (success/error/code)
             // comes from the invoke result via finishGitExecModal milliseconds
@@ -910,10 +1092,11 @@ clearingCache: false,
             if (payload.terminal) {
                 this.gitExecution.restored = payload.restored;
                 this.gitExecution.operationId = null;
-                if (Number.isFinite(payload.stageIndex) && Number.isFinite(payload.stageTotal)) {
-                    this.gitExecution.currentStep = payload.stageIndex;
-                    this.gitExecution.totalSteps = payload.stageTotal;
-                }
+                // currentStep/totalSteps are NOT taken from the terminal
+                // payload (sendProgress synthesizes stageIndex=stageTotal
+                // for cancelled/complete, erasing the real STOP stage) — the
+                // last RUNNING event owns the stop position.
+                this.updateGitExecProgress();
                 return;
             }
             // Running update — backend events are the ONLY source of progress.
@@ -921,7 +1104,10 @@ clearingCache: false,
             this.gitExecution.inProgress = true;
             this.gitExecution.stage = payload.stage || null;
             if (Number.isFinite(payload.stageIndex)) {
-                this.gitExecution.currentStep = payload.stageIndex; // DERIVED from event
+                // MONOTONIC: restoring events re-report a lower index.
+                if (payload.stageIndex > this.gitExecution.currentStep) {
+                    this.gitExecution.currentStep = payload.stageIndex; // DERIVED from event
+                }
             }
             if (Number.isFinite(payload.stageTotal)) {
                 this.gitExecution.totalSteps = payload.stageTotal;
@@ -932,6 +1118,7 @@ clearingCache: false,
             if (payload.message) {
                 this.gitExecution.stepLabel = payload.message;
             }
+            this.updateGitExecProgress();
         } catch (e) {
             // An event must never break the modal/console pipeline.
             console.warn('git:progress handler error (ignored):', e);
@@ -952,6 +1139,12 @@ clearingCache: false,
             } catch (_e) { /* bridge may not expose removal — ignored */ }
         }
         this._gitEventCleanups = [];
+        // Unified modal ESC matrix (Task 10) — always removable (window
+        // listener, no contextBridge involvement).
+        if (this._modalEscHandler) {
+            window.removeEventListener('keydown', this._modalEscHandler);
+            this._modalEscHandler = null;
+        }
     },
     translateGitExecError(result) {
         // Typed error codes (Task 6-8 backend contract). PUSH_REJECTED gets
@@ -1160,6 +1353,10 @@ clearingCache: false,
                 return;
             }
             this.precedenceChecking = false;
+            // ESC matrix (Task 10): ESC/click.outside may have closed the
+            // setup modal while the preflight ran — the publish intent was
+            // withdrawn; never reopen into a running operation.
+            if (!this.publishSetupModalOpen) return;
             this.publishSetupModalOpen = false;
             // Preflight already ran above: open straight at phase=running.
             this.openGitExecModal('publish-main', 5);
@@ -1379,6 +1576,23 @@ clearingCache: false,
                     this.loadRepositoryInfo();
                 });
         }
+
+        // Unified modal ESC matrix (Task 10):
+        //   Setup / Refresh-Confirm (pre-operation) → close
+        //   Execution running                        → cancelGitExec() — NEVER a silent close
+        //   Execution preflight/restoring/cancelling → ignored (guardrails)
+        //   Execution terminal                       → close
+        //   Conflict strategy                        → NOT dismissable (explicit decision required)
+        // Order matters: only ONE modal is open at a time (isAnyOverlayOpen
+        // flows), so the first match wins.
+        this._modalEscHandler = (event) => {
+            if (event.key !== 'Escape') return;
+            if (this.publishSetupModalOpen) { this.publishSetupModalOpen = false; return; }
+            if (this.refreshConfirmModalOpen) { this.refreshConfirmModalOpen = false; return; }
+            if (this.gitExecution.modalOpen) { this.gitExecEscape(); return; }
+            // conflictDecision.open is deliberately NOT handled above.
+        };
+        window.addEventListener('keydown', this._modalEscHandler);
 
         // Load initial app logs and restore from sessionStorage
         window.electronAPI.getAppLogs().then(initialLogs => {
@@ -2285,17 +2499,25 @@ clearingCache: false,
 </nav>
 </div>
 </div>
-<!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main) -->
+<!-- Unified Git Execution Modal (Wave 3: refresh / publish-preview / publish-main).
+     [Modal Shell — Task 10] overlay z-50 → container → header (icon+title+X)
+     → body → action footer. Same structure as the Conflict/Setup/Refresh
+     modals. X follows the ESC matrix (running → cancel, terminal → close). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
-    <div class="flex items-center gap-3 mb-6">
+    <!-- Shell header -->
+    <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
         <span class="material-symbols-outlined text-primary"
               :class="{ 'animate-spin': gitExecution.preflightRunning }"
-              x-text="gitExecution.preflightRunning ? 'progress_activity' : (gitExecution.finished ? (gitExecution.success ? 'check_circle' : 'error') : 'autorenew')"></span>
+              x-text="gitExecution.preflightRunning ? 'progress_activity' : (gitExecution.phase === 'terminal' ? (gitExecution.success ? 'check_circle' : (gitExecution.terminal === 'cancelled' ? 'cancel' : 'error')) : 'autorenew')"></span>
       </div>
-      <h3 class="text-lg font-medium text-text-dark"
+      <h3 class="text-lg font-medium text-text-dark flex-1"
           x-text="gitExecution.preflightRunning ? $store.i18n.t('main.git_exec_preflight_checking') : operationTitle()"></h3>
+      <button @click="gitExecEscape()" class="p-1 rounded-full hover:bg-surface-secondary flex-shrink-0"
+              :title="gitExecution.phase === 'terminal' ? $store.i18n.t('main.git_exec_close_btn') : $store.i18n.t('common.cancel')">
+        <span class="material-icons text-muted-dark text-base">close</span>
+      </button>
     </div>
 
     <!-- Actions Notice Banner (preflight warnings) -->
@@ -2308,7 +2530,16 @@ clearingCache: false,
       </div>
     </div>
 
-    <!-- Stepper Card -->
+    <!-- Restoring Banner (T7 auto-restore in flight — recovery, not a flow
+         stage; cancel is guardrailed OFF while this shows) -->
+    <div x-show="gitExecution.phase === 'running' && gitExecution.restoring" class="mb-4 p-3 rounded-md flex items-center gap-2" style="background-color: color-mix(in srgb, var(--color-accent-orange) 12%, transparent); border: 1px solid color-mix(in srgb, var(--color-accent-orange) 50%, transparent);">
+      <span class="material-symbols-outlined text-accent-orange animate-spin">progress_activity</span>
+      <p class="text-sm" style="color: var(--color-accent-orange);" x-text="mt('main.git_exec_state_restoring', 'Restoring the original state…')"></p>
+    </div>
+
+    <!-- Stepper Card — rendered from the REAL stage list (T2 contract):
+         pending (hollow circle) / active (spinner OR streamed %) / done
+         (check) / error (×). 'restoring' is appended dynamically (T7). -->
     <div class="bg-background-dark rounded-lg p-4 mb-4 border border-border-default">
       <template x-if="gitExecution.preflightRunning">
         <div class="flex items-center gap-3 py-2">
@@ -2318,60 +2549,101 @@ clearingCache: false,
       </template>
       <template x-if="!gitExecution.preflightRunning">
         <div>
-          <template x-for="i in gitExecution.totalSteps" :key="i">
+          <template x-for="item in gitExecStages()" :key="item.stage">
             <div class="flex items-center gap-3 py-1.5">
               <div class="flex items-center justify-center w-7 h-7">
-                <template x-if="stepClass(i) === 'active'">
-                  <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
+                <template x-if="item.status === 'active'">
+                  <div class="flex items-center justify-center w-7 h-7">
+                    <!-- honest active state: spinner while indeterminate
+                         (dugite does not stream transfer %), real % when the
+                         backend sent one -->
+                    <template x-if="gitExecution.progress.percentage !== null">
+                      <span class="text-sm font-medium" style="color: var(--color-primary);" x-text="Math.round(gitExecution.progress.percentage) + '%'"></span>
+                    </template>
+                    <template x-if="gitExecution.progress.percentage === null">
+                      <span class="material-symbols-outlined text-primary text-xl step-icon-active">autorenew</span>
+                    </template>
+                  </div>
                 </template>
-                <template x-if="stepClass(i) === 'completed'">
+                <template x-if="item.status === 'done'">
                   <span class="inline-flex items-center justify-center w-7 h-7 rounded-full" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent); color: var(--color-primary);">
                     <span class="material-symbols-outlined text-xl">check_circle</span>
                   </span>
                 </template>
-                <template x-if="stepClass(i) === 'pending'">
+                <template x-if="item.status === 'pending'">
                   <div class="w-4 h-4 border-2 border-border-subtle rounded-full"></div>
+                </template>
+                <template x-if="item.status === 'error'">
+                  <span class="inline-flex items-center justify-center w-7 h-7 rounded-full" style="background-color: color-mix(in srgb, var(--color-danger) 15%, transparent);">
+                    <span class="material-symbols-outlined text-xl" style="color: var(--color-danger);">cancel</span>
+                  </span>
                 </template>
               </div>
               <span class="text-sm font-medium"
-                    :class="{ 'text-text-dark': stepClass(i) !== 'pending', 'text-muted-dark': stepClass(i) === 'pending' }"
-                    x-text="stepLabelFor(i)"></span>
+                    :class="{ 'text-text-dark': item.status !== 'pending', 'text-muted-dark': item.status === 'pending' }"
+                    x-text="item.label"></span>
             </div>
           </template>
         </div>
       </template>
     </div>
 
-    <!-- Progress Bar (real transfer % when streaming, step-based otherwise) -->
-    <div x-show="gitExecution.inProgress" class="mb-4">
+    <!-- Progress Bar — width = ((stageIndex-1) + subProgress)/stageTotal*100;
+         subProgress = %/100 when streamed, else an honest 0.5 midpoint with
+         a pulse (indeterminate — never a fake smooth fill). MONOTONIC. -->
+    <div x-show="gitExecution.phase === 'running'" class="mb-4">
       <div class="w-full bg-surface-secondary rounded-full h-2.5 overflow-hidden relative">
         <div class="bg-primary h-full rounded-full transition-all duration-500 relative"
-             :style="{ width: gitExecution.percentage !== null
-                 ? Math.max(0, Math.min(100, gitExecution.percentage)) + '%'
-                 : (gitExecution.currentStep / gitExecution.totalSteps * 100) + '%' }">
+             :class="{ 'animate-pulse': gitExecution.progress.indeterminate }"
+             :style="{ width: gitExecution.progress.width + '%' }">
           <div class="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/30 to-transparent"></div>
         </div>
       </div>
       <p class="text-xs text-muted-dark mt-1.5 text-center"
-         x-text="gitExecution.percentage !== null
-             ? gitExecution.percentage + '%'
+         x-text="gitExecution.progress.percentage !== null
+             ? Math.round(gitExecution.progress.percentage) + '%'
              : (gitExecution.currentStep + ' / ' + gitExecution.totalSteps)"></p>
     </div>
 
-    <!-- Success Banner -->
-    <div x-show="gitExecution.finished && gitExecution.success" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 2px solid var(--color-primary);">
+    <!-- Success Banner (terminal complete) -->
+    <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'complete'" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-primary) 10%, transparent); border: 2px solid var(--color-primary);">
       <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-primary); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 40%, transparent);">
         <span class="material-symbols-outlined text-white text-3xl">check_circle</span>
       </div>
       <p class="text-base font-semibold" style="color: var(--color-primary);" x-text="$store.i18n.t('main.git_exec_success_title')"></p>
     </div>
-    <!-- Failure Banner -->
-    <div x-show="gitExecution.finished && !gitExecution.success" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 2px solid var(--color-danger);">
+    <!-- Cancelled Banner (terminal cancelled — neutral; restored text per
+         T7: true | 'PARTIAL' | false/undefined = no extra line) -->
+    <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'cancelled'" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-muted-dark) 15%, transparent); border: 2px solid var(--color-muted-dark);">
+      <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-muted-dark); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-muted-dark) 40%, transparent);">
+        <span class="material-symbols-outlined text-white text-3xl">cancel</span>
+      </div>
+      <p class="text-base font-semibold text-text-dark" x-text="mt('main.git_exec_cancelled_title', 'Operation cancelled')"></p>
+      <p x-show="gitExecution.restored === true" class="text-sm mt-2 text-muted-dark" x-text="mt('main.git_exec_cancelled_restored', 'Your workspace was restored — nothing was lost.')"></p>
+      <p x-show="gitExecution.restored === 'PARTIAL'" class="text-sm mt-2" style="color: var(--color-accent-orange);" x-text="mt('main.git_exec_cancelled_partial', 'Workspace partially restored — some files may be in an intermediate state.')"></p>
+    </div>
+    <!-- Failure Banner (terminal failed) — Task 10 SLOTS: friendly
+         title/hint/offendingFiles arrive via the T5-enriched invoke result;
+         Task 11 wires the full copy and the raw-log viewer. -->
+    <div x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" class="mb-4 p-5 rounded-lg text-center" style="background-color: color-mix(in srgb, var(--color-danger) 10%, transparent); border: 2px solid var(--color-danger);">
       <div class="flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style="background-color: var(--color-danger); box-shadow: 0 4px 12px color-mix(in srgb, var(--color-danger) 40%, transparent);">
         <span class="material-symbols-outlined text-white text-3xl">cancel</span>
       </div>
-      <p class="text-base font-semibold" style="color: var(--color-danger);" x-text="$store.i18n.t('main.git_exec_failure_title')"></p>
-      <p x-show="gitExecution.error" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecution.error"></p>
+      <p class="text-base font-semibold" style="color: var(--color-danger);" x-text="gitExecErrorTitle()"></p>
+      <p x-show="gitExecErrorHint()" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecErrorHint()"></p>
+      <p x-show="!gitExecErrorHint() && gitExecution.error" class="text-sm mt-2" style="color: color-mix(in srgb, var(--color-danger) 70%, white);" x-text="gitExecution.error"></p>
+      <!-- offendingFiles slot (e.g. GH001 oversized paths — T11 links the
+           raw-log viewer) -->
+      <div x-show="gitExecution.offendingFiles.length > 0" class="mt-3 text-left">
+        <ul class="max-h-24 overflow-y-auto bg-background-dark border border-border-default rounded-md p-2 space-y-1">
+          <template x-for="file in gitExecution.offendingFiles" :key="file">
+            <li class="flex items-center gap-2 text-xs text-text-dark font-mono">
+              <span class="material-symbols-outlined text-sm" style="color: var(--color-danger);">description</span>
+              <span class="truncate" x-text="file"></span>
+            </li>
+          </template>
+        </ul>
+      </div>
     </div>
 
     <!-- Overlaid binaries notice -->
@@ -2379,17 +2651,30 @@ clearingCache: false,
       <p class="text-xs text-yellow-400" x-text="$store.i18n.t('main.git_exec_binaries_notice', {count: gitExecution.binariesResolved})"></p>
     </div>
 
-    <!-- Actions -->
+    <!-- Shell action footer -->
     <div class="flex justify-end gap-2">
-      <button x-show="gitExecution.inProgress" @click="cancelGitExec()"
-              class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium"
-              x-text="$store.i18n.t('common.cancel')"></button>
-      <button x-show="gitExecution.finished" @click="closeGitExecModal()"
-              :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : 'bg-red-600 hover:bg-red-500'"
+      <!-- Running: explicit cancel — disabled while a cancel is settling
+           ("Canceling…") or during the restoring recovery (guardrail) -->
+      <button x-show="gitExecution.phase === 'running'" @click="cancelGitExec()"
+              :disabled="gitExecution.cancelling || gitExecution.restoring"
+              :class="(gitExecution.cancelling || gitExecution.restoring) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-500'"
+              class="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-medium"
+              x-text="gitExecution.cancelling ? $store.i18n.t('common.canceling') : $store.i18n.t('common.cancel')"></button>
+      <button x-show="gitExecution.phase === 'terminal'" @click="closeGitExecModal()"
+              :class="gitExecution.success ? 'bg-primary hover:bg-primary-hover' : (gitExecution.terminal === 'cancelled' ? 'bg-muted-dark hover:bg-muted' : 'bg-red-600 hover:bg-red-500')"
                class="px-4 py-2 text-white rounded-md text-sm font-medium"
                x-text="$store.i18n.t('main.git_exec_close_btn')"></button>
+      <!-- Raw-log viewer placeholder — Task 11 wires the real handler.
+           Shown DISABLED with a "coming soon" tooltip until then (visible
+           stub documents the recovery affordance on every failure). -->
+      <button x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed'" disabled
+              :title="mt('main.git_exec_logs_coming_soon', 'Coming soon — Task 11')"
+              class="px-4 py-2 bg-muted-dark text-white rounded-md text-sm font-medium opacity-50 cursor-not-allowed flex items-center gap-2">
+        <span class="material-icons text-sm">terminal</span>
+        <span x-text="mt('main.git_exec_view_logs_btn', 'View raw logs')"></span>
+      </button>
       <!-- Guided recovery for typed PUSH_REJECTED: refresh pulls remote updates -->
-      <button x-show="gitExecution.finished && !gitExecution.success && gitExecution.errorCode === 'PUSH_REJECTED'" @click="retryGitExecWithRefresh()"
+      <button x-show="gitExecution.phase === 'terminal' && gitExecution.terminal === 'failed' && gitExecution.errorCode === 'PUSH_REJECTED'" @click="retryGitExecWithRefresh()"
               class="px-4 py-2 bg-accent-orange hover:bg-orange-500 text-white rounded-md text-sm font-medium flex items-center gap-2">
         <span class="material-symbols-outlined text-sm">refresh</span>
         <span x-text="$store.i18n.t('main.git_exec_retry_refresh_btn')"></span>
@@ -2398,14 +2683,19 @@ clearingCache: false,
   </div>
 </div>
 
-<!-- Conflict Strategy Decision Modal (shown ONLY on typed CONFLICT_PENDING) -->
+<!-- Conflict Strategy Decision Modal (shown ONLY on typed CONFLICT_PENDING).
+     [Modal Shell — Task 10] same overlay/header/footer structure as the
+     other modals. Deliberately NOT dismissable: no X button, no ESC, no
+     click.outside — a merge conflict requires an explicit strategy
+     decision (or Cancel, which consumes the resume token). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="conflictDecision.open">
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <!-- Shell header (no X — explicit decision required) -->
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-accent-orange) 20%, transparent);">
         <span class="material-symbols-outlined text-accent-orange">merge_problem</span>
       </div>
-      <div>
+      <div class="flex-1 min-w-0">
         <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.conflict_title')"></h3>
         <p class="text-xs text-muted-dark" x-text="$store.i18n.t('main.conflict_desc')"></p>
       </div>
@@ -2459,17 +2749,23 @@ clearingCache: false,
   </div>
 </div>
 
-<!-- Unified Publish Setup Modal (branch selector + commit message) -->
+<!-- Unified Publish Setup Modal (branch selector + commit message).
+     [Modal Shell — Task 10] pre-operation modal: ESC and click.outside
+     close it (no backend operation is running yet). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="publishSetupModalOpen">
   <div @click.outside="publishSetupModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <!-- Shell header -->
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-primary) 20%, transparent);">
         <span class="material-symbols-outlined text-primary">publish</span>
       </div>
-      <div>
+      <div class="flex-1 min-w-0">
         <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.nav_publish')"></h3>
         <p class="text-xs text-muted-dark" x-text="$store.i18n.t('main.publish_modal_desc')"></p>
       </div>
+      <button @click="publishSetupModalOpen = false" class="p-1 rounded-full hover:bg-surface-secondary flex-shrink-0" :title="$store.i18n.t('common.cancel')">
+        <span class="material-icons text-muted-dark text-base">close</span>
+      </button>
     </div>
 
     <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.push_branch_label')"></label>
@@ -2513,14 +2809,20 @@ clearingCache: false,
   </div>
 </div>
 
-<!-- Refresh Confirmation Modal -->
+<!-- Refresh Confirmation Modal.
+     [Modal Shell — Task 10] pre-operation modal: ESC and click.outside
+     close it (no backend operation is running yet). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="refreshConfirmModalOpen">
   <div @click.outside="refreshConfirmModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <!-- Shell header -->
     <div class="flex items-center gap-3 mb-4">
       <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent-orange bg-opacity-20 flex items-center justify-center">
         <span class="material-symbols-outlined text-accent-orange">refresh</span>
       </div>
-      <h3 class="text-lg font-medium text-text-dark" x-text="$store.i18n.t('main.refresh_confirm_title')"></h3>
+      <h3 class="text-lg font-medium text-text-dark flex-1" x-text="$store.i18n.t('main.refresh_confirm_title')"></h3>
+      <button @click="refreshConfirmModalOpen = false" class="p-1 rounded-full hover:bg-surface-secondary flex-shrink-0" :title="$store.i18n.t('common.cancel')">
+        <span class="material-icons text-muted-dark text-base">close</span>
+      </button>
     </div>
     <p class="text-sm text-muted-dark mb-6" x-text="$store.i18n.t('main.refresh_confirm_desc')"></p>
     <!-- Informative, non-blocking notice: dirty tree is auto-committed (WIP) by the backend -->
