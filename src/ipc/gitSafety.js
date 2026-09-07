@@ -104,6 +104,15 @@ const BACKUP_TIMESTAMP_SUFFIX = /-(\d+)$/;
 const BACKUP_RETENTION_DAYS = 7;
 
 /**
+ * Flow-context backup reuse window (Task 4, publish-main dedupe): a
+ * `_safeResetToOrigin` running INSIDE the same withMandatoryBackup flow
+ * may skip its own 2nd backup when the flow's backup is younger than
+ * this and still covers the exact same state.
+ * @type {number}
+ */
+const BACKUP_REUSE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
  * @typedef {Object} BackupInfo
  * @property {string} name - Full ref name of the backup branch
  * @property {string} sha - SHA the backup points to
@@ -132,8 +141,23 @@ class GitSafety {
    *  - backup creation fails → GitSafetyError BACKUP_FAILED
    *    (never reach the destructive step without a backup)
    *
+   * Flow-context reuse (Task 4): `options.recentBackup` — `{ name,
+   * branch, localHead, timestamp }` as returned in `backupInfo` by a
+   * wrapping withMandatoryBackup — lets an INNER backup-guarded step
+   * (publish-main's _safeResetToOrigin) skip creating a 2nd branch when
+   * the flow's backup ALREADY covers the current state. Safety-first
+   * conditions, ALL required:
+   *   1. younger than BACKUP_REUSE_WINDOW_MS (5 min),
+   *   2. same branch AND same localHead (no commits since — the backup
+   *      tip covers every local commit),
+   *   3. working tree CLEAN (a dirty tree always gets a fresh snapshot
+   *      commit — the load-bearing Block 3 contract),
+   *   4. the backup branch still EXISTS and still resolves to that
+   *      localHead (not pruned/moved in between — verified live).
+   * Any failure → a fresh backup is created exactly as before.
+   *
    * @private
-   * @returns {Promise<{ backupBranch: string|null }>}
+   * @returns {Promise<{ backupBranch: string|null, backupInfo: object|null, reusedBackup?: boolean }>}
    */
   async _assessAndBackup(gitMod, fs, projectPath, localBranch, options = {}) {
     const currentBranch = await gitMod.currentBranch({ fs, dir: projectPath });
@@ -168,7 +192,25 @@ class GitSafety {
     const dirty = matrix.filter(([, h, w, s]) => !(h === 1 && w === 1 && s === 1));
 
     if (!hasUnpushed && dirty.length === 0) {
-      return { backupBranch: null };
+      return { backupBranch: null, backupInfo: null };
+    }
+
+    const recent = options.recentBackup;
+    if (
+      recent &&
+      typeof recent === 'object' &&
+      dirty.length === 0 &&
+      Date.now() - recent.timestamp < BACKUP_REUSE_WINDOW_MS &&
+      recent.branch === currentBranch &&
+      recent.localHead === localHead
+    ) {
+      try {
+        const tip = await gitMod.resolveRef({ fs, dir: projectPath, ref: recent.name });
+        if (tip === localHead) {
+          this.logger.info(`♻️ Backup recente do fluxo reutilizado: ${recent.name}`);
+          return { backupBranch: recent.name, backupInfo: null, reusedBackup: true };
+        }
+      } catch (_e) { /* backup gone/unresolvable — create a fresh one below */ }
     }
 
     let backupBranch;
@@ -191,7 +233,15 @@ class GitSafety {
       );
     }
     this.logger.info(`📦 Backup criado: ${backupBranch}`);
-    return { backupBranch };
+    return {
+      backupBranch,
+      backupInfo: {
+        name: backupBranch,
+        branch: currentBranch,
+        localHead,
+        timestamp: Date.now(),
+      },
+    };
   }
 
   /**
@@ -204,26 +254,33 @@ class GitSafety {
    * and a {@link GitSafetyError} (`BACKUP_FAILED` or
    * `STATUS_MATRIX_FAILED`) is thrown for the caller to surface.
    *
+   * Task 4 (backup dedupe): when a backup was created, `operation` is
+   * invoked with it as the argument — `{ name, branch, localHead,
+   * timestamp }` (null when nothing needed backing up) — so inner
+   * backup-guarded steps can forward it as `options.recentBackup` and
+   * skip a redundant 2nd backup. Existing `() => ...` closures ignore
+   * the argument. The same info is also returned as `backupInfo`.
+   *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client accepted by isomorphic-git
    * @param {string} projectPath - absolute path to the repository
-   * @param {() => Promise<T>} operation - the protected (destructive) flow body
+   * @param {(backupInfo: {name: string, branch: string, localHead: string, timestamp: number}|null) => Promise<T>} operation - the protected (destructive) flow body
    * @param {object} [options]
    * @param {string} [options.author] - author for the temp backup commit
    * @param {string} [options.branch] - branch name used for backup naming (default: current)
-   * @returns {Promise<{ backupBranch: string|null, result: T }>}
+   * @returns {Promise<{ backupBranch: string|null, backupInfo: object|null, result: T }>}
    * @template T
    */
   async withMandatoryBackup(gitMod, fs, projectPath, operation, options = {}) {
-    const { backupBranch } = await this._assessAndBackup(
+    const { backupBranch, backupInfo } = await this._assessAndBackup(
       gitMod,
       fs,
       projectPath,
       options.branch || '',
       options
     );
-    const result = await operation();
-    return { backupBranch, result };
+    const result = await operation(backupInfo);
+    return { backupBranch, backupInfo, result };
   }
 
   /**
@@ -233,12 +290,19 @@ class GitSafety {
    * reset/checkout runs. If backup creation fails, the operation is
    * aborted to protect user data.
    *
+   * `options.recentBackup` (Task 4, publish-main dedupe): flow context
+   * from the wrapping withMandatoryBackup — when it still covers the
+   * CURRENT state (< 5 min old, same branch, same HEAD, clean tree,
+   * verified live), the 2nd backup branch is SKIPPED and the existing
+   * one is reused. Any mismatch → fresh backup (safety first).
+   *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
    * @param {object} fs - filesystem client accepted by isomorphic-git
    * @param {string} projectPath - absolute path to the repository
    * @param {string} targetRef - ref to reset to (e.g. `'origin/preview'`)
    * @param {object} [options]
    * @param {string} [options.author] - Optional author for the temp backup commit
+   * @param {{ name: string, branch: string, localHead: string, timestamp: number }} [options.recentBackup]
    * @returns {Promise<{ backupBranch: string|null }>} backup branch name or null
    * @throws {Error} if backup creation fails — caller MUST abort
    */
@@ -313,7 +377,9 @@ class GitSafety {
         await gitMod.checkout({ fs, dir: projectPath, ref: backupName, force: false });
 
         // Stage dirty files (add present / remove deleted) in batches.
-        const BATCH = 10;
+        // 100 (Task 4): large publishes were bounded by 10-file batches;
+        // 100 keeps the argv-limit guard while cutting batch count 10×.
+        const BATCH = 100;
         const stageErrors = [];
         for (let i = 0; i < dirty.length; i += BATCH) {
           const batch = dirty.slice(i, i + BATCH);

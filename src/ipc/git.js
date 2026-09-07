@@ -774,8 +774,10 @@ class GitHandlers {
       this.sendOutput(`📝 Preparando ${dirty.length} arquivo(s) para commit...`);
 
       // Stage files em batches com tratamento de erro individual
+      // 100 (Task 4): large publishes were bounded by 10-file batches;
+      // 100 keeps the argv-limit guard while cutting batch count 10×.
       const stageErrors = [];
-      const BATCH_SIZE = 10;
+      const BATCH_SIZE = 100;
       for (let i = 0; i < dirty.length; i += BATCH_SIZE) {
         const batch = dirty.slice(i, i + BATCH_SIZE);
         await Promise.all(
@@ -2599,16 +2601,21 @@ class GitHandlers {
     await this._commitAll(projectPath, wipMessage, author);
 
     // 2. Mandatory blocking backup around the whole mutating core.
+    //    Task 4 (backup dedupe): the created backupInfo is handed INTO
+    //    the core so _safeResetToOrigin can reuse this backup instead of
+    //    minting a 2nd branch for the same state (< 5 min, same HEAD,
+    //    clean tree — conditions enforced in _assessAndBackup).
     const { result } = await this.gitSafety.withMandatoryBackup(
       this._opsTreatMissingUpstreamAsUnpushed(ops, BRANCH_PREVIEW),
       require('fs'),
       projectPath,
-      () => this._publishMainCore(projectPath, {
+      (recentBackup) => this._publishMainCore(projectPath, {
         auth,
         signal: this.getAbortSignal(),
         author,
         conflictStrategy,
         op,
+        recentBackup,
       }),
       { branch: BRANCH_PREVIEW, author }
     );
@@ -2639,6 +2646,10 @@ class GitHandlers {
    * merge origin/preview with PREVIEW-WINS, push force:false (typed
    * PUSH_REJECTED), then return to the preview working branch.
    *
+   * Task 4: `recentBackup` carries the wrapping flow's backup context
+   * into the _safeResetToOrigin calls (2nd-backup dedupe — skipped only
+   * while it provably covers the current state).
+   *
    * Direction contract (ANTI-INVERSION): in the merge main←preview,
    * ours=main, theirs=preview → theirsMergeDriver /
    * resolveBinaryTheirs keep PREVIEW winning conflicting hunks — the
@@ -2647,7 +2658,7 @@ class GitHandlers {
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
-  async _publishMainCore(projectPath, { auth, signal, author, conflictStrategy, op }) {
+  async _publishMainCore(projectPath, { auth, signal, author, conflictStrategy, op, recentBackup }) {
     if (this.isCancelRequested()) {
       return { success: false, cancelled: true, message: 'Operation cancelled by user' };
     }
@@ -2693,9 +2704,11 @@ class GitHandlers {
 
     // Local main := origin/main. Backup-guarded (this whole core runs
     // inside withMandatoryBackup); _safeResetOrCheckout creates the local
-    // branch when missing — no raw hard reset anywhere.
+    // branch when missing — no raw hard reset anywhere. The flow's own
+    // backup is passed as reuse context (Task 4): when it still covers
+    // the current state, the 2nd backup branch is skipped.
     this.sendOutput(`🔄 Sincronizando ${BRANCH_MAIN} com origin/${BRANCH_MAIN}...`);
-    await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`, { author });
+    await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`, { author, recentBackup });
     this._gitCache = {};
 
     // Deepen the depth:1 fetches so the merge-base exists (shallow tips
@@ -2766,7 +2779,9 @@ class GitHandlers {
       const conflictFiles = this._extractConflictFiles(mergeErr);
       if (!conflictFiles) {
         // Non-recoverable merge failure: restore main to the remote state
-        // (backup-guarded) before propagating.
+        // (backup-guarded) before propagating. Note: reuse context is NOT
+        // passed here — by now HEAD has moved onto main/merge territory,
+        // so a FRESH backup is the correct protection (Task 4).
         try {
           await this._safeResetToOrigin(projectPath, `origin/${BRANCH_MAIN}`, { author });
         } catch (_resetErr) { /* best-effort */ }

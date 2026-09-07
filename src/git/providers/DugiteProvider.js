@@ -221,23 +221,74 @@ class DugiteProvider {
    * @returns {Promise<import('../GitTypes').FetchResult>}
    */
   async fetch(repoPath, opts = {}) {
-    // Serialize fetches per repo: real git processes racing on
+    // Serialize fetches per (repo, refspec): real git processes racing on
     // .git/shallow.lock fail spuriously (the flows fetch main+preview
     // via Promise.all; iso-git is in-process and never races) — T10-D3.
-    const prev = DugiteProvider._fetchChains.get(repoPath) || Promise.resolve();
+    // Task 4 (fastpath perf): the key now includes the refspec so fetches
+    // of DISTINCT refs no longer queue behind each other — EXCEPT for
+    // fetches that WRITE .git/shallow (`--depth N` or the auto
+    // `--unshallow`), which contend on shallow.lock with EVERY other
+    // such fetch in the repo REGARDLESS of ref (verified empirically:
+    // two concurrent `git fetch --depth 1 origin main|preview` fail one
+    // side with "Unable to create .git/shallow.lock" in 100% of runs).
+    // Those keep the repo-wide key; the shallow.lock protection for the
+    // SAME refspec is therefore preserved a fortiori.
+    const chainKey = DugiteProvider._fetchChainKey(repoPath, opts);
+    const prev = DugiteProvider._fetchChains.get(chainKey) || Promise.resolve();
     const run = prev.catch(() => {}).then(() => this._fetchSerialized(repoPath, opts));
-    DugiteProvider._fetchChains.set(repoPath, run);
+    DugiteProvider._fetchChains.set(chainKey, run);
     try {
       return await run;
     } finally {
-      if (DugiteProvider._fetchChains.get(repoPath) === run) {
-        DugiteProvider._fetchChains.delete(repoPath);
+      if (DugiteProvider._fetchChains.get(chainKey) === run) {
+        DugiteProvider._fetchChains.delete(chainKey);
       }
     }
   }
 
   /** @type {Map<string, Promise<unknown>>} */
   static _fetchChains = new Map();
+
+  /**
+   * Chain key for fetch serialization (Task 4).
+   *
+   *   - Plain fetches (no `depth`, repo not shallow → no `--unshallow`):
+   *     `${repoPath}::${refspec}` — distinct refs run in PARALLEL
+   *     (publish-main's main+preview pair), same refspec stays
+   *     serialized. The implicit-current-branch case (no refspec/branch/
+   *     ref given) shares the literal `*head*` bucket: conservative,
+   *     those fetches may target the same ref.
+   *   - Shallow-WRITING fetches (`depth` given, or `.git/shallow` exists
+   *     so the no-depth fetch becomes `--unshallow`): plain `repoPath` —
+   *     .git/shallow.lock is repo-global (empirical: cross-ref
+   *     --depth/--unshallow fetches race), so these serialize against
+   *     every other shallow-writing fetch in the repo.
+   *
+   * @param {string} repoPath - Local repository directory
+   * @param {import('../GitTypes').FetchOptions & Record<string, unknown>} opts
+   * @returns {string} chain key
+   * @private
+   */
+  static _fetchChainKey(repoPath, opts = {}) {
+    const { depth, refspec, branch, ref } = opts;
+    const writesShallow =
+      depth !== undefined ||
+      fs.existsSync(path.join(repoPath, '.git', 'shallow'));
+    if (writesShallow) {
+      return repoPath;
+    }
+    let refKey;
+    if (refspec) {
+      // Normalize a full refspec to its source branch so
+      // `+refs/heads/main:refs/remotes/origin/main` and `ref: 'main'`
+      // share one chain (they race on the same ref).
+      const m = String(refspec).match(/^\+?refs\/heads\/([^:]+)(?::|$)/);
+      refKey = m ? m[1] : String(refspec);
+    } else {
+      refKey = branch || ref || '*head*';
+    }
+    return `${repoPath}::${refKey}`;
+  }
 
   async _fetchSerialized(repoPath, opts = {}) {
     const {
@@ -1130,6 +1181,44 @@ class DugiteProvider {
   }
 
   /**
+   * Check whether a ref can be fast-forwarded onto a target without a
+   * merge commit, i.e. whether `ref` is an ANCESTOR of `target`.
+   * Contract parity with IsomorphicGitProvider.canFastForward (T/F3-D1):
+   * `{ ref, target }` where `ref` is the ancestor candidate and `target`
+   * (default 'HEAD') the descendant; boolean result, ancestor === true
+   * means fast-forward possible. Equal OIDs are their own ancestors →
+   * true (git treats a commit as its own ancestor — same as the iso-git
+   * equality shortcut).
+   *
+   * THE PERF BUG THIS CLOSES (Task 4): this class previously had NO
+   * canFastForward, so every call site's `this.git.canFastForward(...)`
+   * threw a TypeError that the flows' try/catch swallowed as
+   * `localAhead = false` — forcing deepen-fetch + full merge on EVERY
+   * publish/update even when the local branch was simply ahead.
+   *
+   * Translation: `git merge-base --is-ancestor <ref> <target>` — exit 0
+   * → true, exit 1 → false (a RESULT, not an error: passed to `_run`
+   * via `allowedExitCodes: [0, 1]`); any other exit (e.g. 128 on an
+   * unresolvable ref) throws GitError, which the call sites already
+   * treat as "cannot tell" and fall back to the merge path.
+   *
+   * @param {string} path - Local repository directory
+   * @param {{ ref?: string, target?: string } & Record<string, unknown>} [opts]
+   * @returns {Promise<boolean>}
+   */
+  async canFastForward(path, opts = {}) {
+    const { ref, target } = opts;
+    const { exitCode } = await this._run(
+      'canFastForward',
+      ['merge-base', '--is-ancestor', ref, target === undefined ? 'HEAD' : target],
+      path,
+      { repoPath: path },
+      { allowedExitCodes: [0, 1] },
+    );
+    return exitCode === 0;
+  }
+
+  /**
    * Read a config value from the REPO-LOCAL config only (`--local` —
    * parity with iso-git, which reads .git/config and never the global
    * config). Returns null when unset (exit code 1 is "not found", not
@@ -1215,14 +1304,25 @@ class DugiteProvider {
    * merged into the dugite env (on top of setupEnvironment's bundled-Git
    * contract), and DELETED in `finally`.
    *
+   * Exit-code-sensitive commands (Task 4): some git plumbing uses
+   * non-zero exits as RESULTS (`merge-base --is-ancestor` exits 1 for
+   * "not an ancestor"). Pass `runOpts.allowedExitCodes` (e.g. `[0, 1]`)
+   * and `_run` resolves `{ stdout, exitCode }` for any listed code
+   * instead of throwing — the caller branches on the code. Unlisted
+   * non-zero codes still throw GitError. Default behavior (no runOpts)
+   * is byte-for-byte unchanged: stdout string, throw on any non-zero.
+   *
    * @param {import('../GitTypes').GitOperation} operation - For GitError
    * @param {string[]} args - Git argv (array, shell-free)
    * @param {string|undefined} cwd - Working dir (undefined for clone/ls-remote)
    * @param {{ url?: string, repoPath?: string, remote?: string, auth?: AuthInfo, signal?: AbortSignal }} ctx
-   * @returns {Promise<string>} stdout
+   * @param {{ allowedExitCodes?: number[] }} [runOpts] - Exit codes that
+   *   are RESULTS, not errors (see above)
+   * @returns {Promise<string|{stdout: string, exitCode: number}>} stdout,
+   *   or `{stdout, exitCode}` when `allowedExitCodes` is provided
    * @private
    */
-  async _run(operation, args, cwd, ctx) {
+  async _run(operation, args, cwd, ctx, runOpts = {}) {
     const { url, repoPath, remote, auth, signal } = ctx;
     // GIT_TERMINAL_PROMPT=0 always: network ops must fail, never hang
     // on an interactive prompt ('terminal prompts disabled' → 'auth').
@@ -1261,7 +1361,10 @@ class DugiteProvider {
         });
       }
 
-      if (result.exitCode !== 0) {
+      const allowed = Array.isArray(runOpts.allowedExitCodes)
+        ? runOpts.allowedExitCodes
+        : [0];
+      if (!allowed.includes(result.exitCode)) {
         // Non-zero exit does NOT throw on its own in dugite v3.
         throw new GitError({
           operation,
@@ -1269,6 +1372,9 @@ class DugiteProvider {
           exitCode: result.exitCode,
           stderr: result.stderr || result.stdout,
         });
+      }
+      if (Array.isArray(runOpts.allowedExitCodes)) {
+        return { stdout: result.stdout, exitCode: result.exitCode };
       }
       return result.stdout;
     } finally {
