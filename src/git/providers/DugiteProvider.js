@@ -172,6 +172,33 @@ function createAskpass(token) {
   };
 }
 
+// ─── Command journaling (publish-update-resilience Task 3) ────────────────────
+//
+// Module-level observer notified from _run with the RAW command result
+// ({args, exitCode, stdout, stderr, durationMs}) right after dugite
+// resolves — the ONLY choke point where the untouched output exists
+// (dugite resolves non-zero exits instead of rejecting). GitHandlers
+// wires this to the operation journal, which sanitizes and attributes
+// the entry to the CURRENT operation (set under the single git lock).
+// The notification is 100% additive: no observer registered → zero
+// overhead; an observer that throws can NEVER fail the git command.
+// Module-level setter (not a constructor arg) because the provider
+// factory constructs this class without arguments.
+
+/**
+ * @type {((entry: {args: string[], exitCode: number|null, stdout: string, stderr: string, durationMs: number}) => void)|null}
+ */
+let commandObserver = null;
+
+/**
+ * Register (or clear, with null) the command observer for _run.
+ *
+ * @param {Function|null} fn - Receives one entry per executed git command
+ */
+function setCommandObserver(fn) {
+  commandObserver = typeof fn === 'function' ? fn : null;
+}
+
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1327,6 +1354,7 @@ class DugiteProvider {
     // GIT_TERMINAL_PROMPT=0 always: network ops must fail, never hang
     // on an interactive prompt ('terminal prompts disabled' → 'auth').
     const env = { GIT_TERMINAL_PROMPT: '0' };
+    const startedAt = Date.now();
     let askpass = null;
 
     try {
@@ -1353,6 +1381,7 @@ class DugiteProvider {
         });
       } catch (err) {
         // dugite rejected (git binary failed to launch — ENOENT etc.).
+        this._notifyCommandObserver(args, { exitCode: null, stdout: '', stderr: err?.message }, startedAt);
         throw new GitError({
           operation,
           provider: PROVIDER_NAME,
@@ -1360,6 +1389,13 @@ class DugiteProvider {
           cause: err,
         });
       }
+
+      // Journal BEFORE the exit-code gate — the raw {stdout, stderr,
+      // exitCode} exists here regardless of exit status (dugite v3
+      // resolves non-zero exits instead of rejecting, so a failed
+      // command's output would otherwise be lost with the thrown
+      // GitError). 100% additive (Task 3).
+      this._notifyCommandObserver(args, result, startedAt);
 
       const allowed = Array.isArray(runOpts.allowedExitCodes)
         ? runOpts.allowedExitCodes
@@ -1381,6 +1417,30 @@ class DugiteProvider {
       if (askpass) {
         askpass.cleanup();
       }
+    }
+  }
+
+  /**
+   * Notify the module-level command observer (operation journal) with
+   * the RAW command result. Guarded: an observer failure must NEVER
+   * fail the git command itself (Task 3 guardrail).
+   * @param {string[]} args - Git argv
+   * @param {{exitCode: number|null, stdout?: string, stderr?: string}} result
+   * @param {number} startedAt - Date.now() captured before exec
+   * @private
+   */
+  _notifyCommandObserver(args, result, startedAt) {
+    if (!commandObserver) return;
+    try {
+      commandObserver({
+        args: Array.isArray(args) ? args.slice() : args,
+        exitCode: typeof result.exitCode === 'number' ? result.exitCode : null,
+        stdout: result.stdout == null ? '' : String(result.stdout),
+        stderr: result.stderr == null ? '' : String(result.stderr),
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
+    } catch (_e) {
+      // Journaling is best-effort diagnostics — never fail the command.
     }
   }
 
@@ -1615,4 +1675,4 @@ function parseLsRemote(stdout) {
 // ─── Exports ──────────────────────────────────────────────────────────────────
 // Named export (factory accepts `m.DugiteProvider || m`). Local ops
 // (T16) extend this same class in this same file.
-module.exports = { DugiteProvider };
+module.exports = { DugiteProvider, setCommandObserver };

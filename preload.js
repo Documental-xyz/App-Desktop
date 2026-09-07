@@ -106,6 +106,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreBackup: (projectId, backupBranch) => ipcRenderer.invoke('git:backup-restore', projectId, backupBranch),
   deleteBackup: (projectId, backupBranch) => ipcRenderer.invoke('git:backup-delete', projectId, backupBranch),
   cancelGitOperation: () => ipcRenderer.invoke('git:cancel-operation'),
+  /**
+   * Raw (sanitized) git command journal of one operation — every git
+   * command executed during the operation with its argv, exit code,
+   * stdout/stderr and duration (publish-update-resilience Task 3).
+   * Entries live 30 min past the operation's terminal event.
+   *
+   * @param {string} operationId - operationId from a git:progress payload
+   * @returns {Promise<{success: boolean, entries?: Array<{seq: number, timestamp: number, args: string[], exitCode: number|null, stdout: string, stderr: string, durationMs: number|null}>, code?: string, error?: string}>}
+   *   {success:true, entries} | {success:false, code:'LOG_NOT_FOUND'}
+   */
+  getOperationLog: (operationId) => ipcRenderer.invoke('git:get-operation-log', operationId),
   openInFileExplorer: (path) => ipcRenderer.invoke('open-file-explorer', path),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   listUserRepos: () => ipcRenderer.invoke('github:list-user-repos'),

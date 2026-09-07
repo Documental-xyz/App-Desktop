@@ -102,6 +102,25 @@ const { detectMergeConflicts: _detectMergeConflicts } = (() => {
   }
 })();
 
+// Resilient imports: per-operation raw output journal (publish-update-
+// resilience Task 3). The journal is a pure singleton (no electron
+// dependency); the DugiteProvider command observer is MODULE-level
+// because GitProviderFactory constructs the provider without arguments.
+const _operationJournalMod = (() => {
+  try {
+    return require('./operationJournal.js');
+  } catch (_e) {
+    return null;
+  }
+})();
+const { setCommandObserver: _dugiteSetCommandObserver } = (() => {
+  try {
+    return require('../git/providers/DugiteProvider.js');
+  } catch (_e) {
+    return { setCommandObserver: null };
+  }
+})();
+
 /**
  * Conflict-strategy roundtrip (conflict-strategy-modal Task 3).
  *
@@ -248,6 +267,16 @@ class GitHandlers {
     this.gitPreflight = _GitPreflightClass
       ? new _GitPreflightClass({ logger, gitOps: this.gitOps, databaseManager, getGit: () => this._getGit() })
       : null;
+    // Task 3: wire the dugite command observer into the operation
+    // journal. _run does not know the operationId — recordCommand(null,…)
+    // inherits the CURRENT operation, set by _beginOperation under the
+    // single git lock (see _beginOperation/_emitTerminal).
+    this.operationJournal = _operationJournalMod
+      ? (_operationJournalMod.journal || _operationJournalMod)
+      : null;
+    if (this.operationJournal && _dugiteSetCommandObserver) {
+      _dugiteSetCommandObserver((entry) => this.operationJournal.recordCommand(null, entry));
+    }
   }
 
   async _getGit() {
@@ -524,13 +553,24 @@ class GitHandlers {
    * @private
    */
   _beginOperation(projectId, flow) {
-    return {
+    const op = {
       projectId: projectId === undefined ? null : projectId,
       operationId: require('crypto').randomUUID(),
       flow,
       stage: null,
       terminalEmitted: false,
     };
+    // Task 3: the journal's CURRENT operation — every dugite command run
+    // while this lock is held is attributed to this operationId. Safe
+    // under the single git lock (1 lock = 1 operation); commands outside
+    // any lock fall into the journal's disposable unattributed buffer.
+    if (this.operationJournal) {
+      this.operationJournal.setCurrentOperation(op.operationId, {
+        projectId: op.projectId,
+        flow: op.flow,
+      });
+    }
+    return op;
   }
 
   /**
@@ -612,6 +652,13 @@ class GitHandlers {
       percentage: kind === 'complete' ? 100 : null,
       terminal: kind,
     });
+    // Task 3: arm the journal's 30-min post-terminal expiry (light hook —
+    // the entry stays readable for post-mortem diagnosis via
+    // git:get-operation-log, then is dropped; markTerminal also clears
+    // the current-operation pointer).
+    if (this.operationJournal) {
+      this.operationJournal.markTerminal(op.operationId);
+    }
   }
 
   /**
@@ -3129,6 +3176,31 @@ class GitHandlers {
       }
     });
 
+    /**
+     * Raw (sanitized) git command journal of one operation — read-only
+     * diagnostics for publish/update failures (publish-update-resilience
+     * Task 3). Entries live 30 min past the operation's terminal event.
+     */
+    ipcMain.handle('git:get-operation-log', async (event, operationId) => {
+      try {
+        if (!this.operationJournal || typeof operationId !== 'string' || !operationId) {
+          return { success: false, code: 'LOG_NOT_FOUND', error: 'Log de operação não encontrado.' };
+        }
+        const entries = this.operationJournal.getEntries(operationId);
+        if (entries === null) {
+          return {
+            success: false,
+            code: 'LOG_NOT_FOUND',
+            error: 'Log de operação não encontrado (expirado ou operationId desconhecido).',
+          };
+        }
+        return { success: true, entries };
+      } catch (error) {
+        this.logger.error('Error in git:get-operation-log handler:', error);
+        return { success: false, code: 'LOG_NOT_FOUND', error: error.message };
+      }
+    });
+
     ipcMain.handle('git:pull-from-preview', async (event, projectId, commitMessage) => {
       try {
         const projectPath = await this.getProjectPath(projectId);
@@ -3309,6 +3381,7 @@ class GitHandlers {
     ipcMain.removeHandler('git:get-repository-info');
     ipcMain.removeHandler('git:check-status');
     ipcMain.removeHandler('git:check-unpushed');
+    ipcMain.removeHandler('git:get-operation-log');
     ipcMain.removeHandler('git:pull-from-preview');
     ipcMain.removeHandler('git:push-to-branch');
     ipcMain.removeHandler('git:refresh');

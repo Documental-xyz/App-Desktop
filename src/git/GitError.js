@@ -16,11 +16,19 @@
  * URLs (which must never contain tokens, but defense-in-depth applies —
  * PRD §25) and error text.
  */
-const TOKEN_PATTERNS = [
+// The list is split in two groups (publish-update-resilience Task 3)
+// so the operation journal can reuse the SAME patterns without
+// duplicating them: errors blanket-redact URL credentials, while
+// sanitizeCommandOutput() masks them user-preserving first and then
+// applies only the standalone token group.
+const URL_CREDENTIAL_PATTERNS = [
   // https://user:password@host/... (full userinfo)
   /https?:\/\/[^\s:@/]+:[^\s@]+@/g,
   // https://<token>@host/... (bare token as userinfo)
   /https?:\/\/[A-Za-z0-9_.-]+@/g,
+];
+
+const TOKEN_PATTERNS = [
   // <token>:x-oauth-basic (GitHub OAuth basic auth pair)
   /[A-Za-z0-9_-]{8,}:x-oauth-basic/g,
   // x-oauth-basic:<token> (reversed pair)
@@ -28,6 +36,9 @@ const TOKEN_PATTERNS = [
   // long alphanumeric tokens passed standalone (ghp_/gho_/github_pat_ or 40+ hex)
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|[A-Fa-f0-9]{40})\b/g,
 ];
+
+// Full list in the ORIGINAL pattern order — sanitize() behavior unchanged.
+const ALL_TOKEN_PATTERNS = [...URL_CREDENTIAL_PATTERNS, ...TOKEN_PATTERNS];
 
 /**
  * Remove credential-like substrings from git output before it is stored in
@@ -41,6 +52,44 @@ function sanitize(text) {
     return undefined;
   }
   let out = String(text);
+  for (const pattern of ALL_TOKEN_PATTERNS) {
+    out = out.replace(pattern, '[REDACTED]');
+  }
+  return out;
+}
+
+// Journal-layer masks (publish-update-resilience Task 3). They run BEFORE
+// the token patterns; the user-preserving 'user:***@' output must NOT be
+// re-matched by any later pattern (verified: ':'/'*' break the userinfo
+// character classes above), otherwise the username would be lost.
+const URL_USERINFO_RE = /(https?:\/\/)([^\s:@/'"]+):([^\s@/'"]+)@/g;
+const URL_BARE_TOKEN_RE = /(https?:\/\/)[A-Za-z0-9_.-]+@/g;
+const AUTH_HEADER_RE = /\b(authorization\s*:\s*)([^\r\n]+)/gi;
+const TOKEN_ENV_RE = /\b((?:GH|GITHUB)_TOKEN)(\s*[=:]\s*)(\S+)/gi;
+
+/**
+ * Layered sanitizer for RAW git command output that is about to be
+ * STORED (operation journal — sanitize at write time, never at read
+ * time). Extends sanitize() with:
+ *   - https://user:token@host → https://user:***@host (user preserved)
+ *   - https://token@host → https://***@host (bare-token userinfo)
+ *   - Authorization: <anything> → Authorization: ***
+ *   - GH_TOKEN=… / GITHUB_TOKEN: … values → ***
+ * then applies the SAME standalone token patterns as sanitize().
+ *
+ * @param {string} [text] - Raw argv element / stdout / stderr
+ * @returns {string|undefined} Sanitized text, or undefined if input was
+ *   undefined/null (parity with sanitize())
+ */
+function sanitizeCommandOutput(text) {
+  if (text === undefined || text === null) {
+    return undefined;
+  }
+  let out = String(text);
+  out = out.replace(URL_USERINFO_RE, '$1$2:***@');
+  out = out.replace(URL_BARE_TOKEN_RE, '$1***@');
+  out = out.replace(AUTH_HEADER_RE, '$1***');
+  out = out.replace(TOKEN_ENV_RE, '$1$2***');
   for (const pattern of TOKEN_PATTERNS) {
     out = out.replace(pattern, '[REDACTED]');
   }
@@ -203,6 +252,7 @@ class GitError extends Error {
 // Static helper on the class (also exported standalone for convenience).
 GitError.classifyError = classifyError;
 GitError.sanitize = sanitize;
+GitError.sanitizeCommandOutput = sanitizeCommandOutput;
 GitError.extractOffendingFiles = extractOffendingFiles;
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -210,4 +260,5 @@ module.exports = GitError;
 module.exports.GitError = GitError;
 module.exports.classifyError = classifyError;
 module.exports.sanitize = sanitize;
+module.exports.sanitizeCommandOutput = sanitizeCommandOutput;
 module.exports.extractOffendingFiles = extractOffendingFiles;
