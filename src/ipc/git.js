@@ -63,6 +63,17 @@ const {
   }
 })();
 
+// Resilient import: T5 error classification — the transient push retry
+// (Task 8) whitelists timeout|network and vetoes auth|large_file|conflict.
+const { classifyError: _classifyError } = (() => {
+  try {
+    const mod = require('../git/GitError.js');
+    return { classifyError: mod.classifyError || mod.GitError.classifyError || null };
+  } catch (_e) {
+    return { classifyError: null };
+  }
+})();
+
 // Resilient import: GitPreflight for read-only pre-lock validation.
 const { GitPreflight: _GitPreflightClass } = (() => {
   try {
@@ -253,6 +264,8 @@ class GitHandlers {
     this.STEP_TIMEOUT_MERGE_MS = _IMPORTED_STEP_TIMEOUT_MERGE_MS;
     this.STEP_TIMEOUT_PUSH_MS = _IMPORTED_STEP_TIMEOUT_PUSH_MS;
     this.STEP_TIMEOUT_CHECKOUT_MS = _IMPORTED_STEP_TIMEOUT_CHECKOUT_MS;
+    // Task 8: transient push retry budget (2 retries → 3 attempts max).
+    this.MAX_PUBLISH_RETRIES = MAX_PUBLISH_RETRIES;
     this._lockTimeout = null;
     this._abortController = null;
     this._gitCache = {};
@@ -438,7 +451,7 @@ class GitHandlers {
    * Called right before each potentially long git command (fetch
    * deepen/push) so a fresh 180s stale window opens even if some future
    * change ever stops the interval from ticking mid-await. The 5s
-   * interval itself keeps running during child_process awaits (Node
+   * interval itself keeps running during subprocess awaits (Node
    * timers fire while the event loop waits on a subprocess promise —
    * empirically proven in tests/ipc/git.cancel-hardening.test.js), so
    * this is defense-in-depth, not the primary mechanism.
@@ -1869,16 +1882,10 @@ class GitHandlers {
     this._emitStage(op, 'pushing', `Publicando na branch '${targetBranch}'...`);
     this.sendOutput(`🚀 Publicando na branch '${targetBranch}'...`);
     try {
-      this._renewHeartbeat();
-      await this._raceTimeout(
-        this.git.push(projectPath, {
-          remote: 'origin', branch: targetBranch, remoteRef: targetBranch,
-          force: false, ...(signal ? { signal } : {}), ...(auth ? { auth } : {}),
-          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
-        }),
-        this.STEP_TIMEOUT_PUSH_MS,
-        `push ${targetBranch}`,
-      );
+      await this._pushWithTransientRetry(projectPath, {
+        remote: 'origin', branch: targetBranch, remoteRef: targetBranch,
+        ...(auth ? { auth } : {}),
+      }, { op, signal, label: targetBranch });
     } catch (pushErr) {
       if (this._isPushRejected(pushErr)) {
         throw new GitFlowError(
@@ -1950,6 +1957,126 @@ class GitHandlers {
       msg.includes('[remote rejected]') ||
       msg.includes('remote rejected') ||
       /\b409\b/.test(msg);
+  }
+
+  /**
+   * Whether a git.push failure is TRANSIENT and safe to retry
+   * (publish-update-resilience Task 8 — the retry whitelist).
+   *
+   * Never retriable (idempotency / Task-6 contracts):
+   *  - user cancel: AbortError/ABORT_ERR, an aborted signal, or the
+   *    cancel flag up — cancel must stay a cancelled result, never a
+   *    retry (characterization Block 2);
+   *  - typed PUSH_REJECTED / PUSH_FORBIDDEN GitFlowError and anything
+   *    _isPushRejected recognises (PushRejectedError, non-fast-forward,
+   *    fetch first, cannot lock ref, remote rejected incl. GH001
+   *    large-file stderr, 409);
+   *  - T5 classes auth / large_file / conflict.
+   *
+   * Retriable: T5 classes timeout | network, iso-git's empty-payload
+   * pack-response ParseError (the client-side signature of a connection
+   * dropped mid-push — the server died before "unpack ok"), and the
+   * legacy provider evidence in gitOperations._isRetriablePushError
+   * (ECONNRESET/ETIMEDOUT/ENOTFOUND codes, HTTP 5xx responses).
+   *
+   * @param {Error} error - Error thrown by git.push
+   * @param {AbortSignal} [signal] - The flow's cancellation signal
+   * @returns {boolean} True when the push may be retried
+   */
+  _isTransientPushError(error, signal) {
+    if (!error) return false;
+    if (error.name === 'AbortError' || error.code === 'ABORT_ERR') return false;
+    if (signal && signal.aborted) return false;
+    if (this.isCancelRequested()) return false;
+    if (error.name === 'GitFlowError' &&
+        (error.code === 'PUSH_REJECTED' || error.code === 'PUSH_FORBIDDEN')) return false;
+    if (this._isPushRejected(error)) return false;
+    const errorType = _classifyError ? _classifyError(error) : 'unknown';
+    if (errorType === 'timeout' || errorType === 'network') return true;
+    // iso-git's signature of a connection dropped mid-push: the pack
+    // response ends BEFORE "unpack ok" (ParseError on the raw error; the
+    // provider wrap copies it into GitError.stderr/cause). Only the
+    // empty-payload form is transient — a present-but-garbage payload
+    // stays unknown.
+    const truncatedDrop = (e) => Boolean(e) && (
+      /Expected "unpack ok"[^\n]*but received ""/.test(`${e.message || ''} ${e.stderr || ''}`)
+    );
+    if (truncatedDrop(error) || truncatedDrop(error.cause)) return true;
+    if (this.gitOps && typeof this.gitOps._isRetriablePushError === 'function') {
+      return Boolean(this.gitOps._isRetriablePushError(error));
+    }
+    return false;
+  }
+
+  /**
+   * Push with transient-failure retry (publish-update-resilience Task 8).
+   * Wires MAX_PUBLISH_RETRIES into the push step of the publish cores:
+   * up to 2 retries (3 attempts) for TRANSIENT failures only, backoff
+   * 1s then 2s. Deterministic refusals and cancels rethrow on the FIRST
+   * attempt (single-attempt contract frozen by publish-flow suites).
+   *
+   * Per attempt: renew the lock heartbeat (Task 6), _raceTimeout with
+   * STEP_TIMEOUT_PUSH_MS, live onProgress transfer events. Each retry
+   * re-emits the SAME stage with a custom "Tentativa N/3…" message —
+   * stageIndex never changes between attempts (Task 2 invariant).
+   *
+   * Order with Task 7 auto-restore: _restoreOnFailure runs in the core
+   * wrappers' failure cleanup, i.e. only AFTER this helper exhausts its
+   * retries and rethrows — VERIFY_THEN_RESTORE (ls-remote via
+   * gitSafety.verifyRemoteState) always sees the post-exhaustion state.
+   *
+   * On exhaustion the ORIGINAL last error is rethrown (not a wrapper):
+   * the T5 enrichment and the T7 matrix must classify it exactly as
+   * they would without retries (e.g. timeout → VERIFY_THEN_RESTORE).
+   *
+   * @param {string} projectPath - Repository directory
+   * @param {Object} pushOptions - git.push options (remote/branch/remoteRef/auth)
+   * @param {{op?: object, signal?: AbortSignal, label?: string}} [ctx]
+   * @returns {Promise<void>}
+   */
+  async _pushWithTransientRetry(projectPath, pushOptions, ctx = {}) {
+    const { op, signal, label } = ctx;
+    const maxAttempts = 1 + (this.MAX_PUBLISH_RETRIES || 2);
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        this._emitStage(op, 'pushing', `Tentativa ${attempt}/${maxAttempts}…`);
+      }
+      this._renewHeartbeat();
+      try {
+        await this._raceTimeout(
+          this.git.push(projectPath, {
+            ...pushOptions,
+            force: false,
+            ...(signal ? { signal } : {}),
+            ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
+          }),
+          this.STEP_TIMEOUT_PUSH_MS,
+          `push ${label || pushOptions.branch || ''}`,
+        );
+        if (attempt > 1) {
+          this.sendOutput(`✅ Push concluído na tentativa ${attempt}/${maxAttempts}.`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!this._isTransientPushError(error, signal)) throw error;
+        if (attempt === maxAttempts) break;
+        const delayMs = 1000 * Math.pow(2, attempt - 1);
+        this.logger?.info?.('[push-transient-retry] transient failure, will retry', {
+          attempt, delayMs, message: error.message,
+        });
+        this.sendOutput(
+          `⚠️ Push falhou (tentativa ${attempt}/${maxAttempts}): ${error.message}. ` +
+          `Nova tentativa em ${delayMs / 1000}s...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    this.logger?.error?.('[push-transient-retry] exhausted all attempts', {
+      maxAttempts, lastErrorMessage: lastError && lastError.message,
+    });
+    throw lastError;
   }
 
   _isMergeNotSupported(err) {
@@ -3266,19 +3393,12 @@ class GitHandlers {
     this._emitStage(op, 'pushing', `Publicando em ${BRANCH_MAIN}...`);
     this.sendOutput(`🚀 Publicando em ${BRANCH_MAIN}...`);
     try {
-      this._renewHeartbeat();
-      await this._raceTimeout(
-        this.git.push(projectPath, {
-          remote: 'origin',
-          branch: BRANCH_MAIN,
-          force: false,
-          ...(signal ? { signal } : {}),
-          auth,
-          ...(op ? { onProgress: (evt) => this._emitTransferProgress(op, evt) } : {}),
-        }),
-        this.STEP_TIMEOUT_PUSH_MS,
-        `push ${BRANCH_MAIN}`,
-      );
+      await this._pushWithTransientRetry(projectPath, {
+        remote: 'origin',
+        branch: BRANCH_MAIN,
+        remoteRef: BRANCH_MAIN,
+        auth,
+      }, { op, signal, label: BRANCH_MAIN });
     } catch (pushErr) {
       // Task 6 contract: ONE attempt, typed error, renderer guides the
       // update. Nothing local was lost (merge kept + backup retained).

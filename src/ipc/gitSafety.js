@@ -232,6 +232,10 @@ function shouldRestore(failureContext) {
  * revert a push that may have landed; nothing is lost either way: every
  * commit is local plus in a backup branch).
  *
+ * Reused by the transient push retry (Task 8): it runs in the flow
+ * wrappers AFTER `_pushWithTransientRetry` has exhausted its retries,
+ * so this verification always sees the post-exhaustion remote state.
+ *
  * @param {import('../git/GitService.js').GitService} git - GitService facade
  * @param {string} projectPath - absolute repo path (remote URL resolution)
  * @param {string} branch - branch the push targeted
