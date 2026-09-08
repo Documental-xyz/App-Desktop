@@ -1,6 +1,6 @@
 {
   "name": "documental",
-  "version": "1.0.0",
+  "version": "0.92.0-rc.1",
   "description": "Ambiente de documentação centralizado com integração Git",
   "desktopName": "documental",
   "main": "main.js",
