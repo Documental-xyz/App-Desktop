@@ -69,13 +69,15 @@ vi.mock('../../src/ipc/gitOperations.js', () => ({
 }));
 
 import { GitHandlers } from '../../src/ipc/git.js';
+import { IsomorphicGitProvider } from '../../src/git/providers/IsomorphicGitProvider.js';
+import { GitService } from '../../src/git/GitService.js';
 
 describe('GitHandlers pull/push/listRemoteBranches', () => {
   let handlers;
   let mockLogger;
   let mockDatabaseManager;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockLogger = {
       info: vi.fn(),
@@ -84,7 +86,26 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       debug: vi.fn(),
     };
     mockDatabaseManager = { getDatabase: vi.fn() };
-    handlers = new GitHandlers({ logger: mockLogger, databaseManager: mockDatabaseManager });
+
+    // T14: the factory default flipped to dugite (which ignores the iso
+    // loaders these tests rely on). The iso-wired provider — the exact
+    // wiring the factory's legacy iso path used to perform — is now
+    // injected explicitly so the vi.mock('isomorphic-git') seam keeps
+    // serving these handler tests. Loaders must return PROMISES (like
+    // git.js _getGit/_getHttp): _authForRemote calls .then() directly
+    // on the loaded module.
+    const isoModule = await import('isomorphic-git');
+    const httpModule = await import('isomorphic-git/http/node');
+    const isoProvider = new IsomorphicGitProvider({
+      loadGit: async () => isoModule,
+      loadHttp: async () => httpModule,
+    });
+
+    handlers = new GitHandlers({
+      logger: mockLogger,
+      databaseManager: mockDatabaseManager,
+      gitService: new GitService({ provider: isoProvider }),
+    });
   });
 
   afterEach(() => {

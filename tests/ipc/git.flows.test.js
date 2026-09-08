@@ -14,6 +14,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+import { IsomorphicGitProvider } from '../../src/git/providers/IsomorphicGitProvider.js';
+import { GitService } from '../../src/git/GitService.js';
+
 // ─── Module-level mocks ─────────────────────────────────────────────────────
 // Provide every isomorphic-git method any of the three flows touch.
 vi.mock('isomorphic-git', () => ({
@@ -140,11 +143,33 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       invalidatePermissionCache: vi.fn(),
     };
 
+    // T14: the factory default flipped to dugite (which ignores the iso
+    // loaders these tests rely on). The iso-wired provider — the exact
+    // wiring the factory's legacy iso path used to perform — is now
+    // injected explicitly so the vi.mock('isomorphic-git') seam keeps
+    // serving these flow-logic tests. Loaders must return PROMISES
+    // (like git.js _getGit/_getHttp): _authForRemote calls .then()
+    // directly on the loaded module.
+    const isoModule = await import('isomorphic-git');
+    const httpModule = await import('isomorphic-git/http/node');
+    const isoProvider = new IsomorphicGitProvider({
+      loadGit: async () => isoModule,
+      loadHttp: async () => httpModule,
+    });
+
     handlers = new GitHandlers({
       logger: mockLogger,
       databaseManager: mockDatabaseManager,
       permissionHandlers: mockPermissionHandlers,
+      gitService: new GitService({ provider: isoProvider }),
     });
+
+    // The internally-constructed GitPreflight news its own GitService
+    // through the factory (dugite since T14, blind to the iso mocks);
+    // rewire it to the iso seam so preflight logic keeps running
+    // against the mocked module — precedence tests (MAIN_MISSING,
+    // PREVIEW_NOT_AHEAD) depend on its real typed outcomes.
+    handlers.gitPreflight.git = new GitService({ provider: isoProvider });
 
     git = await import('isomorphic-git');
 

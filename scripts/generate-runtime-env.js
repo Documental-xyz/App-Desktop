@@ -83,7 +83,7 @@ function main() {
   }
 
   const gitProvider = (process.env.GIT_PROVIDER || '').trim();
-  runtimeConfig.GIT_PROVIDER = gitProvider || 'isomorphic-git';
+  runtimeConfig.GIT_PROVIDER = gitProvider || 'dugite';
 
   fs.writeFileSync(outputPath, JSON.stringify(runtimeConfig, null, 2), 'utf8');
   console.log(`✅ Runtime environment file created at ${outputPath}`);

@@ -42,11 +42,23 @@ describe('Task 9 — git:progress subscription (structural)', () => {
     expect(handler.slice(0, 3000)).toContain('!== this.gitExecution.operationId');
   });
 
-  it('derives currentStep from event stageIndex (single source of truth)', () => {
+  it('derives currentStep from event stageIndex via monotonic clamp (T10)', () => {
+    // Extract the WHOLE handler body (up to its catch marker) — the
+    // terminal-event branch grew in T7/T10 and a fixed 3000-char window
+    // truncated before the running-update section.
+    const start = mainHtml.indexOf('handleGitProgress(payload)');
     const handler = mainHtml.slice(
-      mainHtml.indexOf('handleGitProgress(payload)')
+      start,
+      mainHtml.indexOf('git:progress handler error', start)
     );
-    expect(handler.slice(0, 3000)).toMatch(/currentStep\s*=\s*payload\.stageIndex/);
+
+    // T10 monotonic derivation: restored/replayed events re-report a
+    // LOWER stageIndex and must never move the stepper backwards…
+    expect(handler).toMatch(
+      /payload\.stageIndex\s*>\s*this\.gitExecution\.currentStep/
+    );
+    // …while backend events remain the ONLY source of the step position.
+    expect(handler).toMatch(/currentStep\s*=\s*payload\.stageIndex/);
   });
 
   it('handles terminal events and tolerates absent restored (T7 additive)', () => {
