@@ -32,7 +32,6 @@ import {
   divergentFlowsWork,
   gateOnCapability,
 } from './fixtures/providerHarness.js';
-import { theirsMergeDriver } from '../../src/ipc/gitMergeDriver.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -180,44 +179,9 @@ describe.each(providersUnderTest())('merge semantics regression [%s]', (provider
   });
 });
 
-// Cross-branch publish maps LOCAL commits to the THEIRS side of the
-// merge (anti-inversion contract); its iso driver must also arbitrate
-// per-hunk, matching dugite's native `-X theirs`.
-describe('theirsMergeDriver — per-hunk arbitration (cross-branch publish side)', () => {
-  it('keeps THEIRS on the conflicting hunk AND keeps OURS non-conflicting hunk', () => {
-    const base = 'a\nb\nc\n';
-    const ours = 'a-OURS\nb\nc\n'; // ours edits line 1
-    const theirs = 'a\nb\nc-THEIRS\nd\n'; // theirs edits line 3 + appends
-
-    const { cleanMerge, mergedText } = theirsMergeDriver({
-      branches: ['base', 'ours', 'theirs'],
-      contents: [base, ours, theirs],
-      path: 'doc.md',
-    });
-
-    expect(cleanMerge).toBe(true);
-    expect(mergedText).toContain('a-OURS\n'); // non-conflicting ours hunk kept
-    expect(mergedText).toContain('c-THEIRS\n');
-    expect(mergedText).toContain('d\n');
-  });
-
-  it('conflicting hunk resolved by THEIRS only', () => {
-    const { mergedText } = theirsMergeDriver({
-      branches: ['base', 'ours', 'theirs'],
-      contents: ['a\nb\nc\n', 'a\nb-OURS\nc\n', 'a\nb-THEIRS\nc\n'],
-      path: 'doc.md',
-    });
-    expect(mergedText).toContain('b-THEIRS\n');
-    expect(mergedText).not.toContain('b-OURS\n');
-  });
-
-  it('binary (U+FFFD) surfaces cleanMerge:false for caller fallback', () => {
-    const { cleanMerge, mergedText } = theirsMergeDriver({
-      branches: ['base', 'ours', 'theirs'],
-      contents: ['\uFFFDbin', 'ours', '\uFFFDbin2'],
-      path: 'asset.bin',
-    });
-    expect(cleanMerge).toBe(false);
-    expect(mergedText).toBe('\uFFFDbin2');
-  });
-});
+// T16: the former theirsMergeDriver unit describe (diff3 in-memory
+// arbitration of the deleted iso driver) was removed with the module —
+// its semantics (per-hunk theirs arbitration + non-conflicting
+// preservation) are pinned at provider level by
+// tests/git-providers/dugite-merge-direction.test.js and at flow level
+// by the publish-main suites (anti-inversion, MERGE_REMOTE resume).

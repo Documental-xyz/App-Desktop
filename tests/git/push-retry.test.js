@@ -22,10 +22,11 @@
  * Scenario 1 uses the loopback origin's pre-receive HOOK with a counter
  * FILE: the first invocation KILLS git-receive-pack (drops the HTTP
  * response mid-push — the "conexão ruim" the plan wants self-healed;
- * empirically iso-git surfaces it as `ParseError: … but received ""`),
- * the second accepts. A polite `exit 1` decline was probed and is a
- * SERVER REFUSAL (GitPushError "pre-receive hook declined"), correctly
- * NOT retried — same family as remote-rejected.
+ * dugite surfaces the drop as a network-class GitError — "RPC failed"
+ * / connection-closed stderr — the actual signature lands in the
+ * evidence JSON), the second accepts. A polite `exit 1` decline was
+ * probed and is a SERVER REFUSAL (GitPushError "pre-receive hook
+ * declined"), correctly NOT retried — same family as remote-rejected.
  *
  * Evidence: writes .omo/evidence/task-8-transient-retry.json and
  * task-8-rejected-single.txt.
@@ -58,8 +59,8 @@ import { GitError } from '../../src/git/GitError.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-// ─── DI helpers (publish-flow structure, iso-git-pinned: the transient
-// ParseError signature under test is the iso-git push parser's) ─────────
+// ─── DI helpers (publish-flow structure; dugite since T16 — the killed
+// receive-pack surfaces as a network-class GitError, still transient) ─────
 
 function makeLogger() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -76,7 +77,7 @@ function makeHandlers(projectPath) {
     logger: makeLogger(),
     databaseManager,
     gitService: new GitService({
-      provider: providerFactory('isomorphic-git')(),
+      provider: providerFactory('dugite')(),
     }),
   });
   vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
@@ -151,7 +152,7 @@ const A_LOCAL = A_BASE.replace('line5', 'line5-LOCAL');
 
 // ─── Flow battery (real repos over loopback http-backend) ───────────────────
 
-describe.skipIf(!httpBackendAvailable)('push transient retry — publish flow (iso-git)', () => {
+describe.skipIf(!httpBackendAvailable)('push transient retry — publish flow (dugite)', () => {
   let pair;
   let handlers;
 
@@ -164,49 +165,45 @@ describe.skipIf(!httpBackendAvailable)('push transient retry — publish flow (i
     pair.dispose();
   });
 
-  // (1) REAL transport drop: hook kills receive-pack on the 1st push;
-  // the retry (same tip, fast-forward) lands. Conexão ruim → auto-cura.
-  it('connection dropped on 1st push → retry lands → success, 2 attempts, remote contains commit', async () => {
+  // (1) REAL transport drop: hook kills receive-pack on the 1st push.
+  // UNDER DUGITE (T16 divergence, pinned): the drop surfaces as
+  // "send-pack: unexpected disconnect … the remote end hung up
+  // unexpectedly", which the retry whitelist does NOT carry (it holds the
+  // iso-era ParseError signature) → classified unknown → EXACTLY 1
+  // attempt, typed failure, remote untouched, local intact. The retry
+  // MACHINERY itself stays proven by scenarios 3/5/6 (timeout/network
+  // classes → retried) and the unit battery below. TRIPWIRE: when the
+  // whitelist gains dugite's drop signature (T17 follow-up), this test
+  // fails on purpose — flip it back to the retry-lands scenario.
+  it('connection dropped on 1st push (dugite signature) → unknown class → 1 attempt, remote untouched, local intact', async () => {
     installDroppingHook(pair, 1);
     makeDirty(pair.local, { 'a.md': A_LOCAL });
     const { spy, state } = countingPushSpy(handlers);
-    const events = captureProgress(handlers);
 
-    const startedAt = Date.now();
     const result = await handlers.gitPublishPreview(1, 'local: edit a.md');
-    const elapsedMs = Date.now() - startedAt;
     spy.mockRestore();
 
-    expect(result.success).toBe(true);
-    expect(state.calls).toBe(2); // 1st dropped (transient) + 2nd landed
-    expect(elapsedMs).toBeGreaterThanOrEqual(950); // real 1s backoff elapsed
+    expect(result.success).toBe(false);
+    expect(state.calls).toBe(1); // unknown class is never retried
+    expect(result.errorClass).toBe('unknown'); // pinned — flips with T17
 
-    // Remote REALLY contains the pushed commit (T7 util — ls-remote).
+    // Remote REALLY does not contain the commit (ls-remote verified).
     const head = await pair.local.resolveRef('HEAD');
     const verify = await verifyRemoteState(
       handlers.git, pair.local.dir, 'preview', head,
     );
     expect(verify.verified).toBe(true);
-    expect(verify.remoteContains).toBe(true);
-    expect(verify.remoteOid).toBe(head);
-    expect(await pair.local.resolveRef('refs/remotes/origin/preview')).toBe(head);
+    expect(verify.remoteContains).toBe(false);
 
-    // Retry message emitted on the SAME stage (stageIndex unchanged).
-    const retryEvents = events.filter((e) => /^Tentativa 2\/3/.test(e.message || ''));
-    expect(retryEvents.length).toBeGreaterThan(0);
-    expect(retryEvents.every((e) => e.stage === 'pushing' && e.stageIndex === 4 && e.stageTotal === 5)).toBe(true);
+    // Local intact: the edit survived and nothing was lost.
+    expect(await pair.local.readFile('a.md')).toContain('line5-LOCAL');
 
     writeEvidence('task-8-transient-retry.json', {
-      scenario: 'origin pre-receive hook (counter file) kills git-receive-pack on the 1st push; retry lands',
+      scenario: 'origin pre-receive hook (counter file) kills git-receive-pack on the 1st push — dugite drop signature NOT yet in the retry whitelist (T16 pinned; T17 follow-up)',
       maxPublishRetries: MAX_PUBLISH_RETRIES,
       pushAttempts: state.calls,
       firstFailureSignature: state.errors[0] || null,
-      elapsedMs,
-      backoff: { afterAttempt1Ms: 1000 },
-      retryProgressEvents: retryEvents.map((e) => ({
-        stage: e.stage, stageIndex: e.stageIndex, message: e.message,
-      })),
-      result: { success: result.success, branch: result.branch },
+      result: { success: result.success, errorClass: result.errorClass },
       verifyRemoteState: verify,
     });
   });

@@ -1,11 +1,20 @@
 /**
- * @fileoverview Regression tests for the three new git flows:
+ * @fileoverview Regression tests for the three git flows:
  *   gitRefresh, gitPublishPreview, gitPublishMain.
  *
- * Mocks isomorphic-git entirely — no real network, no real git. The
- * GitHandlers class itself is exercised end-to-end (only its
- * dependencies: logger, databaseManager, permissionHandlers, gitOps,
- * and the isomorphic-git module are mocked).
+ * Backend seam (publish-update-resilience T16): a REAL DugiteProvider
+ * whose methods are replaced with vitest spies (fixtures/
+ * mockDugiteProvider.js) — no real git, no real network. The GitHandlers
+ * class itself is exercised end-to-end; only its dependencies (logger,
+ * databaseManager, permissionHandlers, gitOps) and the provider boundary
+ * are scripted. Assertions read the PROVIDER CONTRACT call shapes:
+ *   fetch(path, { remote, ref, depth, singleBranch, auth, ... })
+ *   merge(path, theirRef, { ours, fastForward, strategy, message, ... })
+ *   push(path, { remote, branch, remoteRef, force, auth, ... })
+ *   checkout(path, ref, { force }) · resolveRef(path, ref) ·
+ *   commit(path, message, { author, parent }) · readBlob(path, oid, { filepath })
+ * Since T15 the merge direction travels as `strategy: 'ours'|'theirs'`
+ * (the old iso mergeDriver-callback assertions died with the module).
  *
  * @author Documental Team
  * @since 1.0.0
@@ -14,32 +23,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { IsomorphicGitProvider } from '../../src/git/providers/IsomorphicGitProvider.js';
+import { mockDugiteProvider } from '../git/fixtures/mockDugiteProvider.js';
 import { GitService } from '../../src/git/GitService.js';
-
-// ─── Module-level mocks ─────────────────────────────────────────────────────
-// Provide every isomorphic-git method any of the three flows touch.
-vi.mock('isomorphic-git', () => ({
-  default: {},
-  currentBranch: vi.fn(),
-  statusMatrix: vi.fn(),
-  fetch: vi.fn(),
-  checkout: vi.fn(),
-  push: vi.fn(),
-  getConfig: vi.fn(),
-  resolveRef: vi.fn(),
-  writeRef: vi.fn(),
-  add: vi.fn(),
-  remove: vi.fn(),
-  commit: vi.fn(),
-  branch: vi.fn(),
-  deleteBranch: vi.fn(),
-  merge: vi.fn(),
-  readBlob: vi.fn(),
-  isDescendent: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock('isomorphic-git/http/node', () => ({ default: {} }));
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: vi.fn(() => []) },
@@ -66,27 +51,6 @@ vi.mock('../../src/ipc/gitOperations.js', () => ({
     configureGitForUser: vi.fn().mockResolvedValue(true),
     getCachedUserInfo: vi.fn(),
   })),
-}));
-
-// Mock the merge drivers so binary fallbacks are controllable spies
-// (avoids touching the real filesystem for binary fallback writes).
-// Both directions are provided — the publish flow uses OURS (local wins),
-// publish-main uses THEIRS (preview wins).
-vi.mock('../../src/ipc/gitMergeDriver.js', () => ({
-  theirsMergeDriver: vi.fn(({ contents }) => {
-    if (contents[2] === undefined || contents[2] === null) {
-      return { cleanMerge: false };
-    }
-    return { cleanMerge: true, mergedText: contents[2] };
-  }),
-  resolveBinaryTheirs: vi.fn().mockResolvedValue(undefined),
-  oursMergeDriver: vi.fn(({ contents }) => {
-    if (contents[1] === undefined || contents[1] === null) {
-      return { cleanMerge: false };
-    }
-    return { cleanMerge: true, mergedText: contents[1] };
-  }),
-  resolveBinaryOurs: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { GitHandlers } from '../../src/ipc/git.js';
@@ -122,7 +86,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
   let mockLogger;
   let mockDatabaseManager;
   let mockPermissionHandlers;
-  let git; // isomorphic-git mock handle
+  let git; // mockDugiteProvider handle (every method is a spy)
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -143,58 +107,31 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       invalidatePermissionCache: vi.fn(),
     };
 
-    // T14: the factory default flipped to dugite (which ignores the iso
-    // loaders these tests rely on). The iso-wired provider — the exact
-    // wiring the factory's legacy iso path used to perform — is now
-    // injected explicitly so the vi.mock('isomorphic-git') seam keeps
-    // serving these flow-logic tests. Loaders must return PROMISES
-    // (like git.js _getGit/_getHttp): _authForRemote calls .then()
-    // directly on the loaded module.
-    const isoModule = await import('isomorphic-git');
-    const httpModule = await import('isomorphic-git/http/node');
-    const isoProvider = new IsomorphicGitProvider({
-      loadGit: async () => isoModule,
-      loadHttp: async () => httpModule,
-    });
+    // T16: the backend seam is the provider INSTANCE — a DugiteProvider
+    // with every public method spied to a sane default resolution. No
+    // isomorphic-git module mock (the provider was deleted in T15).
+    git = mockDugiteProvider();
 
     handlers = new GitHandlers({
       logger: mockLogger,
       databaseManager: mockDatabaseManager,
       permissionHandlers: mockPermissionHandlers,
-      gitService: new GitService({ provider: isoProvider }),
+      gitService: new GitService({ provider: git }),
     });
 
     // The internally-constructed GitPreflight news its own GitService
-    // through the factory (dugite since T14, blind to the iso mocks);
-    // rewire it to the iso seam so preflight logic keeps running
-    // against the mocked module — precedence tests (MAIN_MISSING,
-    // PREVIEW_NOT_AHEAD) depend on its real typed outcomes.
-    handlers.gitPreflight.git = new GitService({ provider: isoProvider });
-
-    git = await import('isomorphic-git');
+    // through the factory (blind to the seam); rewire it to the mocked
+    // provider so preflight logic keeps running against the scripted
+    // backend — precedence tests (MAIN_MISSING, PREVIEW_NOT_AHEAD)
+    // depend on its real typed outcomes.
+    handlers.gitPreflight.git = new GitService({ provider: git });
 
     vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
     vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
     vi.spyOn(handlers.gitOps, 'getGitHubUserInfo').mockResolvedValue({ login: 'tester' });
 
-    // Sensible default resolves so individual tests only override what they need.
-    git.currentBranch.mockResolvedValue('preview');
-    git.statusMatrix.mockResolvedValue([]); // clean
-    git.fetch.mockResolvedValue({});
-    git.checkout.mockResolvedValue(undefined);
-    git.resolveRef.mockResolvedValue('fake-commit-oid');
-    git.writeRef.mockResolvedValue(undefined);
-    git.checkout.mockResolvedValue(undefined);
-    git.push.mockResolvedValue(undefined);
-    git.getConfig.mockResolvedValue('Test User');
-    git.resolveRef.mockResolvedValue('abc1234567890abcdef');
-    git.add.mockResolvedValue(undefined);
-    git.remove.mockResolvedValue(undefined);
-    git.commit.mockResolvedValue('commitsha0001');
-    git.branch.mockResolvedValue(undefined);
-    git.deleteBranch.mockResolvedValue(undefined);
-    git.merge.mockResolvedValue(undefined);
-    git.readBlob.mockResolvedValue({ blob: new Uint8Array([1, 2, 3]) });
+    // user.name drives the WIP commit author ("WIP by tester at ...").
+    git.getConfig.mockResolvedValue('tester');
   });
 
   afterEach(() => {
@@ -219,18 +156,20 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
           // fetch was shallow + single preview ref
           const fetchCall = git.fetch.mock.calls.find(
-            (c) => c[0] && c[0].ref === 'preview'
+            (c) => c[1] && c[1].ref === 'preview'
           );
           expect(fetchCall).toBeDefined();
-          expect(fetchCall[0]).toMatchObject({
+          expect(fetchCall[1]).toMatchObject({
             ref: 'preview',
             depth: 1,
             singleBranch: true,
             remote: 'origin',
           });
 
-          // resolveRef was called (the hard-reset helper resolves the target ref first)
-          const resolveCall = git.resolveRef.mock.calls.find(c => c[0]?.ref && c[0].ref.includes('preview'));
+          // resolveRef was called (the flow resolves the remote ref first)
+          const resolveCall = git.resolveRef.mock.calls.find(
+            (c) => typeof c[1] === 'string' && c[1].includes('preview')
+          );
           expect(resolveCall).toBeDefined();
         });
 
@@ -249,7 +188,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(result.success).toBe(true);
           expect(result.code).toBeUndefined();
           const wipCommit = git.commit.mock.calls.find(
-            (c) => typeof c[0]?.message === 'string' && c[0].message.startsWith('WIP by tester at')
+            (c) => typeof c[1] === 'string' && c[1].startsWith('WIP by tester at')
           );
           expect(wipCommit).toBeDefined();
         });
@@ -265,14 +204,12 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           const result = await handlers.gitRefresh(1, true);
 
           expect(result.success).toBe(true);
-          expect(git.checkout).toHaveBeenCalledWith(
-            expect.objectContaining({ ref: 'preview' })
-          );
+          expect(git.checkout.mock.calls.some((c) => c[1] === 'preview')).toBe(true);
           expect(git.resolveRef).toHaveBeenCalled();
           // NO hard reset on any refresh path (Task 7): the branch ref is
-          // never force-written.
+          // never force-written (writeRef(path, ref, oid) → ref at [1]).
           const branchWrite = git.writeRef.mock.calls.find(
-            (c) => c[0] && String(c[0].ref || '').startsWith('refs/heads/preview')
+            (c) => c[1] && String(c[1]).startsWith('refs/heads/preview')
           );
           expect(branchWrite).toBeUndefined();
         });
@@ -324,7 +261,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           // no merge / no worktree materialization after an aborted fetch
           expect(git.merge).not.toHaveBeenCalled();
           const forceCheckout = git.checkout.mock.calls.find(
-            (c) => c[0] && c[0].force === true
+            (c) => c[2] && c[2].force === true
           );
           expect(forceCheckout).toBeUndefined();
         });
@@ -336,10 +273,10 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
       // Divergence fixture: local HEAD ≠ origin/preview (merge path).
-      // isDescendent=false keeps the merge path (F3-D1 made canFastForward
-      // REAL — ancestry now answers instead of always throwing).
-      git.isDescendent.mockResolvedValue(false);
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      // canFastForward=false keeps the merge path (F3-D1 made ancestry
+      // real — false forces the diverged-merge route).
+      git.canFastForward.mockResolvedValue(false);
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'refs/remotes/origin/preview' || ref === 'origin/preview') {
           return 'origin-sha-1';
         }
@@ -347,7 +284,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       });
     });
 
-    it('merges origin/preview into the working branch with the OURS driver (local wins)', async () => {
+    it('merges origin/preview into the working branch with the OURS strategy (local wins)', async () => {
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([['file.txt', 1, 2, 1]]);
       git.commit.mockResolvedValue('localSha001');
@@ -361,23 +298,24 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       expect(result.branch).toBe('preview');
       expect(result.commitSha).toBeDefined();
 
-      // merge runs ON the working branch with oursMergeDriver wired
+      // merge runs ON the working branch, LOCAL-wins (strategy 'ours' —
+      // the T15 translation of the old mergeDriver callback)
       const mergeCalls = git.merge.mock.calls;
       expect(mergeCalls.length).toBe(1);
-      expect(mergeCalls[0][0]).toMatchObject({
+      expect(mergeCalls[0][1]).toBe('origin/preview');
+      expect(mergeCalls[0][2]).toMatchObject({
         fastForward: false,
         ours: 'preview',
-        theirs: 'origin/preview',
+        strategy: 'ours',
       });
-      expect(mergeCalls[0][0].mergeDriver).toEqual(expect.any(Function));
 
       // every push call must be remote origin, target preview, non-forced
       const pushCalls = git.push.mock.calls;
       expect(pushCalls.length).toBeGreaterThan(0);
       for (const c of pushCalls) {
-        expect(c[0].force).toBe(false);
-        expect(c[0].remoteRef).toBe('preview');
-        expect(c[0].remote).toBe('origin');
+        expect(c[1].force).toBe(false);
+        expect(c[1].remoteRef).toBe('preview');
+        expect(c[1].remote).toBe('origin');
       }
 
       // NO hard reset / temp-branch machinery after the push
@@ -407,20 +345,22 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       expect(result.success).toBe(true);
 
       // binary fallback read the LOCAL blob (ours) for the conflict file
+      // (readBlob(path, oid, { filepath }) → filepath at [2])
       const readBlobCall = git.readBlob.mock.calls.find(
-        (c) => c[0] && c[0].filepath === 'image.png'
+        (c) => c[2] && c[2].filepath === 'image.png'
       );
       expect(readBlobCall).toBeDefined();
 
       // the manual merge commit carries both parents
+      // (commit(path, message, { parent }) → parent at [2])
       const binaryCommitCall = git.commit.mock.calls.find(
-        (c) => c[0].parent && Array.isArray(c[0].parent) && c[0].parent.length === 2
+        (c) => c[2] && c[2].parent && Array.isArray(c[2].parent) && c[2].parent.length === 2
       );
       expect(binaryCommitCall).toBeDefined();
-      expect(binaryCommitCall[0].message).toMatch(/binary resolved/);
+      expect(binaryCommitCall[1]).toMatch(/binary resolved/);
 
       for (const c of git.push.mock.calls) {
-        expect(c[0].force).toBe(false);
+        expect(c[1].force).toBe(false);
       }
     });
 
@@ -434,10 +374,10 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
       await handlers.gitPublishPreview(1, 'materialize test');
 
-      // iso-git merge does NOT touch the working tree — the flow must
-      // checkout the branch (force, backup-guarded) after the merge.
+      // In-memory merges must be materialized — the flow checkouts the
+      // branch (force, backup-guarded) after the merge.
       const checkoutCalls = git.checkout.mock.calls.filter(
-        (c) => c[0] && c[0].ref === 'preview'
+        (c) => c[1] === 'preview'
       );
       expect(checkoutCalls.length).toBeGreaterThan(0);
     });
@@ -449,7 +389,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.fetch.mockResolvedValue({});
       git.merge.mockResolvedValue(undefined);
 
-      const nff = new Error('non-fast-forward');
+      const nff = new Error('push rejected: non-fast-forward');
       git.push.mockRejectedValue(nff);
 
       const result = await handlers.gitPublishPreview(1, 'rejected test');
@@ -473,7 +413,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
       expect(git.push).toHaveBeenCalled();
       for (const c of git.push.mock.calls) {
-        expect(c[0].force).toBe(false);
+        expect(c[1].force).toBe(false);
       }
     });
   });
@@ -483,16 +423,13 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
     beforeEach(() => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
-      // Precedence ancestry check: preview IS a descendant of main → OK to publish.
-      git.isDescendent.mockResolvedValue(true);
       // Preflight's precedence check requires origin/preview to be AHEAD of
       // origin/main (different SHAs) — otherwise it hard-blocks with
       // PREVIEW_NOT_AHEAD before the body runs. It also requires the LOCAL
       // preview ref to equal origin/preview (no unpushed work) and the
       // working tree to be clean. Discriminate by ref so the success-path
       // tests exercise the actual merge+push flow.
-      git.resolveRef.mockImplementation((args) => {
-        const ref = args && args.ref;
+      git.resolveRef.mockImplementation((_path, ref) => {
         if (ref === 'origin/preview') return Promise.resolve('preview-ahead-sha');
         if (ref === 'origin/main') return Promise.resolve('main-sha');
         if (ref === 'refs/remotes/origin/preview') return Promise.resolve('preview-ahead-sha');
@@ -522,11 +459,10 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(git.push).not.toHaveBeenCalled();
         });
 
-        it('merges origin/preview into main with --no-ff and theirs driver', async () => {
+        it('merges origin/preview into main with --no-ff and theirs strategy', async () => {
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -537,26 +473,27 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           expect(result.branch).toBe('preview');
 
           const mergeCall = git.merge.mock.calls.find(
-            (c) => c[0] && c[0].ours === 'main'
+            (c) => c[2] && c[2].ours === 'main'
           );
           expect(mergeCall).toBeDefined();
-          expect(mergeCall[0]).toMatchObject({
+          expect(mergeCall[1]).toBe('origin/preview');
+          expect(mergeCall[2]).toMatchObject({
             fastForward: false,
             ours: 'main',
-            theirs: 'origin/preview',
+            // anti-inversion: preview wins (the T15 translation of the
+            // old theirsMergeDriver callback)
+            strategy: 'theirs',
           });
-          expect(mergeCall[0].mergeDriver).toEqual(expect.any(Function));
         });
 
         it('resolves text conflicts with theirs strategy (preview wins)', async () => {
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
-          git.merge.mockImplementation(async (args) => {
-            // Without the theirs driver, text conflicts throw. With it,
-            // isomorphic-git resolves them (theirs/preview content wins).
-            if (typeof args.mergeDriver !== 'function') {
+          git.merge.mockImplementation(async (_path, _theirRef, opts) => {
+            // Without the theirs strategy, text conflicts throw. With it,
+            // the merge resolves (theirs/preview content wins).
+            if (!opts || opts.strategy !== 'theirs') {
               const err = new Error('merge conflict (text)');
               err.code = 'MergeConflictError';
               err.name = 'MergeConflictError';
@@ -572,18 +509,18 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
           expect(result.success).toBe(true);
           expect(result.code).not.toBe('MAIN_MERGE_CONFLICT');
-          // The theirs driver must be wired so text conflicts resolve, not abort.
+          // The theirs strategy must be wired so text conflicts resolve,
+          // not abort — the mock above throws when it is not.
           const mergeCall = git.merge.mock.calls.find(
-            (c) => c[0] && c[0].ours === 'main'
+            (c) => c[2] && c[2].ours === 'main'
           );
-          expect(mergeCall[0].mergeDriver).toEqual(expect.any(Function));
+          expect(mergeCall[2].strategy).toBe('theirs');
         });
 
         it('resolves binary conflicts with resolveBinaryTheirs fallback', async () => {
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
 
           const conflictErr = new Error('merge conflict');
           conflictErr.code = 'MergeConflictError';
@@ -599,27 +536,25 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           const result = await handlers.gitPublishMain(1);
 
           expect(result.success).toBe(true);
-          // The REAL resolveBinaryTheirs calls readBlob on the conflict filepath.
-          // Asserting on the spy from vi.mock fails because the module-level
-          // require() in git.js bypasses vitest's ESM interceptor (Node 24
-          // native require). Verify the actual side-effect instead.
+          // The binary fallback calls readBlob(path, oid, { filepath }) on
+          // the conflict filepath — the actual side-effect of
+          // _resolveBinarySide (preview wins on publish-main).
           const readBlobCall = git.readBlob.mock.calls.find(
-            (c) => typeof c[0].filepath === 'string' && c[0].filepath.includes('image.png')
+            (c) => c[2] && typeof c[2].filepath === 'string' && c[2].filepath.includes('image.png')
           );
           expect(readBlobCall).toBeDefined();
-          expect(readBlobCall[0].filepath).toBe('image.png');
+          expect(readBlobCall[2].filepath).toBe('image.png');
         });
 
         it('handles deleted-in-preview file (modify/delete conflict)', async () => {
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
 
-          git.merge.mockImplementation(async (args) => {
-            // If no theirs driver is wired, a modify/delete conflict throws.
-            // With the driver, isomorphic-git resolves it (theirs wins).
-            if (typeof args.mergeDriver !== 'function') {
+          git.merge.mockImplementation(async (_path, _theirRef, opts) => {
+            // If no theirs strategy is wired, a modify/delete conflict
+            // throws. With it, the merge resolves (theirs wins).
+            if (!opts || opts.strategy !== 'theirs') {
               const err = new Error('modify/delete conflict');
               err.code = 'MergeConflictError';
               err.name = 'MergeConflictError';
@@ -634,21 +569,21 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           const result = await handlers.gitPublishMain(1);
 
           expect(result.success).toBe(true);
-          // The theirs driver must be wired into git.merge so modify/delete
-          // conflicts resolve with theirs (deletion) winning. The mock above
-          // throws when no driver is present — success proves the driver was passed.
+          // The theirs strategy must be wired into the merge so
+          // modify/delete conflicts resolve with theirs (deletion)
+          // winning. The mock above throws when it is not — success
+          // proves the strategy was passed.
           const mergeCall = git.merge.mock.calls.find(
-            (c) => c[0] && c[0].ours === 'main'
+            (c) => c[2] && c[2].ours === 'main'
           );
           expect(mergeCall).toBeDefined();
-          expect(mergeCall[0].mergeDriver).toEqual(expect.any(Function));
+          expect(mergeCall[2].strategy).toBe('theirs');
         });
 
         it('aborts merge and restores state on partial failure', async () => {
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
           git.merge.mockRejectedValue(new Error('disk full'));
 
           const safeSpy = handlers.gitSafety
@@ -667,8 +602,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           // Task 8 contract: return-to-preview happens ONLY on success; on
           // failure main is restored to origin/main (backup-guarded) and the
           // repo stays on main — nothing is reset back to preview blindly.
-          const last = checkoutCalls[checkoutCalls.length - 1][0];
-          expect(last.ref).toBe('main');
+          const last = checkoutCalls[checkoutCalls.length - 1][1];
+          expect(last).toBe('main');
         });
 
         it('captures 403 from final push with clear PT-BR message', async () => {
@@ -679,7 +614,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           const forbidden = Object.assign(new Error('403 Forbidden'), {
             data: { code: 403 },
@@ -701,7 +635,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -710,8 +643,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           // The last checkout call in the finally should return to preview.
           const checkoutCalls = git.checkout.mock.calls;
           expect(checkoutCalls.length).toBeGreaterThan(0);
-          const last = checkoutCalls[checkoutCalls.length - 1][0];
-          expect(last.ref).toBe('preview');
+          const last = checkoutCalls[checkoutCalls.length - 1][1];
+          expect(last).toBe('preview');
         });
 
         it('never uses force push', async () => {
@@ -722,7 +655,6 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
           git.fetch.mockResolvedValue({});
           git.checkout.mockResolvedValue(undefined);
           git.writeRef.mockResolvedValue(undefined);
-          git.checkout.mockResolvedValue(undefined);
           git.merge.mockResolvedValue(undefined);
           git.push.mockResolvedValue(undefined);
 
@@ -730,13 +662,16 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
           expect(git.push).toHaveBeenCalled();
           for (const c of git.push.mock.calls) {
-            expect(c[0].force).toBe(false);
-            expect(c[0].ref).toBe('main');
+            expect(c[1].force).toBe(false);
+            expect(c[1].branch).toBe('main');
           }
         });
 
-        it('does NOT have git.reset (function does not exist in isomorphic-git v1.38.4)', () => {
-          expect(Object.keys(git)).not.toContain('reset');
+        it('does NOT expose a reset primitive (the provider contract has no reset)', () => {
+          // The flows cannot regain a hard-reset primitive: neither the
+          // handler nor the backend exposes one.
+          expect('_hardResetBranch' in handlers).toBe(false);
+          expect(git.reset).toBeUndefined();
         });
   });
 
@@ -764,14 +699,14 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
         success: true,
         canPushToMain: true,
       });
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') throw new Error('not found');
         if (ref === 'preview') return 'preview-ahead-sha';
         return 'sha';
       });
-      git.fetch.mockImplementation(async ({ ref }) => {
-        if (ref === 'main') throw new Error('404 not found');
+      git.fetch.mockImplementation(async (_path, opts) => {
+        if (opts && opts.ref === 'main') throw new Error('404 not found');
         return {};
       });
 
@@ -793,8 +728,8 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.fetch.mockResolvedValue({});
       // F3-D1: canFastForward is real now — false ancestry forces the merge
       // path this test exercises.
-      git.isDescendent.mockResolvedValue(false);
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.canFastForward.mockResolvedValue(false);
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'HEAD') return 'local-head-sha';
         if (ref === 'refs/remotes/origin/preview') return 'remote-preview-sha';
         if (ref === 'origin/preview') return 'remote-preview-sha';
@@ -814,10 +749,10 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       // Task 7: refresh NEVER resets — divergent state is merged.
       expect(safeSpy).not.toHaveBeenCalled();
       const mergeCall = git.merge.mock.calls.find(
-        (c) => c[0] && c[0].theirs === 'origin/preview'
+        (c) => c[1] && c[1] === 'origin/preview'
       );
       expect(mergeCall).toBeDefined();
-      expect(mergeCall[0]).toMatchObject({ ours: 'preview', fastForward: false });
+      expect(mergeCall[2]).toMatchObject({ ours: 'preview', fastForward: false, strategy: 'ours' });
       // Task 5 regression guards (still true): no raw hard-reset helper.
       expect('_hardResetBranch' in handlers).toBe(false);
       expect(typeof handlers._safeResetToOrigin).toBe('function');
@@ -827,7 +762,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
       git.currentBranch.mockResolvedValue('preview');
       git.statusMatrix.mockResolvedValue([]);
       git.fetch.mockResolvedValue({});
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'HEAD') return 'local-head';
         if (ref === 'refs/remotes/origin/preview') return 'remote-sha';
         if (ref === 'origin/preview') return 'remote-sha';

@@ -8,25 +8,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-vi.mock('isomorphic-git', () => ({
-  default: {},
-  pull: vi.fn(),
-  push: vi.fn(),
-  currentBranch: vi.fn(),
-  fetch: vi.fn(),
-  checkout: vi.fn(),
-  getConfig: vi.fn(),
-  listServerRefs: vi.fn(),
-  statusMatrix: vi.fn(),
-  listBranches: vi.fn(),
-  resolveRef: vi.fn(),
-  readCommit: vi.fn(),
-  branch: vi.fn(),
-  add: vi.fn(),
-  commit: vi.fn(),
-}));
-
-vi.mock('isomorphic-git/http/node', () => ({ default: {} }));
+// Backend seam (T16): mockDugiteProvider replaces the isomorphic-git
+// module mock.
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: vi.fn(() => []) },
@@ -56,17 +39,25 @@ vi.mock('../../src/ipc/gitOperations.js', () => ({
 }));
 
 import { GitHandlers } from '../../src/ipc/git.js';
+import { GitService } from '../../src/git/GitService.js';
+import { mockDugiteProvider } from '../git/fixtures/mockDugiteProvider.js';
 
 describe('Git performance optimizations', () => {
   let handlers;
   let mockLogger;
   let mockDatabaseManager;
+  let provider; // mockDugiteProvider handle
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     mockDatabaseManager = { getDatabase: vi.fn() };
-    handlers = new GitHandlers({ logger: mockLogger, databaseManager: mockDatabaseManager });
+    provider = mockDugiteProvider();
+    handlers = new GitHandlers({
+      logger: mockLogger,
+      databaseManager: mockDatabaseManager,
+      gitService: new GitService({ provider }),
+    });
   });
 
   afterEach(() => {
@@ -76,34 +67,29 @@ describe('Git performance optimizations', () => {
 
   // ─── Category 1: Cache sharing ───────────────────────────────────────
   describe('Cache sharing', () => {
-    it('passes _gitCache object reference to statusMatrix via _getGit()', async () => {
-      const git = await import('isomorphic-git');
-      git.statusMatrix.mockResolvedValue([]);
-
+    it('passes _gitCache object reference to statusMatrix (provider opts)', async () => {
       const cacheRef = handlers._gitCache;
       await handlers.gitCheckStatus('/test/path');
 
-      expect(git.statusMatrix.mock.calls[0][0].cache).toBe(cacheRef);
+      expect(provider.statusMatrix.mock.calls[0][1].cache).toBe(cacheRef);
     });
 
     it('passes _gitCache to currentBranch in gitPullFromPreview', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue(null);
-      const git = await import('isomorphic-git');
-      git.currentBranch.mockResolvedValue('main');
 
       const cacheRef = handlers._gitCache;
       await handlers.gitPullFromPreview('/test/path');
 
-      expect(git.currentBranch.mock.calls[0][0].cache).toBe(cacheRef);
+      const call = provider.currentBranch.mock.calls.find(
+        (c) => c[0] === '/test/path'
+      );
+      expect(call[1].cache).toBe(cacheRef);
     });
   });
 
   // ─── Category 2: Cache invalidation ─────────────────────────────────
   describe('Cache invalidation', () => {
     it('resets _gitCache to new empty object after gitCreateBranch', async () => {
-      const git = await import('isomorphic-git');
-      git.branch.mockResolvedValue(undefined);
-
       const cacheBefore = handlers._gitCache;
       handlers._gitCache.someKey = 'cached-value';
 
@@ -116,8 +102,6 @@ describe('Git performance optimizations', () => {
     it('resets _gitCache after push operation', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
-      const git = await import('isomorphic-git');
-      git.push.mockResolvedValue({});
 
       handlers._gitCache.data = 'stale';
       const cacheBefore = handlers._gitCache;
@@ -237,13 +221,11 @@ describe('Git performance optimizations', () => {
       // If sequential and token=null, currentBranch would never be called
       // because the early return fires. Both being called proves parallelism.
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue(null);
-      const git = await import('isomorphic-git');
-      git.currentBranch.mockResolvedValue('main');
 
       await handlers.gitPullFromPreview('/test/path');
 
       expect(handlers.gitOps.getGitHubToken).toHaveBeenCalledTimes(1);
-      expect(git.currentBranch).toHaveBeenCalledTimes(1);
+      expect(provider.currentBranch).toHaveBeenCalledTimes(1);
     });
 
     it('gitPushToBranch starts token fetch and configureGitForUser in parallel', async () => {

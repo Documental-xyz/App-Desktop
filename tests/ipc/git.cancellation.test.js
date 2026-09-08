@@ -9,9 +9,6 @@ vi.mock('electron', () => ({
   ipcMain: mockIpcMain
 }));
 
-vi.mock('isomorphic-git', () => ({}));
-vi.mock('isomorphic-git/http/node', () => ({}));
-
 describe('GitHandlers - Cancellation', () => {
   let mockLogger;
   let mockDatabaseManager;

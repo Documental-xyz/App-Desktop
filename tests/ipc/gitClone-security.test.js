@@ -17,26 +17,41 @@ const realChildProcess = require('child_process');
 // ── Hoisted mocks ─────────────────────────────────────────────────────────
 
 const {
-  mockGitClone,
   mockGitGetRemoteInfo,
-  mockGitListBranches,
   mockGitOps,
   mockElectron,
+  mockServiceClone,
+  mockServiceCurrentBranch,
+  mockServiceCheckout,
+  mockServiceListBranches,
+  mockServiceRemoteBranches,
 } = vi.hoisted(() => ({
-  mockGitClone: vi.fn(),
   mockGitGetRemoteInfo: vi.fn(),
-  mockGitListBranches: vi.fn(),
   mockGitOps: { getGitHubToken: vi.fn() },
   mockElectron: {
     ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
     BrowserWindow: { getAllWindows: vi.fn(() => []) },
     app: { getPath: vi.fn(() => '/tmp/test') },
   },
+  // GitService stub methods (T16): the clone/verify path goes through
+  // getGitService() → GitService(dugite); the stub class below routes
+  // every call to these spies in the PROVIDER contract shapes.
+  mockServiceClone: vi.fn(),
+  mockServiceCurrentBranch: vi.fn(),
+  mockServiceCheckout: vi.fn(),
+  mockServiceListBranches: vi.fn(),
+  mockServiceRemoteBranches: vi.fn(),
 }));
 
-// ── Module._load monkey-patch for electron, isomorphic-git and execa ─────
-// vi.mock() does NOT intercept native require() in CJS source files.
-// We patch Module._load to ensure mocks are returned for these dependencies.
+// ── Module._load monkey-patch for electron, isomorphic-git, GitService
+// and execa — vi.mock() does NOT intercept native require() in CJS
+// source files. Two seams (T16):
+//  1. 'isomorphic-git' still feeds the LIVE pre-clone PROBE
+//     (_probeRemoteRefs → getRemoteInfo — mock-visible by design; the
+//     probe itself is migrated to dugite ls-remote in T17).
+//  2. '../git/GitService.js' (as required by projectCreation.js) is
+//     replaced by a stub class routing clone/currentBranch/checkout/
+//     listBranches to provider-contract spies.
 
 const Module = require('module');
 const originalLoad = Module._load;
@@ -46,13 +61,26 @@ Module._load = function(request, ...args) {
   }
   if (request === 'isomorphic-git') {
     return {
-      clone: mockGitClone,
       getRemoteInfo: mockGitGetRemoteInfo,
-      listBranches: mockGitListBranches,
     };
   }
   if (request === 'isomorphic-git/http/node') {
     return {};
+  }
+  if (request === '../git/GitService.js') {
+    return {
+      GitService: class GitService {
+        constructor(_opts) {}
+        clone(url, dir, opts) { return mockServiceClone(url, dir, opts); }
+        currentBranch(dir) { return mockServiceCurrentBranch(dir); }
+        checkout(dir, ref, opts) { return mockServiceCheckout(dir, ref, opts); }
+        listBranches(dir, opts) {
+          return opts && opts.remote
+            ? mockServiceRemoteBranches(dir, opts)
+            : mockServiceListBranches(dir, opts);
+        }
+      },
+    };
   }
   if (request === 'execa') {
     return { execa: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }) };
@@ -85,7 +113,9 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
     };
 
     sendOutput = vi.fn();
-    mockGitClone.mockResolvedValue(undefined);
+    mockServiceClone.mockResolvedValue(undefined);
+    mockServiceListBranches.mockResolvedValue(['main']);
+    mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
     // Remote reports a "main" branch + HEAD -> main so the probe succeeds
     // immediately and clone proceeds with an explicit ref.
@@ -94,9 +124,6 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
       HEAD: 'main',
       refs: { heads: { main: 'abc123' } },
     });
-    // listBranches runs after clone; return ['main'] so post-clone
-    // verification sees a populated repo and does not throw.
-    mockGitListBranches.mockResolvedValue(['main']);
 
     // Use Object.create to bypass the constructor (avoids GitOperations /
     // ProcessManager side effects). We only need the prototype method gitClone
@@ -122,37 +149,36 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
     await handler.gitClone(url, tmpDir, sendOutput);
 
     expect(mockGitOps.getGitHubToken).not.toHaveBeenCalled();
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
 
-    const callArg = mockGitClone.mock.calls[0][0];
-    expect(callArg.url).toBe(url);
-    expect(callArg.onAuth).toBeUndefined();
-    expect(callArg.auth).toBeUndefined();
+    // Provider contract: clone(url, dir, opts) — no token, no auth.
+    const [cloneUrl, cloneDir, cloneOpts] = mockServiceClone.mock.calls[0];
+    expect(cloneUrl).toBe(url);
+    expect(cloneDir).toBe(tmpDir);
+    expect(cloneOpts.auth).toBeUndefined();
   });
 
-  // ── GitHub URL: token retrieved, auth populated via onAuth ─────────────
+  // ── GitHub URL: token retrieved, auth populated ────────────────────────
 
-  it('calls getGitHubToken for github.com URL and clones with auth populated via onAuth', async () => {
+  it('calls getGitHubToken for github.com URL and clones with auth in the provider contract', async () => {
     const url = 'https://github.com/foo/bar.git';
 
     await handler.gitClone(url, tmpDir, sendOutput);
 
     expect(mockGitOps.getGitHubToken).toHaveBeenCalledTimes(1);
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
 
-    const callArg = mockGitClone.mock.calls[0][0];
-    expect(callArg.url).toBe(url);
-    // The token must be delivered through the onAuth callback, never as a
-    // top-level `auth` property (isomorphic-git only honors onAuth).
-    expect(callArg.onAuth()).toEqual({
-      username: 'ghp_fake_token',
-      password: 'x-oauth-basic',
-    });
-    expect(callArg.auth).toBeUndefined();
+    const [cloneUrl, _cloneDir, cloneOpts] = mockServiceClone.mock.calls[0];
+    expect(cloneUrl).toBe(url);
+    // Provider contract (dugite askpass consumes {token}); the token
+    // never appears in the URL or as a raw credential.
+    expect(cloneOpts.auth).toEqual({ token: 'ghp_fake_token' });
 
     // The discovered default branch must be passed as an explicit ref so
     // singleBranch clone does not depend on HEAD symref resolution.
-    expect(callArg.ref).toBe('main');
+    expect(cloneOpts.ref).toBe('main');
+    expect(cloneOpts.singleBranch).toBe(true);
+    expect(cloneOpts.depth).toBe(10);
   });
 
   // ── Case-insensitive host match ────────────────────────────────────────
@@ -163,14 +189,10 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
     await handler.gitClone(url, tmpDir, sendOutput);
 
     expect(mockGitOps.getGitHubToken).toHaveBeenCalledTimes(1);
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
 
-    const callArg = mockGitClone.mock.calls[0][0];
-    expect(callArg.onAuth()).toEqual({
-      username: 'ghp_fake_token',
-      password: 'x-oauth-basic',
-    });
-    expect(callArg.auth).toBeUndefined();
+    const [, , cloneOpts] = mockServiceClone.mock.calls[0];
+    expect(cloneOpts.auth).toEqual({ token: 'ghp_fake_token' });
   });
 });
 
@@ -201,9 +223,10 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
       debug: vi.fn(),
     };
     sendOutput = vi.fn();
-    mockGitClone.mockResolvedValue(undefined);
+    mockServiceClone.mockResolvedValue(undefined);
+    mockServiceListBranches.mockResolvedValue(['main']);
+    mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
-    mockGitListBranches.mockResolvedValue(['main']);
 
     const { ProjectCreationHandler } = await import('../../src/ipc/projectCreation.js');
     handler = Object.create(ProjectCreationHandler.prototype);
@@ -244,10 +267,10 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     }
 
     expect(mockGitGetRemoteInfo).toHaveBeenCalledTimes(3);
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
-    const callArg = mockGitClone.mock.calls[0][0];
-    expect(callArg.ref).toBe('main');
-    expect(callArg.singleBranch).toBe(true);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
+    const [, , cloneOpts] = mockServiceClone.mock.calls[0];
+    expect(cloneOpts.ref).toBe('main');
+    expect(cloneOpts.singleBranch).toBe(true);
   });
 
   it('clones even if the probe never sees refs (timeout fallback), then throws on empty result', async () => {
@@ -259,7 +282,8 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     // Wipe the seeded state so post-clone verification sees emptiness.
     realFs.rmSync(realPath.join(tmpDir, '.git'), { recursive: true, force: true });
     realFs.rmSync(realPath.join(tmpDir, 'package.json'), { force: true });
-    mockGitListBranches.mockResolvedValue([]);
+    mockServiceListBranches.mockResolvedValue([]);
+    mockServiceRemoteBranches.mockResolvedValue([]);
 
     // Cannot use vi.useFakeTimers() because gitClone now uses fsPromises
     // (real I/O) in the pre-clone section, which does not resolve under
@@ -283,7 +307,7 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     // Multiple probes happened before giving up...
     expect(mockGitGetRemoteInfo.mock.calls.length).toBeGreaterThanOrEqual(2);
     // ...and clone was still attempted (fallback)...
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -299,10 +323,9 @@ describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
   const mockHttp = {};
   const testUrl = 'https://github.com/foo/bar.git';
   const auth = { username: 'token', password: 'x-oauth-basic' };
+  // _probeRemoteRefs(git, http, url, auth) only consumes git.getRemoteInfo.
   const mockGit = {
     getRemoteInfo: mockGitGetRemoteInfo,
-    clone: mockGitClone,
-    listBranches: mockGitListBranches,
   };
 
   beforeEach(async () => {
@@ -413,7 +436,9 @@ describe('ProjectCreationHandler.gitClone branch mismatch retry', () => {
       debug: vi.fn(),
     };
     sendOutput = vi.fn();
-    mockGitClone.mockResolvedValue(undefined);
+    mockServiceClone.mockResolvedValue(undefined);
+    mockServiceListBranches.mockResolvedValue(['main']);
+    mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
     // Remote has HEAD -> main but we'll mock listBranches to return wrong branch
     mockGitGetRemoteInfo.mockResolvedValue({
@@ -436,32 +461,32 @@ describe('ProjectCreationHandler.gitClone branch mismatch retry', () => {
 
   it('succeeds on first attempt when branch matches expectation', async () => {
     const url = 'https://github.com/foo/bar.git';
-    mockGitListBranches.mockResolvedValue(['main']);
+    mockServiceListBranches.mockResolvedValue(['main']);
 
     const result = await handler.gitClone(url, tmpDir, sendOutput);
 
     expect(result).toBe(true);
-    expect(mockGitClone).toHaveBeenCalledTimes(1);
+    expect(mockServiceClone).toHaveBeenCalledTimes(1);
   });
 
   it('retries up to 3 times when branch does not match, then throws', async () => {
     const url = 'https://github.com/foo/bar.git';
     // Prevent rm -rf via execSync from actually destroying the temp dir
     const execSpy = vi.spyOn(realChildProcess, 'execSync').mockReturnValue(Buffer.from(''));
-    mockGitListBranches.mockResolvedValue(['master']);
+    mockServiceListBranches.mockResolvedValue(['master']);
 
     await expect(handler.gitClone(url, tmpDir, sendOutput)).rejects.toThrow(
       /Clone falhou após 3 tentativas.*main.*master/
     );
 
-    expect(mockGitClone).toHaveBeenCalledTimes(3);
+    expect(mockServiceClone).toHaveBeenCalledTimes(3);
     execSpy.mockRestore();
   });
 
   it('succeeds after retry when second attempt produces correct branch', async () => {
     const url = 'https://github.com/foo/bar.git';
     const execSpy = vi.spyOn(realChildProcess, 'execSync').mockReturnValue(Buffer.from(''));
-    mockGitListBranches.mockReset()
+    mockServiceListBranches.mockReset()
       .mockResolvedValueOnce(['master'])
       .mockResolvedValueOnce(['main'])
       .mockResolvedValue(['main']);
@@ -469,7 +494,7 @@ describe('ProjectCreationHandler.gitClone branch mismatch retry', () => {
     const result = await handler.gitClone(url, tmpDir, sendOutput);
 
     expect(result).toBe(true);
-    expect(mockGitClone).toHaveBeenCalledTimes(2);
+    expect(mockServiceClone).toHaveBeenCalledTimes(2);
     execSpy.mockRestore();
   });
 });
@@ -502,14 +527,15 @@ describe('ProjectCreationHandler.gitClone pre-clone cleanup', () => {
       debug: vi.fn(),
     };
     sendOutput = vi.fn();
-    mockGitClone.mockResolvedValue(undefined);
+    mockServiceClone.mockResolvedValue(undefined);
+    mockServiceListBranches.mockResolvedValue(['main']);
+    mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
     mockGitGetRemoteInfo.mockResolvedValue({
       capabilities: ['shallow'],
       HEAD: 'main',
       refs: { heads: { main: 'abc123' } },
     });
-    mockGitListBranches.mockResolvedValue(['main']);
 
     const { ProjectCreationHandler } = await import('../../src/ipc/projectCreation.js');
     handler = Object.create(ProjectCreationHandler.prototype);

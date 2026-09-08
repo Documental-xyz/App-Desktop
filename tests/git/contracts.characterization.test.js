@@ -36,7 +36,6 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
 import {
   createRepoPair,
@@ -46,11 +45,10 @@ import {
 } from './fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
-import { providerFactory } from '../git-providers/harness.js';
+import { providerFactory, gitSetup } from '../git-providers/harness.js';
 import { createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 import { BACKUP_BRANCH_PREFIX } from '../../src/ipc/gitFlowTypes.js';
 
-const git = gitModule.default || gitModule;
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -102,9 +100,7 @@ function backupNames(handlers, dir) {
  * no working-tree side effects) — the read-only oracle for Block 3.
  */
 async function blobAt(repo, ref, filepath) {
-  const oid = await repo.resolveRef(ref);
-  const { blob } = await git.readBlob({ fs, dir: repo.dir, oid, filepath });
-  return Buffer.from(blob).toString('utf8');
+  return (await gitSetup(['show', `${ref}:${filepath}`], repo.dir)).stdout;
 }
 
 /**
@@ -115,16 +111,19 @@ async function blobAt(repo, ref, filepath) {
 async function seedBackupAtAge(repo, name, ageDays) {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const ts = Math.floor((Date.now() - ageDays * DAY_MS) / 1000);
+  // Committer timestamp drives pruneOldBackups' readCommit clock — set
+  // BOTH author and committer dates via env (the CLI equivalent of the
+  // old iso author.timestamp seeding).
+  const when = `${ts} +0000`;
   const file = `seed-${name.replace(/[^a-z0-9]/gi, '_')}.txt`;
   repo.writeFiles({ [file]: name });
-  await git.add({ fs, dir: repo.dir, filepath: file });
-  await git.commit({
-    fs,
-    dir: repo.dir,
-    message: `seed backup ${name}`,
-    author: { name: 'test', email: 'test@test.local', timestamp: ts },
-  });
-  await git.branch({ fs, dir: repo.dir, ref: name, checkout: false });
+  await gitSetup(['add', '--', file], repo.dir);
+  await gitSetup(
+    ['commit', '-m', `seed backup ${name}`],
+    repo.dir,
+    { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when }
+  );
+  await gitSetup(['branch', name], repo.dir);
 }
 
 // Distinct-content fixtures (10 lines; the edited line changes LENGTH —
@@ -418,9 +417,8 @@ describe.skipIf(!httpBackendAvailable)('CONTRACT 3 — backup branch captures th
 
     // The snapshot is a real commit on the backup branch with the
     // frozen message pattern (gitSafety.js "snapshot de working tree").
-    const tip = await pair.local.resolveRef(backupBranch);
-    const { commit } = await git.readCommit({ fs, dir: pair.local.dir, oid: tip });
-    expect(commit.message).toMatch(/^chore\(backup\): snapshot de working tree/);
+    const snapshotMsg = (await gitSetup(['show', '-s', '--format=%B', backupBranch], pair.local.dir)).stdout;
+    expect(snapshotMsg).toMatch(/^chore\(backup\): snapshot de working tree/);
 
     // After the snapshot the repo is back on the working branch.
     expect(await handlers.git.currentBranch(pair.local.dir)).toBe('preview');

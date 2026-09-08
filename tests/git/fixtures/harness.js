@@ -1,20 +1,35 @@
 /**
- * @fileoverview Git sync fixtures harness (git-sync-strategy plan, Task 1).
+ * @fileoverview Git sync fixtures harness (git-sync-strategy plan, Task 1;
+ * REWRITTEN for dugite in publish-update-resilience Task 16).
  *
- * Provides REAL git repositories driven by isomorphic-git (the default
- * provider) so every scenario (dirty tree, divergence, text/binary
- * conflicts) exercises the exact library the production code uses —
- * the git CLI (dugite exec) is used ONLY for one-time transport setup
- * (bare origin init), never as a behavioral oracle.
+ * Provides REAL git repositories driven by the bundled git CLI (dugite
+ * exec) — zero isomorphic-git anywhere in fixture construction. Every
+ * repo-building operation (init, add, commit, push, fetch, branch,
+ * checkout, log, statusMatrix) shells out to the same git binary the
+ * production DugiteProvider uses; the provider-under-test is never
+ * involved in SETUP (it stays the thing under test).
  *
- * Transport contract (inherited from tests/git-providers/harness.js):
- * isomorphic-git speaks ONLY http(s) — no file://, no bare path — so
- * the "origin" is a local bare repo served over loopback http via the
- * bundled git http-backend. `createRepoPair` yields:
+ * Transport (UNCHANGED by design — Task 16 audit): the "origin" remains a
+ * local bare repo served over LOOPBACK http via the bundled git
+ * http-backend. The Task 16 brief considered migrating to file://, but
+ * two live suites depend on http-origin BEHAVIOR, so the loopback stays:
+ *   - tests/ipc/git.progress.test.js kills the origin via
+ *     `pair.server.close()` (origin-down → terminal failed at fetching);
+ *   - tests/git/push-retry.test.js drops the connection mid-push by
+ *     killing git-receive-pack from a pre-receive hook — over http this
+ *     reproduces the exact "conexão ruim" transport failure the retry
+ *     logic must self-heal.
+ * `createRepoPair` keeps returning `{ server, url, ... }` so both keep
+ * working untouched. Everything else (construction) is CLI now:
  *   - `local`:  the repo under test (simulates the user's machine)
  *   - `remote`: a second working repo (simulates a colleague) pushing
  *     to the same origin — advancing the remote state is just a
  *     commit+push from `remote`, no bare-repo surgery needed.
+ *
+ * Repo handle API (unchanged surface, CLI-backed): writeFiles, commit,
+ * push, fetch, statusMatrix, head, resolveRef, readFile, readBytes, log.
+ * The OLD `repo.git` isomorphic-git binding is GONE (Task 16) — suites
+ * that spread it into iso calls now use the handle methods.
  *
  * Reusable scenario helpers (Tasks 2-8):
  *   createRepoPair, commitFile, makeDirty, makeDivergent, makeConflict
@@ -32,8 +47,6 @@ vi.unmock('path');
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import gitModule from 'isomorphic-git';
-import * as httpNs from 'isomorphic-git/http/node';
 
 import {
   gitSetup,
@@ -49,21 +62,13 @@ import {
 // shadow the flag.
 export { httpBackendAvailable } from '../../git-providers/httpBackend.js';
 
-const git = gitModule.default || gitModule;
-const http = httpNs.default?.request ? httpNs.default : httpNs;
-
 // ─── Machine git identity for CLI-backed flows (CI portability) ───────────────
 //
-// The flow suites exercise the REAL DugiteProvider, whose `git merge`
-// (unlike `commit`) has no explicit-identity fallback — it relies on a
-// machine-level user.name/user.email, which dev boxes have and CI
-// runners do NOT ("Committer identity unknown", exit 128). Point
-// GIT_CONFIG_GLOBAL at a harness-written identity file so every dugite
-// child inherits one. Precedence is safe: command-line `-c` (used by
-// provider.commit and gitSetup) beats this file, so explicit identities
-// are never overridden — only identity-less commands (merge) get one.
-// Deterministic global config: always point at the harness file so the
-// suites never depend on (or break on) the machine's ~/.gitconfig.
+// Every harness CLI call carries an explicit `-c` identity (gitSetup),
+// so commits never depend on the machine's gitconfig; identity-less
+// commands run by the PROVIDER under test (e.g. `git merge`) inherit the
+// deterministic GIT_CONFIG_GLOBAL file below instead (same mechanism the
+// pre-Task-16 harness installed — kept verbatim).
 {
   const globalConfig = path.join(os.tmpdir(), `smc-test-gitconfig-${process.pid}`);
   try {
@@ -78,18 +83,22 @@ const http = httpNs.default?.request ? httpNs.default : httpNs;
 // ─── Repo handle ─────────────────────────────────────────────────────────────
 
 /**
- * Bind isomorphic-git operations to a working directory.
- * All ops go through iso-git — the production provider's engine.
+ * Run a setup git command inside `dir`. Throws on failure (gitSetup).
+ * @param {string} dir
+ * @param {string[]} args
+ * @returns {Promise<string>} stdout
+ */
+async function runIn(dir, args) {
+  const res = await gitSetup(args, dir);
+  return res.stdout;
+}
+
+/**
+ * Bind CLI git operations to a working directory. All ops go through
+ * the bundled git binary — the production provider's engine.
  * @param {string} dir
  */
 function makeRepo(dir) {
-  const api = {
-    fs,
-    dir,
-    http,
-    author: GIT_AUTHOR,
-  };
-
   /** @typedef {{
    *   writeFiles(files: Object<string, string|Buffer>): void,
    *   commit(message: string, files?: string|string[]): Promise<string>,
@@ -100,12 +109,23 @@ function makeRepo(dir) {
    *   resolveRef(ref: string): Promise<string>,
    *   readFile(file: string): Promise<string>,
    *   readBytes(file: string): Promise<Buffer>,
-   *   log(depth?: number): Promise<Array<{ oid: string, message: string }>>,
+   *   log(depth?: number, ref?: string): Promise<Array<{ oid: string, commit: { message: string, parent: string[] } }>>,
    * }} RepoHandle */
+
+  /** Current branch short name ('' on detached/unborn). */
+  const currentBranchName = async () => {
+    try {
+      return (await runIn(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    } catch (_e) {
+      return '';
+    }
+  };
+
+  const resolveRef = async (ref) =>
+    (await runIn(dir, ['rev-parse', `${ref}^{commit}`])).trim();
 
   return {
     dir,
-    git: api,
 
     /** Write files to the working tree (no staging, no commit). */
     writeFiles(files) {
@@ -119,31 +139,130 @@ function makeRepo(dir) {
     /** Stage + commit. `files` defaults to every file just written. */
     async commit(message, files) {
       const list = files || fs.readdirSync(dir).filter((f) => f !== '.git');
-      for (const f of Array.isArray(list) ? list : [list]) {
-        await git.add({ ...api, filepath: f });
+      const arr = Array.isArray(list) ? list : [list];
+      if (arr.length > 0) {
+        await runIn(dir, ['add', '--', ...arr]);
       }
-      return git.commit({ ...api, message });
+      await runIn(dir, ['commit', '-m', message]);
+      return resolveRef('HEAD');
     },
 
     /** Push current (or given) branch to origin. */
     async push(branch) {
-      await git.push({ ...api, remote: 'origin', ref: branch });
+      const b = branch || (await currentBranchName());
+      const refspec = b ? `refs/heads/${b}:refs/heads/${b}` : '';
+      await runIn(dir, ['push', 'origin', ...(refspec ? [refspec] : [])]);
     },
 
     async fetch() {
-      await git.fetch(api);
+      await runIn(dir, ['fetch', 'origin']);
     },
 
+    /**
+     * iso-git-shaped status matrix [filepath, head, workdir, stage] —
+     * same plumbing as DugiteProvider.statusMatrix (proven parity in
+     * tests/git-providers/provider-suite.test.js), condensed for the
+     * harness: HEAD via ls-tree, stage via ls-files -s, workdir facts
+     * via status --porcelain=v2 -z -uall --no-renames, real blob OIDs
+     * via batched hash-object.
+     */
     async statusMatrix() {
-      return git.statusMatrix(api);
+      const headOut = await runIn(dir, ['ls-tree', '-r', '-z', 'HEAD']).catch((err) => {
+        const msg = `${err?.stderr || ''}\n${err?.message || ''}`;
+        if (/Not a valid object name|unknown revision|ambiguous argument/i.test(msg)) {
+          return ''; // unborn HEAD — empty tree (iso-git semantics)
+        }
+        throw err;
+      });
+      const indexOut = await runIn(dir, ['ls-files', '-s', '-z']);
+      const statusOut = await runIn(dir, [
+        'status', '--porcelain=v2', '-z', '-uall', '--no-renames',
+      ]);
+
+      // path → HEAD blob OID
+      const headMap = new Map();
+      for (const entry of String(headOut || '').split('\0')) {
+        if (!entry) continue;
+        const [meta, filepath] = entry.split('\t');
+        const oid = meta.split(' ')[2];
+        if (oid && filepath) headMap.set(filepath, oid);
+      }
+
+      // path → index OID, FIRST entry per path wins (lowest stage)
+      const indexMap = new Map();
+      for (const entry of String(indexOut || '').split('\0')) {
+        if (!entry) continue;
+        const [meta, filepath] = entry.split('\t');
+        if (!indexMap.has(filepath)) {
+          indexMap.set(filepath, meta.split(' ')[1]);
+        }
+      }
+
+      // path → porcelain workdir facts
+      const statusMap = parsePorcelainV2Workdir(statusOut);
+
+      const allPaths = new Set([
+        ...headMap.keys(),
+        ...indexMap.keys(),
+        ...statusMap.keys(),
+      ]);
+
+      const toHash = [];
+      /** @type {Map<string, string|undefined>} filepath → workdir OID */
+      const workdirOids = new Map();
+
+      for (const filepath of allPaths) {
+        const info = statusMap.get(filepath);
+        if (info && info.absentFromWorkdir) {
+          workdirOids.set(filepath, undefined);
+          continue;
+        }
+        if (!info && !indexMap.has(filepath)) {
+          workdirOids.set(filepath, undefined);
+          continue;
+        }
+        const headOid = headMap.get(filepath);
+        const stageOid = indexMap.get(filepath);
+        if (headOid === undefined && stageOid === undefined) {
+          workdirOids.set(filepath, '42'); // iso-git untracked placeholder
+          continue;
+        }
+        if (info && info.cleanVsIndex) {
+          workdirOids.set(filepath, stageOid); // stat-cache shortcut
+          continue;
+        }
+        toHash.push(filepath);
+      }
+
+      if (toHash.length > 0) {
+        const stdout = await runIn(dir, ['hash-object', '--', ...toHash]);
+        const oids = String(stdout || '').split('\n').filter(Boolean);
+        toHash.forEach((p, j) => workdirOids.set(p, oids[j]));
+      }
+
+      /** @type {Array<[string, number, number, number]>} */
+      const rows = [];
+      for (const filepath of allPaths) {
+        const entry = [
+          undefined,
+          headMap.get(filepath),
+          workdirOids.get(filepath),
+          indexMap.get(filepath),
+        ];
+        const result = entry.map((value) => entry.indexOf(value));
+        result.shift();
+        rows.push([filepath, ...result]);
+      }
+      rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      return rows;
     },
 
     async head() {
-      return git.resolveRef({ ...api, ref: 'HEAD' });
+      return resolveRef('HEAD');
     },
 
     async resolveRef(ref) {
-      return git.resolveRef({ ...api, ref });
+      return resolveRef(ref);
     },
 
     async readFile(file) {
@@ -154,10 +273,75 @@ function makeRepo(dir) {
       return fs.readFileSync(path.join(dir, file));
     },
 
-    async log(depth = 10) {
-      return git.log({ ...api, depth });
+    /**
+     * Commit log (newest first) with iso-git WalkEntry shape
+     * `{oid, commit: {message, parent}}` — message is the RAW body
+     * (trailing \n kept), parent the full parent-OID array.
+     */
+    async log(depth = 10, ref = 'HEAD') {
+      const out = await runIn(dir, [
+        'log', '-n', String(depth), ref,
+        '--format=%H%x1f%P%x1f%B%x1e',
+      ]);
+      const entries = [];
+      for (const record of String(out || '').split('\x1e')) {
+        const trimmed = record.replace(/^\n/, '');
+        if (!trimmed.trim()) continue;
+        const [oid, parents, message] = trimmed.split('\x1f');
+        entries.push({
+          oid: oid.trim(),
+          commit: {
+            message: message || '',
+            parent: parents ? parents.trim().split(' ').filter(Boolean) : [],
+          },
+        });
+      }
+      return entries;
     },
   };
+}
+
+/**
+ * Parse `git status --porcelain=v2 -z` workdir facts. VERBATIM port of
+ * DugiteProvider's private parser (proven parity in provider-suite) —
+ * `2` records consume their trailing origPath token, `u` records map
+ * the workdir stage, `cleanVsIndex` treats ' '/'.' as unmodified.
+ * @param {string} out
+ * @returns {Map<string, {absentFromWorkdir: boolean, cleanVsIndex: boolean}>}
+ */
+function parsePorcelainV2Workdir(out) {
+  const tokens = String(out || '').split('\0');
+  /** @type {Map<string, {absentFromWorkdir: boolean, cleanVsIndex: boolean}>} */
+  const facts = new Map();
+  const set = (filepath, absentFromWorkdir, cleanVsIndex) =>
+    facts.set(filepath, { absentFromWorkdir, cleanVsIndex });
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (!entry || entry.startsWith('#')) {
+      continue;
+    }
+    if (entry.startsWith('? ')) {
+      set(entry.slice(2), false, false);
+      continue;
+    }
+    if (entry.startsWith('! ')) {
+      continue;
+    }
+    const fields = entry.split(' ');
+    const kind = fields[0];
+    const y = fields[1] ? fields[1][1] : '';
+    const unmod = (c) => c === ' ' || c === '.';
+    if (kind === '1') {
+      set(fields.slice(8).join(' '), y === 'D', unmod(y));
+    } else if (kind === '2') {
+      // `2` records are followed by a NUL + origPath token — consume it.
+      set(fields.slice(9).join(' '), y === 'D', unmod(y));
+      i++;
+    } else if (kind === 'u') {
+      set(fields.slice(10).join(' '), fields[6] === '0', false);
+    }
+  }
+  return facts;
 }
 
 // ─── Pair creation ───────────────────────────────────────────────────────────
@@ -181,16 +365,17 @@ export async function createRepoPair(opts = {}) {
   const baseDir = makeTempDir('git-sync-');
   const bare = path.join(baseDir, 'remote.git');
 
-  // Transport setup ONLY (git CLI): empty bare origin behind http-backend.
+  // Bare origin behind http-backend (same transport contract as always).
   await gitSetup(['init', '--bare', '-b', branch, 'remote.git'], baseDir);
   await gitSetup(['config', 'http.receivepack', 'true'], bare);
 
   const { server, url } = await createGitHttpServer(baseDir);
 
+  // Local repo: plain init + origin remote (CLI, no provider involved).
   const localDir = path.join(baseDir, 'local');
   fs.mkdirSync(localDir, { recursive: true });
-  await git.init({ fs, dir: localDir, defaultBranch: branch });
-  await git.addRemote({ fs, dir: localDir, remote: 'origin', url });
+  await gitSetup(['init', '-b', branch, '.'], localDir);
+  await gitSetup(['remote', 'add', 'origin', url], localDir);
 
   const local = makeRepo(localDir);
 
@@ -200,20 +385,19 @@ export async function createRepoPair(opts = {}) {
     await local.push(branch);
   }
 
-  // Second working repo talks to the same origin via a real clone.
+  // Second working repo talks to the same origin via a real clone
+  // (all branches, like the old singleBranch:false iso clone).
   const remoteDir = path.join(baseDir, 'colleague');
   const hasOriginBranch = Boolean(opts.files && Object.keys(opts.files).length);
   if (hasOriginBranch) {
-    await git.clone({ fs, dir: remoteDir, http, url, singleBranch: false });
+    await gitSetup(['clone', url, remoteDir], baseDir);
   } else {
     fs.mkdirSync(remoteDir, { recursive: true });
-    await git.init({ fs, dir: remoteDir, defaultBranch: branch });
+    await gitSetup(['init', '-b', branch, '.'], remoteDir);
+    await gitSetup(['remote', 'add', 'origin', url], remoteDir);
   }
 
   const remote = makeRepo(remoteDir);
-  if (!hasOriginBranch) {
-    await git.addRemote({ fs, dir: remoteDir, remote: 'origin', url });
-  }
 
   return {
     baseDir,
@@ -263,8 +447,10 @@ export function makeDirty(repo, files) {
  * `syncRemote: true` first advances the COLLEAGUE to origin's current
  * tip (fetch + branch materialization — the proven makeConflict
  * pattern). Without it, the colleague stays at its clone-time base, so
- * any test that PUBLISHES before diverging builds a non-FF push that
- * iso-git's client-side check rejects (flaky F3-D1 setup).
+ * any test that PUBLISHES before diverging builds a non-fast-forward
+ * push that git rejects server-side (kept semantics from the iso-era
+ * harness: the colleague must never push a base-rooted commit under
+ * an origin that has moved).
  *
  * @param {Awaited<ReturnType<typeof createRepoPair>>} pair
  * @param {{localFiles?: Object<string,string|Buffer>, remoteFiles?: Object<string,string|Buffer>,
@@ -274,35 +460,13 @@ export function makeDirty(repo, files) {
 export async function makeDivergent(pair, opts = {}) {
   if (opts.syncRemote) {
     await pair.remote.fetch();
-    const originTip = await git.resolveRef({
-      fs,
-      dir: pair.remote.dir,
-      ref: `origin/${pair.branch}`,
-    });
-    const colleagueHead = await git.resolveRef({
-      fs,
-      dir: pair.remote.dir,
-      ref: pair.branch,
-    });
-    if (originTip !== colleagueHead) {
-      // Unborn-or-stale colleague branch: (re)materialize at origin tip.
-      // NB: `checkout(ref: 'origin/<branch>')` on an unborn repo DETACHES
-      // HEAD — same caveat as makeConflict; branch FIRST, then checkout.
-      try {
-        await git.branch({
-          fs,
-          dir: pair.remote.dir,
-          ref: pair.branch,
-          object: originTip,
-          force: true,
-        });
-      } catch (_e) { /* branch exists and is checked out — reset below */ }
-      await git.checkout({
-        fs,
-        dir: pair.remote.dir,
-        ref: pair.branch,
-        force: true,
-      });
+    const originTip = await pair.remote.resolveRef(`origin/${pair.branch}`);
+    const colleagueHead = await pair.remote.resolveRef(pair.branch).catch(() => null);
+    if (colleagueHead !== originTip) {
+      // Unborn-or-stale colleague branch: (re)materialize at origin tip
+      // (`checkout -B` = force branch + checkout, the CLI equivalent of
+      // the old iso branch{force} + checkout{force} dance).
+      await runIn(pair.remote.dir, ['checkout', '-B', pair.branch, `origin/${pair.branch}`]);
     }
   }
   if (opts.localFiles && Object.keys(opts.localFiles).length) {
@@ -365,25 +529,9 @@ export async function makeConflict(pair, opts = {}) {
 
   // Sync colleague to the base, then diverge.
   await pair.remote.fetch();
-  // NB: `checkout(ref: 'origin/<branch>')` on an unborn repo DETACHES HEAD
-  // (subsequent commit creates no branch and push fails). Materialize the
-  // local branch at the remote tip first, then check it out.
-  const originTip = await git.resolveRef({
-    fs,
-    dir: pair.remote.dir,
-    ref: `origin/${pair.branch}`,
-  });
-  await git.branch({
-    fs,
-    dir: pair.remote.dir,
-    ref: pair.branch,
-    object: originTip,
-  });
-  await git.checkout({
-    fs,
-    dir: pair.remote.dir,
-    ref: pair.branch,
-  });
+  // CLI clone already tracks origin; materialize the LOCAL branch at
+  // the remote tip (`checkout -B`), then commit the remote edit.
+  await runIn(pair.remote.dir, ['checkout', '-B', pair.branch, `origin/${pair.branch}`]);
 
   await commitFile(pair.remote, file, remoteVersion, `remote: edit ${file}`);
   await pair.remote.push(pair.branch);

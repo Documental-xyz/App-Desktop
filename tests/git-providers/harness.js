@@ -1,19 +1,21 @@
 /**
- * @fileoverview Shared harness for the dual-provider test suite
- * (plan checkbox 18 / PRD §28-29).
+ * @fileoverview Shared harness for the provider test suite
+ * (plan checkbox 18 / PRD §28-29; dugite-ONLY since
+ * publish-update-resilience T16).
  *
- * Transport contract: isomorphic-git speaks ONLY http(s) (no file://, no
- * bare path — UrlParseError, T22 learning), so every remote in these tests
- * is a LOCAL bare repo served over LOOPBACK (git http-backend CGI behind
- * http.createServer, 127.0.0.1 only) and BOTH providers talk to the same
- * http://127.0.0.1:<port>/remote.git URL — identical transport, no
- * external network, no credentials.
+ * Transport contract: the remote in these tests is a LOCAL bare repo
+ * served over LOOPBACK (git http-backend CGI behind http.createServer,
+ * 127.0.0.1 only) and the provider under test talks to the same
+ * http://127.0.0.1:<port>/remote.git URL — no external network, no
+ * credentials. (Historically this loopback existed because
+ * isomorphic-git spoke ONLY http(s); it is KEPT after the dugite
+ * migration because the blackhole/abort and origin-down scenarios need
+ * a real socket to sever.)
  *
  * Setup steps (repo seeding, bare cloning, remote advancing) use the
  * bundled git CLI via dugite's exec — these are SETUP ONLY; every
- * assertion runs through the provider under test, and fixture
- * expectations are derived from the INCUMBENT (isomorphic-git)
- * behavior.
+ * assertion runs through the provider under test (dugite, the
+ * production backend).
  *
  * @vitest-environment node
  */
@@ -143,10 +145,12 @@ export { httpBackendAvailable } from './httpBackend.js';
  * Identity is injected EXPLICITLY (CI runners have no global git identity).
  * @param {string[]} args git argv
  * @param {string} [cwd]
+ * @param {Object<string, string>} [extraEnv] additional env (e.g.
+ *   GIT_AUTHOR_DATE/GIT_COMMITTER_DATE for timestamp-seeded commits)
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number}>}
  */
-export async function gitSetup(args, cwd) {
-  const res = await dugiteExec([...IDENTITY_ARGS, ...args], cwd || os.tmpdir(), { env: {} });
+export async function gitSetup(args, cwd, extraEnv = {}) {
+  const res = await dugiteExec([...IDENTITY_ARGS, ...args], cwd || os.tmpdir(), { env: extraEnv });
   if (res.exitCode !== 0) {
     throw new Error(
       `setup git ${args.join(' ')} failed (exit ${res.exitCode}): ${res.stderr}`
@@ -358,25 +362,43 @@ export async function initLocalRepo(dir) {
 // ─── Provider selection (GIT_PROVIDER runner contract) ───────────────────────
 
 /**
- * Providers under test: GIT_PROVIDER env selects ONE; unset runs BOTH
- * sequentially (plan checkbox 18 runner contract).
+ * Providers under test: dugite is the ONLY backend since
+ * publish-update-resilience T14/T15 (the isomorphic-git provider was
+ * deleted from src/). GIT_PROVIDER='dugite' selects it explicitly;
+ * anything else (including legacy 'isomorphic-git') is a hard error —
+ * there is NO second provider to fall back to. The dual-provider loops
+ * that consumed this list (provider-suite, push, auth-contract, parity
+ * suites) therefore run their battery exactly ONCE, under the real
+ * production backend.
  * @returns {string[]}
  */
 export function providersUnderTest() {
   const v = process.env.GIT_PROVIDER;
-  if (v === 'isomorphic-git' || v === 'dugite') {
-    return [v];
+  if (v === 'dugite') {
+    return ['dugite'];
   }
-  return ['isomorphic-git', 'dugite'];
+  if (v !== undefined) {
+    throw new Error(
+      `GIT_PROVIDER=${v}: dugite is the only provider under test (T16) — unset the variable or use 'dugite'`
+    );
+  }
+  return ['dugite'];
 }
 
 /**
  * Factory for a provider instance via the REAL factory (env + cache
- * reset per inherited wisdom — resetGitProviderCache between providers).
+ * reset per inherited wisdom — resetGitProviderCache between suites).
+ * dugite only since T16 — the string 'isomorphic-git' is rejected
+ * loudly so no suite silently re-binds to a deleted backend.
  * @param {string} name
  * @returns {() => Object} provider factory
  */
 export function providerFactory(name) {
+  if (name !== 'dugite') {
+    throw new Error(
+      `providerFactory('${name}'): dugite is the only git provider (T15/T16) — use providerFactory('dugite')`
+    );
+  }
   return () => {
     process.env.GIT_PROVIDER = name;
     resetGitProviderCache();

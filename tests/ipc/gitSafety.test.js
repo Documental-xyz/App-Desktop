@@ -12,27 +12,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Stub isomorphic-git so gitSafety can require() it indirectly via gitFlowTypes
-// (it doesn't import isomorphic-git itself, but we keep the mock for parity
-// with the other IPC test files and to avoid side-effects).
-vi.mock('isomorphic-git', () => ({
-  default: {},
-  currentBranch: vi.fn(),
-  statusMatrix: vi.fn(),
-  resolveRef: vi.fn(),
-  writeRef: vi.fn(),
-  checkout: vi.fn(),
-  add: vi.fn(),
-  remove: vi.fn(),
-  commit: vi.fn(),
-  branch: vi.fn(),
-  deleteBranch: vi.fn(),
-  listBranches: vi.fn(),
-  readCommit: vi.fn(),
-}));
-
-vi.mock('isomorphic-git/http/node', () => ({ default: {} }));
-
 import { GitSafety, BACKUP_BRANCH_PREFIX } from '../../src/ipc/gitSafety.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

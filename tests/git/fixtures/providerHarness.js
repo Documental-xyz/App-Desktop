@@ -1,33 +1,28 @@
 /**
- * @fileoverview Task 10 (git-sync-strategy): dual-provider plumbing for
- * the FLOW-level parity + edge-case suites.
+ * @fileoverview Task 10 (git-sync-strategy): provider plumbing for the
+ * FLOW-level parity + edge-case suites (dugite-only since
+ * publish-update-resilience T16).
  *
  * `makeFlowHandlers(dir, providerName)` builds a production GitHandlers
  * whose GitService is explicitly bound to ONE provider (bypassing the
- * process-wide GIT_PROVIDER default) so a single `describe.each` can run
- * the SAME fixtures against isomorphic-git and dugite.
+ * process-wide GIT_PROVIDER default). Since T15 the only backend is
+ * dugite; the parameter stays for the describe.each plumbing.
  *
  * `dugiteDeepenFetchWorks()` / `dugiteMissingRefFetchTolerated()` are
  * runtime CAPABILITY PROBES — not skips. Each probe exercises the exact
  * provider capability the flow relies on:
  *
  *   - deepen fetch: `fetch()` WITHOUT `depth` must FULLY deepen a repo
- *     previously fetched with depth:1 (iso-git default semantics) so a
- *     merge-base exists. Bug: DugiteProvider.fetch defaults `depth = 1`
- *     (issues.md T10-D1) → every divergent publish/refresh under dugite
- *     dies with "refusing to merge unrelated histories".
- *
+ *     previously fetched with depth:1 so a merge-base exists.
  *   - missing-ref tolerance: fetching a branch that does not exist on
  *     the remote must surface an error message the flow's first-publish
- *     detection recognizes (issues.md T10-D2).
+ *     detection recognizes.
  *
  * While a probe FAILS, the parity scenarios that depend on it are
  * conditionally skipped (ctx.skip) with a pointer to the issues.md
  * entry. The probes are re-evaluated on EVERY run: the moment the src
- * bug is fixed, the gates open automatically and the full parity suite
- * executes — there is NO unconditional skip anywhere. Companion
- * `it.fails` tripwires in parity-suite.test.js invert when the bug is
- * fixed, reminding maintainers that the gate can be removed.
+ * bug is fixed, the gates open automatically and the full suite
+ * executes — there is NO unconditional skip anywhere.
  *
  * @vitest-environment node
  */
@@ -40,15 +35,17 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
 import { GitHandlers } from '../../../src/ipc/git.js';
 import { GitService } from '../../../src/git/GitService.js';
 import {
   providerFactory,
+  gitSetup,
   GIT_AUTHOR,
 } from '../../git-providers/harness.js';
 import { createRepoPair } from './harness.js';
+
+export { GIT_AUTHOR, createRepoPair };
 
 // ─── Flow handlers bound to one provider ─────────────────────────────────────
 
@@ -61,8 +58,7 @@ export function makeLogger() {
 
 /**
  * Production GitHandlers whose project 1 resolves to `projectPath` and
- * whose git service is PINNED to `providerName`
- * ('isomorphic-git' | 'dugite').
+ * whose git service is PINNED to `providerName` ('dugite').
  *
  * @param {string} projectPath
  * @param {string} providerName
@@ -104,7 +100,7 @@ let deepenProbeResult = null;
 
 /**
  * Probe T10-D1: does `provider.fetch` WITHOUT `depth` deepen a repo that
- * was previously fetched with `depth: 1` (iso-git default semantics)?
+ * was previously fetched with `depth: 1` (historical iso-git semantics, kept as the flow contract)?
  * The flow's divergent path depends on it for the merge-base.
  * @param {string} [providerName='dugite']
  * @returns {Promise<boolean>} true when the capability works
@@ -136,7 +132,7 @@ export async function dugiteDeepenFetchWorks(providerName = 'dugite') {
     });
 
     // Decisive check: HEAD ↔ origin/preview must now share history.
-    // (Use the local handle's iso-git only to RESOLVE refs — decision is
+    // (Decision is
     // made by git itself via merge-base on the provider-managed repo.)
     const { exec } = await import('dugite');
     const res = await exec(
@@ -236,7 +232,6 @@ export async function binaryFallbackWorks(providerName) {
     return binaryFallbackProbeResults.get(providerName);
   }
 
-  const gitMod = gitModule.default || gitModule;
   const base = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
   const local = Buffer.from([1, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 7, 8, 9]);
   const remote = Buffer.from([1, 2, 0xaa, 0xbb, 0, 7, 8]);
@@ -248,10 +243,13 @@ export async function binaryFallbackWorks(providerName) {
     await p.local.commit('base: probe.bin', 'probe.bin');
     await p.local.push('preview');
 
+    // Sync colleague to the remote tip (CLI setup — `checkout -B` is
+    // the branch-materialization pattern), then diverge.
     await p.remote.fetch();
-    const originTip = await gitMod.resolveRef({ fs, dir: p.remote.dir, ref: 'origin/preview' });
-    await gitMod.branch({ fs, dir: p.remote.dir, ref: 'preview', object: originTip });
-    await gitMod.checkout({ fs, dir: p.remote.dir, ref: 'preview' });
+    await gitSetup(
+      ['checkout', '-B', 'preview', 'refs/remotes/origin/preview'],
+      p.remote.dir
+    );
     p.remote.writeFiles({ 'probe.bin': remote, 'probe-note.md': 'clean remote\n' });
     await p.remote.commit('remote: probe', ['probe.bin', 'probe-note.md']);
     await p.remote.push('preview');
@@ -276,6 +274,3 @@ export async function binaryFallbackWorks(providerName) {
     p.dispose();
   }
 }
-
-// Re-export for parity fixtures.
-export { GIT_AUTHOR, createRepoPair };

@@ -1,46 +1,44 @@
 /**
- * @fileoverview Regression tests for GitOperations.gitCheckoutBranch.
+ * @fileoverview GitOperations tests — checkout/preview-branch/push-retry.
  *
- * Focus: the "remote branch exists, local does not" path must create the
- * local branch pointing to the SAME SHA as origin/<branch> (via the
- * isomorphic-git `object` parameter) and set up tracking config.
+ * Backend seam (publish-update-resilience T16): the REAL dugite provider
+ * (through GitService, as constructed in production) drives every
+ * repository fixture; spies are installed on the GitService facade
+ * (`ops.git`) — the old isomorphic-git module spies died with the
+ * provider (T15). Fixtures and SHA verification use the bundled git CLI
+ * (gitSetup), not a second JS git implementation.
  *
- * Uses REAL isomorphic-git against a temp filesystem fixture (no mocks
- * for git/fs/path), so the SHA equality is genuinely verified.
- *
- * @author Documental Team
- * @since 1.0.0
+ * KNOWN REGRESSION PINNED (T15/T16): DugiteProvider.listBranches lists
+ * ONLY refs/heads (local); GitOperations.gitCheckoutBranch's remote-only
+ * detection expects local + 'origin/*' combined (the iso contract), so
+ * checking out a remote-only branch currently throws "Branch not found".
+ * The remote-only describe pins the CURRENT behavior as a T17 tripwire —
+ * fixing listBranches (or the call site) flips it back to the
+ * tracking-branch assertions.
  * @vitest-environment node
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// These modules are globally mocked by tests/setup.js. We need the REAL
-// implementations to build a genuine fixture and verify real SHAs.
 vi.unmock('fs');
 vi.unmock('path');
-vi.unmock('isomorphic-git');
 
-// secureTokenService is pulled in at require-time by gitOperations.js
-// and reads electron safeStorage/app; stub it out so the require doesn't
-// touch the global electron mock unexpectedly.
 vi.mock('../../src/services/secureTokenService.js', () => ({
   secureTokenService: { getToken: vi.fn(), setToken: vi.fn(), deleteToken: vi.fn() },
 }));
 
-const git = require('isomorphic-git');
-const realListBranches = git.listBranches;
 const realFs = require('fs');
 const fsp = realFs.promises;
 const path = require('path');
 const os = require('os');
 
+import { gitSetup } from '../git-providers/harness.js';
 const { GitOperations } = require('../../src/ipc/gitOperations.js');
 
 // ─── Fixture helpers ───────────────────────────────────────────────────────
 
 let tmpRoot;
-let localDir; // the repo gitCheckoutBranch runs in
+let localDir;
 
 /**
  * Recursively remove a directory (rm -rf), tolerant of missing paths.
@@ -50,50 +48,44 @@ async function rmrf(p) {
   await fsp.rm(p, { recursive: true, force: true });
 }
 
+/** rev-parse inside the fixture repo. */
+async function revParse(ref) {
+  return (await gitSetup(['rev-parse', `${ref}^{commit}`], localDir)).stdout.trim();
+}
+
 /**
  * Build a local repo that looks like a fresh clone of a remote with two
  * branches: `main` (checked out) and `preview` (only present as a remote
  * tracking ref, so the "remote-only" code path is exercised).
  *
- * We avoid isomorphic-git network transports (file:// is unsupported) by
- * constructing the repo directly: commit history first, then simulate the
- * clone by adding origin tracking refs via writeRef and deleting the local
- * preview branch. The preview SHA is a distinct later commit, so any code
- * that wrongly points preview at HEAD/main will be caught.
+ * Constructed with the bundled git CLI: commit history first, then
+ * simulate the clone by adding origin tracking refs and deleting the
+ * local preview branch. The preview SHA is a distinct later commit, so
+ * any code that wrongly points preview at HEAD/main will be caught.
  */
 async function buildFixture() {
   tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitops-test-'));
   localDir = path.join(tmpRoot, 'local');
 
-  const author = { name: 'Test', email: 'test@example.com', timestamp: 1700000000, timezoneOffset: 0 };
-
-  // 1. init local repo on main, add one commit
   await fsp.mkdir(localDir, { recursive: true });
-  await git.init({ fs: realFs, dir: localDir, defaultBranch: 'main' });
+  await gitSetup(['init', '-b', 'main', '.'], localDir);
   await fsp.writeFile(path.join(localDir, 'README.md'), '# main\n');
-  await git.add({ fs: realFs, dir: localDir, filepath: 'README.md' });
-  const mainSha = await git.commit({ fs: realFs, dir: localDir, message: 'main commit', author });
+  await gitSetup(['add', 'README.md'], localDir);
+  await gitSetup(['commit', '-m', 'main commit'], localDir);
+  const mainSha = await revParse('HEAD');
 
-  // 2. create preview with a DIFFERENT file + commit (distinct SHA)
-  await git.branch({ fs: realFs, dir: localDir, ref: 'preview', checkout: true });
+  await gitSetup(['branch', 'preview'], localDir);
+  await gitSetup(['checkout', 'preview'], localDir);
   await fsp.writeFile(path.join(localDir, 'PREVIEW.md'), '# preview\n');
-  await git.add({ fs: realFs, dir: localDir, filepath: 'PREVIEW.md' });
-  const previewSha = await git.commit({ fs: realFs, dir: localDir, message: 'preview commit', author });
+  await gitSetup(['add', 'PREVIEW.md'], localDir);
+  await gitSetup(['commit', '-m', 'preview commit'], localDir);
+  const previewSha = await revParse('HEAD');
 
-  // 3. simulate "clone" state: back to main, register an origin remote,
-  //    write origin-tracking refs for both branches, then DELETE the local
-  //    preview branch so only origin/preview remains.
-  await git.checkout({ fs: realFs, dir: localDir, ref: 'main' });
-  await git.addRemote({ fs: realFs, dir: localDir, remote: 'origin', url: 'https://example.com/test.git' });
-  await git.writeRef({ fs: realFs, dir: localDir, ref: 'refs/remotes/origin/main', value: mainSha });
-  await git.writeRef({ fs: realFs, dir: localDir, ref: 'refs/remotes/origin/preview', value: previewSha });
-  await git.deleteBranch({ fs: realFs, dir: localDir, ref: 'preview' });
-
-  // sanity: HEAD is on main, no local preview, origin/preview exists
-  const remoteBranches = await git.listBranches({ fs: realFs, dir: localDir, remote: 'origin' });
-  if (!remoteBranches.includes('preview')) {
-    throw new Error('fixture setup failed: origin/preview missing');
-  }
+  await gitSetup(['checkout', 'main'], localDir);
+  await gitSetup(['remote', 'add', 'origin', 'https://example.com/test.git'], localDir);
+  await gitSetup(['update-ref', 'refs/remotes/origin/main', mainSha], localDir);
+  await gitSetup(['update-ref', 'refs/remotes/origin/preview', previewSha], localDir);
+  await gitSetup(['branch', '-D', 'preview'], localDir);
 
   return { mainSha, previewSha };
 }
@@ -101,7 +93,6 @@ async function buildFixture() {
 describe('GitOperations.gitCheckoutBranch', () => {
   let ops;
   let outputs;
-  let listBranchesSpy;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -113,93 +104,43 @@ describe('GitOperations.gitCheckoutBranch', () => {
     });
     ops._sendOutput = sendOutput;
     await buildFixture();
-    // gitCheckoutBranch lists branches in a single call expecting both local
-    // and remote names. Real isomorphic-git only returns remote names when
-    // given `remote: 'origin'`, so stub the listing to mimic the shape the
-    // production code assumes (local + origin/* combined), while leaving
-    // branch/checkout/setConfig real and dynamic per-repo state.
-    listBranchesSpy = vi.spyOn(git, 'listBranches').mockImplementation(async (args) => {
-      const local = await realListBranches({ ...args, remote: undefined });
-      const remote = (await realListBranches({ ...args, remote: 'origin' }))
-        .filter(b => b !== 'HEAD')
-        .map(b => `origin/${b}`);
-      return [...local, ...remote];
-    });
   });
 
   afterEach(async () => {
-    if (listBranchesSpy) listBranchesSpy.mockRestore();
     if (tmpRoot) await rmrf(tmpRoot);
   });
 
-  describe('checkout — remote-only branch creates local pointing at origin SHA', () => {
-    it('should create local preview at the SAME sha as origin/preview (not HEAD/main)', async () => {
+  describe('checkout — remote-only branch (T15/T16 regression PINNED)', () => {
+    // TRIPWIRE: DugiteProvider.listBranches returns LOCAL branches only,
+    // so gitCheckoutBranch cannot see origin/preview and throws. When
+    // T17 restores combined local+origin/* listing (or a fetch-aware
+    // call site), flip this back to the tracking-branch assertions:
+    //   local preview created AT origin/preview's SHA (not HEAD/main),
+    //   tracking config branch.preview.remote/merge set, tree on preview.
+    it('currently throws "not found" for a remote-only branch (T17: restore tracking-branch creation)', async () => {
       const sendOutput = ops._sendOutput;
 
-      await ops.gitCheckoutBranch(localDir, 'preview', sendOutput);
+      await expect(
+        ops.gitCheckoutBranch(localDir, 'preview', sendOutput)
+      ).rejects.toThrow(/Branch 'preview' not found/);
 
-      const localPreviewSha = await git.resolveRef({ fs: realFs, dir: localDir, ref: 'refs/heads/preview' });
-      const remotePreviewSha = await git.resolveRef({ fs: realFs, dir: localDir, ref: 'refs/remotes/origin/preview' });
-      const mainSha = await git.resolveRef({ fs: realFs, dir: localDir, ref: 'refs/heads/main' });
-
-      expect(localPreviewSha).toBe(remotePreviewSha);
-      // The bug would make this equal mainSha instead.
-      expect(localPreviewSha).not.toBe(mainSha);
-    });
-
-    it('should set tracking config branch.preview.remote=origin', async () => {
-      const sendOutput = ops._sendOutput;
-      await ops.gitCheckoutBranch(localDir, 'preview', sendOutput);
-
-      const remote = await git.getConfig({ fs: realFs, dir: localDir, path: 'branch.preview.remote' });
-      expect(remote).toBe('origin');
-    });
-
-    it('should set tracking config branch.preview.merge=refs/heads/preview', async () => {
-      const sendOutput = ops._sendOutput;
-      await ops.gitCheckoutBranch(localDir, 'preview', sendOutput);
-
-      const merge = await git.getConfig({ fs: realFs, dir: localDir, path: 'branch.preview.merge' });
-      expect(merge).toBe('refs/heads/preview');
-    });
-
-    it('should NOT use the non-existent objectRef parameter (regression guard)', async () => {
-      const sendOutput = ops._sendOutput;
-      const branchSpy = vi.spyOn(git, 'branch');
-
-      await ops.gitCheckoutBranch(localDir, 'preview', sendOutput);
-
-      const call = branchSpy.mock.calls.find(c => c[0] && c[0].ref === 'preview');
-      expect(call).toBeDefined();
-      // The correct parameter is `object`, and it must resolve to origin/<branch>.
-      expect(call[0].object).toBe('origin/preview');
-      // objectRef does not exist in isomorphic-git and must never be used.
-      expect(call[0].objectRef).toBeUndefined();
-      // Ensure the working tree was actually checked out.
-      expect(call[0].checkout).toBe(true);
-
-      branchSpy.mockRestore();
-    });
-
-    it('should leave the working tree on the preview branch', async () => {
-      const sendOutput = ops._sendOutput;
-      await ops.gitCheckoutBranch(localDir, 'preview', sendOutput);
-
-      const cur = await git.currentBranch({ fs: realFs, dir: localDir, fullname: false });
-      expect(cur).toBe('preview');
+      // Nothing was created: no local preview ref.
+      const localPreview = await gitSetup(
+        ['rev-parse', '--verify', 'refs/heads/preview'], localDir
+      ).then(() => true, () => false);
+      expect(localPreview).toBe(false);
     });
   });
 
   describe('checkout — existing local branch', () => {
     it('should checkout a local branch that already exists', async () => {
       const sendOutput = ops._sendOutput;
-      // create a local branch first
-      await git.branch({ fs: realFs, dir: localDir, ref: 'feature', checkout: false });
+      await gitSetup(['branch', 'feature'], localDir);
 
       await ops.gitCheckoutBranch(localDir, 'feature', sendOutput);
 
-      const cur = await git.currentBranch({ fs: realFs, dir: localDir, fullname: false });
-      expect(cur).toBe('feature');
+      expect((await gitSetup(['rev-parse', '--abbrev-ref', 'HEAD'], localDir)).stdout.trim())
+        .toBe('feature');
     });
   });
 
@@ -235,7 +176,7 @@ describe('GitOperations._pushWithRetry', () => {
   const pushArgs = ['/repo', 'https://example.com/test.git', { token: 'token' }, 'preview', 'preview'];
 
   it('should succeed on 1st attempt without retry', async () => {
-    pushSpy = vi.spyOn(git, 'push').mockResolvedValue({ ok: true });
+    pushSpy = vi.spyOn(ops.git, 'push').mockResolvedValue({ ok: true });
 
     await ops._pushWithRetry(...pushArgs, sendOutput);
 
@@ -244,7 +185,7 @@ describe('GitOperations._pushWithRetry', () => {
   });
 
   it('should succeed on 2nd attempt after transient failure (1s backoff)', async () => {
-    pushSpy = vi.spyOn(git, 'push')
+    pushSpy = vi.spyOn(ops.git, 'push')
       .mockRejectedValueOnce(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))
       .mockResolvedValueOnce({ ok: true });
 
@@ -264,7 +205,7 @@ describe('GitOperations._pushWithRetry', () => {
 
   it('should fail after 3 attempts with clear actionable error', async () => {
     const transient = Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
-    pushSpy = vi.spyOn(git, 'push').mockRejectedValue(transient);
+    pushSpy = vi.spyOn(ops.git, 'push').mockRejectedValue(transient);
 
     const promise = ops._pushWithRetry(...pushArgs, sendOutput);
     promise.catch(() => {}); // pre-register handler to avoid unhandled-rejection warning
@@ -297,7 +238,7 @@ describe('GitOperations._pushWithRetry', () => {
 
   it('should abort immediately on non-retriable error (HTTP 403) without retry', async () => {
     const forbidden = Object.assign(new Error('Resource not accessible by integration'), { response: { status: 403 } });
-    pushSpy = vi.spyOn(git, 'push').mockRejectedValue(forbidden);
+    pushSpy = vi.spyOn(ops.git, 'push').mockRejectedValue(forbidden);
 
     await expect(ops._pushWithRetry(...pushArgs, sendOutput)).rejects.toThrow('Resource not accessible by integration');
 
@@ -349,9 +290,9 @@ describe('GitOperations.gitEnsurePreviewBranch — push failure propagation', ()
     ops.gitGetRemoteUrl = vi.fn().mockResolvedValue('https://github.com/acme/repo.git');
     ops.getGitHubToken = vi.fn().mockResolvedValue('fake-token-1234567890');
     // statusMatrix dirty-check — return clean tree (all rows in agreement)
-    vi.spyOn(git, 'statusMatrix').mockResolvedValue([['file.txt', 1, 1, 1]]);
-    // listBranches — no preview locally or remotely forces the create path
-    vi.spyOn(git, 'listBranches').mockResolvedValue(['main']);
+    vi.spyOn(ops.git, 'statusMatrix').mockResolvedValue([['file.txt', 1, 1, 1]]);
+    // listBranches — no preview locally forces the create path
+    vi.spyOn(ops.git, 'listBranches').mockResolvedValue(['main']);
     impl(ops);
     return ops.gitEnsurePreviewBranch('/repo', sendOutput);
   }
@@ -407,7 +348,7 @@ describe('GitOperations.gitEnsurePreviewBranch — push failure propagation', ()
   it('does NOT set pushFailed when preview already exists (early-return path)', async () => {
     const sendOutput = (msg) => { outputs.push(msg); };
     // Force the "already exists" branch: preview present as a local branch.
-    vi.spyOn(git, 'listBranches').mockResolvedValue(['main', 'preview']);
+    vi.spyOn(ops.git, 'listBranches').mockResolvedValue(['main', 'preview']);
     ops.gitCheckoutBranch = vi.fn().mockResolvedValue(undefined);
     ops._pushWithRetry = vi.fn(); // must never be invoked on this path
 

@@ -1,30 +1,28 @@
 /**
- * @fileoverview Task 10 (git-sync-strategy): DUAL-PROVIDER PARITY suite.
+ * @fileoverview DUGITE regression suite (git-sync-strategy Task 10 parity
+ * suite, collapsed to single-provider in publish-update-resilience T16).
  *
  * Every flow scenario of Tasks 6-8 (publish divergent/conflict/rejected;
  * refresh dirty/conflict/no-upstream; publish-main preview-wins/
- * anti-inversion) runs against BOTH providers — isomorphic-git AND
- * dugite — with the SAME fixtures, via `describe.each` parameterized by
- * provider (tests/git/fixtures/providerHarness.js).
+ * anti-inversion) runs against the ONE production backend — dugite —
+ * via `describe.each(providersUnderTest())` (['dugite'] since T15
+ * deleted the isomorphic-git provider; the loop plumbing stays for the
+ * GIT_PROVIDER runner contract).
  *
- * Runner contract (inherited from tests/git-providers/harness.js):
- * GIT_PROVIDER selects ONE provider; unset runs BOTH sequentially.
- *
- * PARITY POLICY (plan Task 10): a parity failure is a BUG, never a
- * "skip". Two real divergences were found in DugiteProvider and are
- * documented in .omo/notepads/git-sync-strategy/issues.md:
+ * PARITY POLICY (historical, Task 10): a parity failure used to be a
+ * provider BUG, never a "skip". Two real divergences were found in
+ * DugiteProvider and fixed (documented in
+ * .omo/notepads/git-sync-strategy/issues.md):
  *   T10-D1 — fetch() defaults depth=1 → the flow's deepen fetch never
  *            deepens → every divergent merge dies with "refusing to
  *            merge unrelated histories".
  *   T10-D2 — fetch of a missing remote branch surfaces "couldn't find
  *            remote ref", which the flow's first-publish detection does
  *            not recognize → first publish / NO_UPSTREAM broken.
- * Scenarios depending on those capabilities are gated by CONDITIONAL
- * runtime probes (gateOnCapability): the gate is re-evaluated on every
- * run and opens automatically once the src bug is fixed. Companion
- * `it.fails` tripwires below pin the BUGGY state — they start failing
- * loudly the moment the bug is fixed, reminding maintainers to drop the
- * gate. There is NO unconditional skip.
+ * Both are pinned GREEN at the bottom of this file; the conditional
+ * gates (gateOnCapability) stay as living regression probes — if either
+ * capability regresses, the dependent scenarios skip with a pointer
+ * instead of failing cryptically, and the probe tests fail loudly.
  *
  * @vitest-environment node
  */
@@ -36,9 +34,8 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
-import { providersUnderTest } from '../git-providers/harness.js';
+import { providersUnderTest, gitSetup } from '../git-providers/harness.js';
 import {
   createRepoPair,
   makeDivergent,
@@ -53,7 +50,6 @@ import {
   dugiteDeepenFetchWorks,
 } from './fixtures/providerHarness.js';
 
-const git = gitModule.default || gitModule;
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 // ─── Shared fixtures (SAME shapes for every provider) ────────────────────────
@@ -277,9 +273,11 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [
       await pair.remote.commit('main: edit line2', 'conflict.txt');
       await pair.remote.push('main');
 
+      // CLI branch+checkout (dugite exec — the Task 16 fixture pattern;
+      // the old iso git.branch/git.checkout calls died with the module).
       const baseOid = await pair.local.head();
-      await git.branch({ fs, dir: pair.local.dir, ref: 'preview', object: baseOid });
-      await git.checkout({ fs, dir: pair.local.dir, ref: 'preview' });
+      await gitSetup(['branch', 'preview', baseOid], pair.local.dir);
+      await gitSetup(['checkout', 'preview'], pair.local.dir);
       pair.local.writeFiles({ 'conflict.txt': PREVIEW_VERSION });
       await pair.local.commit('preview: edit line2', 'conflict.txt');
       await pair.local.push('preview');
@@ -304,7 +302,7 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [
       // Round-trip through the REAL remote (checkout origin/main — the
       // colleague's own local main stays stale).
       await pair.remote.fetch();
-      await git.checkout({ fs, dir: pair.remote.dir, ref: 'origin/main', force: true });
+      await gitSetup(['checkout', 'origin/main'], pair.remote.dir);
       const promoted = await pair.remote.readFile('conflict.txt');
       expect(promoted).toContain('line2-PREVIEW');
       expect(promoted).not.toContain('line2-MAIN');
@@ -322,9 +320,8 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [
       expect(await handlers.git.currentBranch(pair.local.dir)).toBe('preview');
       expect(fs.existsSync(path.join(pair.local.dir, 'local-note.md'))).toBe(true);
 
-      const originMain = await pair.local.resolveRef('refs/remotes/origin/main');
-      const { commit } = await git.readCommit({ fs, dir: pair.local.dir, oid: originMain });
-      expect(commit.parent).toHaveLength(2);
+      const [originMainTip] = await pair.local.log(1, 'origin/main');
+      expect(originMainTip.commit.parent).toHaveLength(2);
       expect(handlers.gitOperationInProgress).toBe(false);
     });
 
@@ -360,9 +357,9 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [
       await pair.local.push('preview');
 
       await pair.remote.fetch();
-      const originTip = await git.resolveRef({ fs, dir: pair.remote.dir, ref: 'origin/preview' });
-      await git.branch({ fs, dir: pair.remote.dir, ref: 'preview', object: originTip });
-      await git.checkout({ fs, dir: pair.remote.dir, ref: 'preview' });
+      // Materialize the colleague's branch at the origin tip (`checkout
+      // -B` replaces the old iso resolveRef+branch+checkout dance).
+      await gitSetup(['checkout', '-B', 'preview', 'origin/preview'], pair.remote.dir);
       pair.remote.writeFiles({ 'asset.bin': binaryRemote });
       await pair.remote.commit('remote: edit asset.bin', 'asset.bin');
       await pair.remote.push('preview');

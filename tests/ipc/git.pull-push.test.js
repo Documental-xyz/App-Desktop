@@ -1,46 +1,18 @@
 /**
  * @fileoverview Tests for GitHandlers pull/push/listRemoteBranches
  * Tests auth integration, lock mechanism, progress patterns, and edge cases.
+ *
+ * Backend seam (publish-update-resilience T16): mockDugiteProvider — a
+ * real DugiteProvider with every method spied (fixtures/
+ * mockDugiteProvider.js). Auth assertions read the PROVIDER contract
+ * (`auth: { token }` in the options object) — the old iso onAuth
+ * ({username, password}) mapping died with the provider in T15.
  * @author Documental Team
  * @since 1.0.0
  * @vitest-environment node
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-
-vi.mock('isomorphic-git', () => ({
-  default: {},
-  pull: vi.fn(),
-  push: vi.fn(),
-  currentBranch: vi.fn(),
-  fetch: vi.fn(),
-  checkout: vi.fn(),
-  getConfig: vi.fn(),
-  listRemotes: vi.fn(),
-  listServerRefs: vi.fn(),
-  // Task 6 publish surface (backup assessment + commit-first flow)
-  statusMatrix: vi.fn(),
-  resolveRef: vi.fn(),
-  writeRef: vi.fn(),
-  add: vi.fn(),
-  remove: vi.fn(),
-  commit: vi.fn(),
-  branch: vi.fn(),
-  deleteBranch: vi.fn(),
-  merge: vi.fn(),
-  fastForward: vi.fn(),
-  canFastForward: vi.fn(),
-  readBlob: vi.fn(),
-  readCommit: vi.fn(),
-  listBranches: vi.fn(),
-  listRefs: vi.fn(),
-  setConfig: vi.fn(),
-  isDescendent: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock('isomorphic-git/http/node', () => ({
-  default: {},
-}));
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: vi.fn(() => []) },
@@ -69,13 +41,14 @@ vi.mock('../../src/ipc/gitOperations.js', () => ({
 }));
 
 import { GitHandlers } from '../../src/ipc/git.js';
-import { IsomorphicGitProvider } from '../../src/git/providers/IsomorphicGitProvider.js';
 import { GitService } from '../../src/git/GitService.js';
+import { mockDugiteProvider } from '../git/fixtures/mockDugiteProvider.js';
 
 describe('GitHandlers pull/push/listRemoteBranches', () => {
   let handlers;
   let mockLogger;
   let mockDatabaseManager;
+  let git; // mockDugiteProvider handle (every method is a spy)
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -87,24 +60,12 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
     };
     mockDatabaseManager = { getDatabase: vi.fn() };
 
-    // T14: the factory default flipped to dugite (which ignores the iso
-    // loaders these tests rely on). The iso-wired provider — the exact
-    // wiring the factory's legacy iso path used to perform — is now
-    // injected explicitly so the vi.mock('isomorphic-git') seam keeps
-    // serving these handler tests. Loaders must return PROMISES (like
-    // git.js _getGit/_getHttp): _authForRemote calls .then() directly
-    // on the loaded module.
-    const isoModule = await import('isomorphic-git');
-    const httpModule = await import('isomorphic-git/http/node');
-    const isoProvider = new IsomorphicGitProvider({
-      loadGit: async () => isoModule,
-      loadHttp: async () => httpModule,
-    });
+    git = mockDugiteProvider();
 
     handlers = new GitHandlers({
       logger: mockLogger,
       databaseManager: mockDatabaseManager,
-      gitService: new GitService({ provider: isoProvider }),
+      gitService: new GitService({ provider: git }),
     });
   });
 
@@ -121,19 +82,17 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
     it('lock is released after successful pull', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockResolvedValue({});
-      git.pull.mockResolvedValue({});
+      git.fastForward.mockResolvedValue(true);
       await handlers.gitPullFromPreview('/test/path').catch(() => {});
       expect(handlers.gitOperationInProgress).toBe(false);
     });
 
     it('lock is released even when pull throws error', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
-      git.pull.mockRejectedValue(new Error('network error'));
+      git.fetch.mockRejectedValue(new Error('network error'));
       await handlers.gitPullFromPreview('/test/path').catch(() => {});
       expect(handlers.gitOperationInProgress).toBe(false);
     });
@@ -155,34 +114,21 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
     it('passes auth to git.pull() in the provider contract shape (auth.token)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockResolvedValue({});
       git.pull.mockResolvedValue({});
-      // F3-D1: canFastForward is REAL now — distinct SHAs + false ancestry
-      // route to git.pull (undefined resolveRef mocks would shortcut to
-      // fastForward and never call pull).
-      git.resolveRef.mockImplementation(async ({ ref }) =>
-        ref === 'HEAD' || ref === 'main' ? 'local-sha' : 'origin-sha'
-      );
-      git.isDescendent.mockResolvedValue(false);
-      git.listRemotes.mockResolvedValue([
-        { remote: 'origin', url: 'https://github.com/user/repo.git' },
-      ]);
+      // F3-D1: canFastForward is REAL now — false ancestry routes to
+      // git.pull (true would shortcut to fastForward and never call pull).
+      git.canFastForward.mockResolvedValue(false);
       await handlers.gitPullFromPreview('/test/path');
-      const pullCall = git.pull.mock.calls[0]?.[0];
-      // IPC passes auth:{token}; the iso provider maps it to its internal
-      // (async) onAuth ({username: token, password: x-oauth-basic}).
-      expect(pullCall?.onAuth).toEqual(expect.any(Function));
-      await expect(pullCall?.onAuth()).resolves.toEqual({
-        username: 'ghp_test_token',
-        password: 'x-oauth-basic',
-      });
+      const pullCall = git.pull.mock.calls[0]?.[1];
+      // IPC passes auth:{token} straight through to the provider contract.
+      expect(pullCall?.auth).toEqual({ token: 'ghp_test_token' });
+      expect(pullCall?.ref).toBe('main');
     });
 
     it('returns error when HEAD is detached (currentBranch returns null)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue(null);
       const result = await handlers.gitPullFromPreview('/test/path');
       expect(result.success).toBe(false);
@@ -192,7 +138,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
   describe('gitPushToBranch', () => {
     beforeEach(async () => {
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.statusMatrix.mockResolvedValue([]); // clean
       git.resolveRef.mockResolvedValue('same-sha');
@@ -214,7 +159,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
     it('calls configureGitForUser() before pushing', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
-      const git = await import('isomorphic-git');
       git.push.mockResolvedValue({});
       await handlers.gitPushToBranch('/test/path', 'main');
       expect(handlers.gitOps.configureGitForUser).toHaveBeenCalledWith('/test/path');
@@ -223,10 +167,9 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
     it('includes remote: origin in git.push() call', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
-      const git = await import('isomorphic-git');
       git.push.mockResolvedValue({});
       await handlers.gitPushToBranch('/test/path', 'main');
-      const pushCall = git.push.mock.calls[0]?.[0];
+      const pushCall = git.push.mock.calls[0]?.[1];
       expect(pushCall?.remote).toBe('origin');
     });
 
@@ -241,7 +184,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
   describe('gitListRemoteBranches', () => {
     it('calls getGitHubToken() to obtain auth token', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue(null);
-      const git = await import('isomorphic-git');
       git.listServerRefs.mockResolvedValue([]);
       await handlers.gitListRemoteBranches('/test/path').catch(() => {});
       expect(handlers.gitOps.getGitHubToken).toHaveBeenCalled();
@@ -249,20 +191,17 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
     it('passes auth to git.listServerRefs() when token exists', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
-      const git = await import('isomorphic-git');
       git.listServerRefs.mockResolvedValue([]);
       git.getConfig.mockResolvedValue('https://github.com/user/repo.git');
       await handlers.gitListRemoteBranches('/test/path').catch(() => {});
-      const refCall = git.listServerRefs.mock.calls[0]?.[0];
-      expect(refCall?.onAuth).toEqual(expect.any(Function));
-      expect(refCall?.onAuth()).toEqual({ username: 'ghp_test_token', password: 'x-oauth-basic' });
+      const refCall = git.listServerRefs.mock.calls[0];
+      expect(refCall?.[1]?.auth).toEqual({ token: 'ghp_test_token' });
     });
   });
 
   describe('Error handling', () => {
     it('pull handles network error gracefully (returns error instead of throwing)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockRejectedValue(new Error('ECONNREFUSED network error'));
       const result = await handlers.gitPullFromPreview('/test/path');
@@ -273,7 +212,10 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
     it('push handles non-fast-forward error gracefully', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
-      const git = await import('isomorphic-git');
+      git.currentBranch.mockResolvedValue('main');
+      git.statusMatrix.mockResolvedValue([]);
+      git.resolveRef.mockResolvedValue('same-sha');
+      git.fetch.mockResolvedValue({});
       git.push.mockRejectedValue(new Error('non-fast-forward'));
       const result = await handlers.gitPushToBranch('/test/path', 'main');
       expect(result).toBeDefined();
@@ -282,7 +224,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
     it('pull categorizes 401 authentication errors', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.fetch.mockRejectedValue(new Error('HTTP Error: 401 Unauthorized'));
       const result = await handlers.gitPullFromPreview('/test/path');
@@ -324,7 +265,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
     it('push continues when configureGitForUser returns false (best-effort)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
       vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(false);
-      const git = await import('isomorphic-git');
       git.currentBranch.mockResolvedValue('main');
       git.statusMatrix.mockResolvedValue([]);
       git.resolveRef.mockResolvedValue('same-sha');
@@ -337,7 +277,6 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
 
     it('listRemoteBranches works without auth token (public repos)', async () => {
       vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue(null);
-      const git = await import('isomorphic-git');
       git.getConfig.mockResolvedValue('https://github.com/user/repo.git');
       git.listServerRefs.mockResolvedValue([
         { ref: 'refs/heads/main' },
@@ -345,8 +284,8 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       ]);
       const result = await handlers.gitListRemoteBranches('/test/path');
       expect(result).toEqual({ success: true, branches: ['main', 'develop'], defaultBranch: 'main' });
-      const refCall = git.listServerRefs.mock.calls[0]?.[0];
-      expect(refCall.onAuth).toBeUndefined();
+      const refCall = git.listServerRefs.mock.calls[0];
+      expect(refCall[1].auth).toBeUndefined();
     });
 
     it('releaseGitLock clears the timeout timer', () => {

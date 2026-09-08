@@ -1,27 +1,16 @@
 /**
- * @fileoverview Dual-provider contract suite (plan checkbox 18 / PRD §28).
+ * @fileoverview Provider contract suite (plan checkbox 18 / PRD §28;
+ * dugite-ONLY since publish-update-resilience T16 — the isomorphic-git
+ * provider was deleted in T15, the battery runs exactly once against
+ * the production backend).
  *
- * `describeGitProvider(name, factory)` runs the SAME parametrized battery
- * of specs against both git providers (isomorphic-git — the INCUMBENT
- * that defines the contract — and dugite). Fixture expectations are
- * derived from incumbent behavior (iso-git), never from dugite.
+ * `describeGitProvider(name, factory)` runs the parametrized battery of
+ * specs against the provider built by the real factory. Fixture
+ * expectations were originally derived from the incumbent (iso-git);
+ * they now pin the contract directly.
  *
- * Runner contract: GIT_PROVIDER env selects ONE provider; unset runs BOTH
- * sequentially (`npm run test:providers`).
- *
- * Known documented divergences (NOT tested in the common battery):
- *  - Racy same-second same-size rewrite (T17): iso statusMatrix returns
- *    [1,1,1] (stale stat-cache) where git/dugite re-hash → [1,2,1]. A
- *    bug in iso-git's raciness protection; consumers only count dirty
- *    files. Excluded from the common fixtures — all "modified" fixtures
- *    below deliberately change file LENGTH so the stat cache cannot hit.
- *  - iso-git http/node does not honor in-flight AbortSignal (T9): the
- *    provider forwards `signal` per contract, but the observable outcome
- *    (GitError) arrives via iso's internal ~5s request timeout rather
- *    than an immediate kill (dugite kills the process). The cancellation
- *    spec asserts the CONTRACT (GitError), not the timing.
- *
- * @vitest-environment node
+ * Runner contract: GIT_PROVIDER env selects the provider; unset runs
+ * the single dugite battery (`npm run test:providers`).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -32,7 +21,6 @@ vi.unmock('path');
 import fs from 'fs';
 import path from 'path';
 
-import { theirsMergeDriver } from '../../src/ipc/gitMergeDriver.js';
 import {
   makeTempDir,
   createHttpRemote,
@@ -190,7 +178,7 @@ function describeGitProvider(name, factory) {
 
     // ─── Merge strategies (theirs) ──────────────────────────────────────
 
-    it('merge with theirs mergeDriver resolves conflicts with theirs content and 2 parents', async () => {
+    it('merge with strategy theirs resolves conflicts with theirs content and 2 parents', async () => {
       const dir = path.join(base, 'work');
       await initLocalRepo(dir);
       // iso merge requires an author (no DEFAULT_AUTHOR fallback there);
@@ -213,10 +201,12 @@ function describeGitProvider(name, factory) {
       await provider.add(dir, 'conflicted.txt');
       await provider.commit(dir, 'ours change');
 
-      // The app path (git.js:1237/1695/1933): mergeDriver = theirsMergeDriver.
+      // The app path (git.js flows since T15): strategy 'theirs' →
+      // `git merge -X theirs` (same CLI the old theirsMergeDriver
+      // callback translated to).
       await provider.merge(dir, 'theirs-branch', {
         fastForward: false,
-        mergeDriver: theirsMergeDriver,
+        strategy: 'theirs',
       });
 
       // Documented divergence (workdir side effects): iso-git write ops
@@ -414,10 +404,18 @@ function describeGitProvider(name, factory) {
         } catch (e) {
           err = e;
         }
-        // CONTRACT: aborted network op surfaces as GitError. Timing is
-        // provider-specific (dugite: kill; iso: internal ~5s request
-        // timeout — documented divergence, T9) and is NOT asserted.
-        expect(isGitError(err)).toBe(true);
+        // CONTRACT (DugiteProvider._run, cancel-hardening T6): an aborted
+        // op rethrows the RAW abort — AbortError name / ABORT_ERR code
+        // (possibly dugite-wrapped with the AbortError on .cause) — so
+        // flow catches can dispatch {cancelled:true}. A GitError appears
+        // only when the op failed BEFORE the abort fired. Both flavors
+        // are controlled rejections: the push never hangs.
+        expect(Boolean(err)).toBe(true);
+        const abortFlavored = Boolean(err) && (
+          err.name === 'AbortError' || err.code === 'ABORT_ERR' ||
+          (err.cause && (err.cause.name === 'AbortError' || err.cause.code === 'ABORT_ERR'))
+        );
+        expect(abortFlavored || isGitError(err)).toBe(true);
 
         // Windows EBUSY guard: the rejection means dugite's execFile saw
         // the DIRECT git child exit (its callback runs post-exit), but

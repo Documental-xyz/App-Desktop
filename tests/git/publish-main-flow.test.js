@@ -25,15 +25,12 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
 import { createRepoPair, commitFile, makeDirty } from './fixtures/harness.js';
 import { httpBackendAvailable } from './fixtures/harness.js';
+import { gitSetup, providerFactory } from '../git-providers/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
-import { providerFactory } from '../git-providers/harness.js';
-
-const git = gitModule.default || gitModule;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -49,15 +46,14 @@ function makeHandlers(projectPath) {
         callback(null, { id: 1, projectPath, repoFolderName: null }),
     }),
   };
-  // Pinned to isomorphic-git: these are the iso-git integration suites
-  // (Tasks 6-8); dual-provider parity lives in tests/git/parity-suite.test.js
-  // (describe.each by provider). Without pinning, GIT_PROVIDER=dugite would
-  // silently re-bind these suites to DugiteProvider.
+  // Pinned to dugite (publish-update-resilience T16): the production
+  // backend — dual-provider parity loops are gone; these integration
+  // suites exercise the one provider the app ships.
   const handlers = new GitHandlers({
     logger: makeLogger(),
     databaseManager,
     gitService: new GitService({
-      provider: providerFactory('isomorphic-git')(),
+      provider: providerFactory('dugite')(),
     }),
   });
   vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
@@ -85,10 +81,10 @@ async function setupPromotable(pair) {
   await pair.remote.push('main');
 
   // Local branches preview at the common base and publishes the preview
-  // side of the conflict.
+  // side of the conflict (CLI setup — dugite exec, not the provider).
   const baseOid = await pair.local.head();
-  await git.branch({ fs, dir: pair.local.dir, ref: 'preview', object: baseOid });
-  await git.checkout({ fs, dir: pair.local.dir, ref: 'preview' });
+  await gitSetup(['branch', 'preview', baseOid], pair.local.dir);
+  await gitSetup(['checkout', 'preview'], pair.local.dir);
   await commitFile(pair.local, 'conflict.txt', PREVIEW_VERSION, 'preview: edit line2');
   await pair.local.push('preview');
 
@@ -143,7 +139,7 @@ describe.skipIf(!httpBackendAvailable)('gitPublishMain — preview-wins promote'
     // promoted content — the PREVIEW version of the conflicting line.
     // (checkout origin/main — the colleague's own local main is stale.)
     await pair.remote.fetch();
-    await git.checkout({ fs, dir: pair.remote.dir, ref: 'origin/main', force: true });
+    await gitSetup(['checkout', 'origin/main'], pair.remote.dir);
     const promoted = await pair.remote.readFile('conflict.txt');
     expect(promoted).toContain('line2-PREVIEW');
     expect(promoted).not.toContain('line2-MAIN');
@@ -165,15 +161,13 @@ describe.skipIf(!httpBackendAvailable)('gitPublishMain — preview-wins promote'
     expect(fs.existsSync(path.join(pair.local.dir, 'local-note.md'))).toBe(true);
 
     // origin/main advanced to a MERGE commit (two parents — no fast-forward).
-    const originMain = await pair.local.resolveRef('refs/remotes/origin/main');
-    const { commit } = await git.readCommit({
-      fs, dir: pair.local.dir, oid: originMain,
-    });
-    expect(commit.parent).toHaveLength(2);
-    expect(commit.message).toMatch(/promote/i);
+    const originMainLog = await pair.local.log(1, 'refs/remotes/origin/main');
+    const originMainCommit = originMainLog[0].commit;
+    expect(originMainCommit.parent).toHaveLength(2);
+    expect(originMainCommit.message).toMatch(/promote/i);
 
     // The WIP commit stays on LOCAL preview only (login-stamped).
-    const previewLog = await git.log({ fs, dir: pair.local.dir, ref: 'preview', depth: 10 });
+    const previewLog = await pair.local.log(10, 'preview');
     const messages = previewLog.map((c) => c.commit.message);
     expect(messages.some((m) => m.startsWith('WIP by testuser at'))).toBe(true);
 
@@ -198,7 +192,7 @@ describe.skipIf(!httpBackendAvailable)('gitPublishMain — preview-wins promote'
     expect(result.error).toMatch(/atualiz/i);
 
     // Local intact: preview branch keeps the preview edit AND the WIP commit.
-    const previewLog = await git.log({ fs, dir: pair.local.dir, ref: 'preview', depth: 10 });
+    const previewLog = await pair.local.log(10, 'preview');
     const messages = previewLog.map((c) => c.commit.message);
     expect(messages.some((m) => m.includes('preview: edit line2'))).toBe(true);
     expect(messages.some((m) => m.startsWith('WIP by testuser at'))).toBe(true);

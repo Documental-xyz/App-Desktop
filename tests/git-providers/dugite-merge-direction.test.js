@@ -1,25 +1,27 @@
 /**
  * @fileoverview DugiteProvider merge direction tests (git-sync-strategy
- * plan, Task 3 — TDD).
+ * Task 3; REWRITTEN in publish-update-resilience T16 — the shared
+ * gitMergeDriver.js module was deleted in T15).
  *
- * Bug being fixed: any `mergeDriver` callback used to degrade to
- * `-X theirs`, inverting the semantics whenever the flow asked for
- * "ours". The provider must map the driver's INTENTION to the native
- * `git merge -X ours | -X theirs` flag and fail EXPLICITLY on custom
- * drivers it cannot translate (no silent degradation).
- *
- * Driver-intent detection contract (documented in DugiteProvider.merge):
- *   1. `driver.direction === 'ours' | 'theirs'` marker property, OR
- *   2. named exports `oursMergeDriver` / `theirsMergeDriver` detected
- *      by the function's `name`.
- * Anything else → explicit error, merge does NOT execute.
+ * The production path since T15 is `strategy: 'ours'|'theirs'` on
+ * provider.merge → native `git merge -X ours|theirs` (what git.js flows
+ * pass). The provider ALSO keeps the legacy mergeDriver-callback
+ * translation (marker `.direction` / known export NAMES → -X favor;
+ * unknown callbacks fail EXPLICITLY — no silent degradation) — that
+ * surface is tested here with LOCALLY-DEFINED marker drivers, so no
+ * dependency on the deleted module remains.
  *
  * Scenario mirrors tests/git/fixtures/harness.js makeConflict (Task 2
  * parity): base 100-line file, local edits line 5, remote edits line 5
  * differently AND appends a non-conflicting remote-only line 101.
- * Assert on the committed TREE (blob at merge HEAD) — the documented
- * iso-git/dugite worktree divergence does not apply here (T16 note in
- * provider-suite.test.js).
+ * Assert on the committed TREE (blob at merge HEAD).
+ *
+ * This suite also inherits the semantic load of the deleted
+ * tests/git/merge-driver-{ours,full}.test.js (iso diff3 drivers):
+ * direction + per-hunk arbitration + non-conflicting preservation are
+ * pinned HERE at provider level, and at flow level by
+ * tests/git/merge-semantics-regression.test.js,
+ * tests/git/conflict-resolve.test.js and tests/git/parity-suite.test.js.
  *
  * @vitest-environment node
  */
@@ -34,8 +36,7 @@ import path from 'path';
 import os from 'os';
 
 import { DugiteProvider } from '../../src/git/providers/DugiteProvider.js';
-import { theirsMergeDriver, fullLocalMergeDriver, fullRemoteMergeDriver } from '../../src/ipc/gitMergeDriver.js';
-import { gitSetup, isGitError, GIT_AUTHOR } from './harness.js';
+import { gitSetup, GIT_AUTHOR } from './harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -55,11 +56,25 @@ function remoteVersion() {
   return `${baseFile().replace('line5\n', 'line5-REMOTE\n')}line101-remote\n`;
 }
 
+// Locally-defined drivers exercising the provider's legacy
+// mergeDriver-callback translation contract (the shared driver module
+// was deleted in T15; detection is marker/name based, so local
+// definitions cover it identically).
+
 /** Driver with an explicit ours-intent marker (coordination contract). */
 const oursMarkerDriver = () => ({ cleanMerge: true });
 oursMarkerDriver.direction = 'ours';
 
-/** Driver detected by name (mirrors the future oursMergeDriver export). */
+const theirsMarkerDriver = () => ({ cleanMerge: true });
+theirsMarkerDriver.direction = 'theirs';
+
+const fullLocalMarkerDriver = () => ({ cleanMerge: true });
+fullLocalMarkerDriver.direction = 'full-local';
+
+const fullRemoteMarkerDriver = () => ({ cleanMerge: true });
+fullRemoteMarkerDriver.direction = 'full-remote';
+
+/** Driver detected by name (mirrors the historical oursMergeDriver export). */
 function oursMergeDriver() {
   return { cleanMerge: true };
 }
@@ -117,6 +132,39 @@ describe('DugiteProvider merge ours/theirs direction (Task 3)', () => {
     fs.rmSync(base, { recursive: true, force: true });
   });
 
+  // The PRODUCTION path (git.js flows since T15): strategy directly.
+  it("strategy 'ours' keeps the LOCAL hunk and the non-conflicting remote change", async () => {
+    const { dir, provider } = await conflictRepo(base);
+    const localHeadBefore = await provider.resolveRef(dir, 'HEAD');
+
+    await provider.merge(dir, 'remote-side', {
+      fastForward: false,
+      strategy: 'ours',
+    });
+
+    const merged = await headBlob(provider, dir);
+    // Conflicting hunk: LOCAL wins (this is the anti-inversion assert).
+    expect(merged).toContain('line5-LOCAL\n');
+    expect(merged).not.toContain('line5-REMOTE');
+    // Non-conflicting remote change is preserved.
+    expect(merged).toContain('line101-remote\n');
+    // A real merge commit was created (2 parents ⇒ main moved).
+    expect(await provider.resolveRef(dir, 'HEAD')).not.toBe(localHeadBefore);
+  });
+
+  it("strategy 'theirs' keeps the REMOTE hunk", async () => {
+    const { dir, provider } = await conflictRepo(base);
+
+    await provider.merge(dir, 'remote-side', {
+      fastForward: false,
+      strategy: 'theirs',
+    });
+
+    const merged = await headBlob(provider, dir);
+    expect(merged).toContain('line5-REMOTE\n');
+    expect(merged).not.toContain('line5-LOCAL');
+  });
+
   it('mergeDriver with ours intent keeps the LOCAL hunk and the non-conflicting remote change', async () => {
     const { dir, provider } = await conflictRepo(base);
     const localHeadBefore = await provider.resolveRef(dir, 'HEAD');
@@ -127,13 +175,9 @@ describe('DugiteProvider merge ours/theirs direction (Task 3)', () => {
     });
 
     const merged = await headBlob(provider, dir);
-    // Conflicting hunk: LOCAL wins (this is the anti-inversion assert).
     expect(merged).toContain('line5-LOCAL\n');
     expect(merged).not.toContain('line5-REMOTE');
-    // Non-conflicting remote change is preserved (same semantics as the
-    // iso-git oursMergeDriver, Task 2 parity).
     expect(merged).toContain('line101-remote\n');
-    // A real merge commit was created (2 parents ⇒ main moved).
     expect(await provider.resolveRef(dir, 'HEAD')).not.toBe(localHeadBefore);
   });
 
@@ -151,12 +195,12 @@ describe('DugiteProvider merge ours/theirs direction (Task 3)', () => {
     expect(merged).toContain('line101-remote\n');
   });
 
-  it('mergeDriver with theirs intent keeps the REMOTE hunk (regression: theirsMergeDriver)', async () => {
+  it('mergeDriver with theirs intent keeps the REMOTE hunk', async () => {
     const { dir, provider } = await conflictRepo(base);
 
     await provider.merge(dir, 'remote-side', {
       fastForward: false,
-      mergeDriver: theirsMergeDriver,
+      mergeDriver: theirsMarkerDriver,
     });
 
     const merged = await headBlob(provider, dir);
@@ -199,9 +243,9 @@ describe('DugiteProvider mergeDriverFavor full-local/full-remote (conflict-strat
 
   // Unit level: marker + name detection translate full-* intents to -X
   // ours/theirs (NEVER -s ours — it discards the entire remote side).
-  it('maps full-local/full-remote markers and names to ours/theirs favors', () => {
-    expect(DugiteProvider.mergeDriverFavor(fullLocalMergeDriver)).toBe('ours');
-    expect(DugiteProvider.mergeDriverFavor(fullRemoteMergeDriver)).toBe('theirs');
+  it('maps full-local/full-remote markers to ours/theirs favors', () => {
+    expect(DugiteProvider.mergeDriverFavor(fullLocalMarkerDriver)).toBe('ours');
+    expect(DugiteProvider.mergeDriverFavor(fullRemoteMarkerDriver)).toBe('theirs');
   });
 
   it('full-local merge keeps the LOCAL conflicting hunk and the non-conflicting remote change', async () => {
@@ -209,7 +253,7 @@ describe('DugiteProvider mergeDriverFavor full-local/full-remote (conflict-strat
 
     await provider.merge(dir, 'remote-side', {
       fastForward: false,
-      mergeDriver: fullLocalMergeDriver,
+      mergeDriver: fullLocalMarkerDriver,
     });
 
     const merged = await headBlob(provider, dir);
@@ -251,7 +295,7 @@ describe('DugiteProvider mergeDriverFavor full-local/full-remote (conflict-strat
 
     await provider.merge(dir, 'remote-side', {
       fastForward: false,
-      mergeDriver: fullRemoteMergeDriver,
+      mergeDriver: fullRemoteMarkerDriver,
     });
 
     const merged = await headBlob(provider, dir);

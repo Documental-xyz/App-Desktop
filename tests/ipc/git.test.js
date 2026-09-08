@@ -19,11 +19,6 @@ vi.mock('electron', () => ({
   ipcMain: mockIpcMain
 }));
 
-// isomorphic-git is intentionally NOT mocked at module level: vitest's
-// vi.mock does not intercept CommonJS `require()` used by src/ipc/git.js,
-// so behavior tests below spy on the real module's methods instead.
-vi.mock('isomorphic-git/http/node', () => ({}));
-
 describe('GitHandlers Unit Tests', () => {
   let mockLogger;
   let mockDatabaseManager;
@@ -268,7 +263,7 @@ describe('GitHandlers Unit Tests', () => {
 
   describe('gitCheckoutBranch — remote-only tracking branch creation', () => {
     let gitHandlers;
-    let gitMod;
+    let provider;
     let checkoutSpy;
     let branchSpy;
     let setConfigSpy;
@@ -277,26 +272,26 @@ describe('GitHandlers Unit Tests', () => {
     beforeEach(async () => {
       vi.clearAllMocks();
       const { GitHandlers } = await import('../../src/ipc/git.js');
-      // src/ipc/git.js does `const git = require('isomorphic-git')` at load,
-      // holding a reference to the same cached module object. Spies installed
-      // on it therefore intercept calls made from inside git.js methods.
-      gitMod = require('isomorphic-git');
+      const { GitService } = await import('../../src/git/GitService.js');
+      const { mockDugiteProvider } = await import('../git/fixtures/mockDugiteProvider.js');
+      // T16 seam: a fully-spied DugiteProvider injected as the handlers'
+      // git backend — the equivalent of the old spies installed on the
+      // isomorphic-git module object.
+      provider = mockDugiteProvider();
 
       gitHandlers = new GitHandlers({
         logger: mockLogger,
-        databaseManager: mockDatabaseManager
+        databaseManager: mockDatabaseManager,
+        gitService: new GitService({ provider }),
       });
 
-      checkoutSpy = vi.spyOn(gitMod, 'checkout');
-      branchSpy = vi.spyOn(gitMod, 'branch');
-      setConfigSpy = vi.spyOn(gitMod, 'setConfig').mockResolvedValue(undefined);
+      checkoutSpy = provider.checkout;
+      branchSpy = provider.branch;
+      setConfigSpy = provider.setConfig;
       listBranchesSpy = vi.spyOn(gitHandlers, 'gitListBranches');
     });
 
     afterEach(() => {
-      checkoutSpy.mockRestore();
-      branchSpy.mockRestore();
-      setConfigSpy.mockRestore();
       listBranchesSpy.mockRestore();
     });
 
@@ -311,17 +306,17 @@ describe('GitHandlers Unit Tests', () => {
       await gitHandlers.gitCheckoutBranch('/repo', 'preview');
 
       expect(branchSpy).toHaveBeenCalledTimes(1);
-      const branchCall = branchSpy.mock.calls[0][0];
-      expect(branchCall.ref).toBe('preview');
-      expect(branchCall.checkout).toBe(true);
-      expect(branchCall.object).toBe('origin/preview');
+      // Provider contract: branch(path, ref, { object, checkout })
+      const [branchPath, branchRef, branchOpts] = branchSpy.mock.calls[0];
+      expect(branchPath).toBe('/repo');
+      expect(branchRef).toBe('preview');
+      expect(branchOpts.checkout).toBe(true);
+      expect(branchOpts.object).toBe('origin/preview');
 
-      expect(setConfigSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ path: 'branch.preview.remote', value: 'origin' })
-      );
-      expect(setConfigSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ path: 'branch.preview.merge', value: 'refs/heads/preview' })
-      );
+      // setConfig(path, key, value) — the GitService facade always
+      // forwards a trailing opts arg (undefined here).
+      expect(setConfigSpy).toHaveBeenCalledWith('/repo', 'branch.preview.remote', 'origin', undefined);
+      expect(setConfigSpy).toHaveBeenCalledWith('/repo', 'branch.preview.merge', 'refs/heads/preview', undefined);
     });
 
     it('should NOT call git.branch when local branch exists', async () => {

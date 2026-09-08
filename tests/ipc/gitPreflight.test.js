@@ -1,9 +1,10 @@
 /**
  * @fileoverview Unit tests for GitPreflight — read-only pre-lock validation.
  *
- * Mocks isomorphic-git via the module-level factory. The GitPreflight
- * constructor accepts a `getGit` option so we share the mocked module
- * reference between the test and the preflight instance.
+ * Backend seam (T16): mockDugiteProvider — the preflight's internal
+ * GitService is rewired onto a fully-spied DugiteProvider, so tests
+ * script fetch/resolveRef/statusMatrix through the PROVIDER contract
+ * (fetch(path, {ref, ...}), resolveRef(path, ref)).
  *
  * @author Documental Team
  * @since 1.0.0
@@ -12,15 +13,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('isomorphic-git', () => ({
-  default: {},
-  fetch: vi.fn(),
-  resolveRef: vi.fn(),
-  statusMatrix: vi.fn(),
-  isDescendent: vi.fn(),
-}));
-
-vi.mock('isomorphic-git/http/node', () => ({ default: {} }));
+import { mockDugiteProvider } from '../git/fixtures/mockDugiteProvider.js';
+import { GitService } from '../../src/git/GitService.js';
 
 vi.mock('@octokit/rest', () => ({
   Octokit: vi.fn().mockImplementation(() => ({
@@ -34,6 +28,10 @@ import { GitPreflight } from '../../src/ipc/gitPreflight.js';
 
 const PROJECT_ID = 1;
 const PROJECT_PATH = '/test/project';
+
+// Shared mock provider (rebuilt in beforeEach; makePreflight rewires the
+// preflight's GitService onto it).
+let git;
 
 function makeLogger() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -51,28 +49,25 @@ function makePreflight({ token } = {}) {
   const logger = makeLogger();
   const gitOps = makeGitOps(token);
   const databaseManager = { getDatabase: vi.fn() };
-  // Use a shared getGit that imports the mocked module — preflight and test
-  // see the same `git.fetch` / `git.resolveRef` mocks.
   const preflight = new GitPreflight({
     logger,
     gitOps,
     databaseManager,
-    getGit: async () => import('isomorphic-git'),
   });
+  // The constructor builds its own GitService via the factory (real
+  // dugite); rewire it onto the shared mock provider so preflight and
+  // test see the same scripted backend.
+  preflight.git = new GitService({ provider: git });
   return { preflight, logger, gitOps, databaseManager };
 }
 
 describe('GitPreflight', () => {
-  let git;
-
   beforeEach(async () => {
     vi.clearAllMocks();
-    git = await import('isomorphic-git');
+    git = mockDugiteProvider();
     git.fetch.mockResolvedValue({});
     git.resolveRef.mockResolvedValue('sha-default');
     git.statusMatrix.mockResolvedValue([]);
-    // Default: main IS an ancestor of preview (preview is ahead) — OK to promote.
-    git.isDescendent.mockResolvedValue(true);
   });
 
   // ─── runPreflightForPreview ────────────────────────────────────────────
@@ -168,7 +163,7 @@ describe('GitPreflight', () => {
       // call isDescendent; with shallow fetch (depth:1) isDescendent fails
       // for BOTH directions and incorrectly blocked legitimate promotions.
       // Now SHA inequality alone means preview has commits main lacks → allow.
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-behind-sha';
         if (ref === 'origin/main') return 'main-ahead-sha';
         if (ref === 'preview') return 'preview-behind-sha';
@@ -182,8 +177,9 @@ describe('GitPreflight', () => {
       );
 
       expect(result.canProceed).toBe(true);
-      // isDescendent must no longer be consulted from the precedence path.
-      expect(git.isDescendent).not.toHaveBeenCalled();
+      // No ancestry walk from the precedence path — SHAs alone decide
+      // (the provider's canFastForward is never consulted).
+      expect(git.canFastForward).not.toHaveBeenCalled();
     });
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when working tree has uncommitted changes', async () => {
@@ -191,7 +187,7 @@ describe('GitPreflight', () => {
 
       // Remote SHAs would normally allow proceed, but statusMatrix reports
       // a dirty file → must block BEFORE promoting to main.
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'preview-ahead-sha';
@@ -211,7 +207,7 @@ describe('GitPreflight', () => {
       expect(result.canProceed).toBe(false);
       expect(result.errors.some((e) => e.code === 'PREVIEW_NOT_AHEAD')).toBe(true);
       // Must block BEFORE the merge/push body runs.
-      expect(git.isDescendent).not.toHaveBeenCalled();
+      expect(git.canFastForward).not.toHaveBeenCalled();
     });
 
     it('hard-blocks with PREVIEW_NOT_AHEAD when local preview diverges from origin/preview (unpushed work)', async () => {
@@ -219,7 +215,7 @@ describe('GitPreflight', () => {
 
       // Remote SHAs differ (would allow), but local preview ref points at a
       // different SHA than origin/preview → user has unpushed commits.
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'origin-preview-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'local-preview-sha'; // diverged!
@@ -241,7 +237,7 @@ describe('GitPreflight', () => {
 
       // Remote SHAs differ (would allow), but resolving local 'preview' ref
       // throws → user has never published locally → must publish first.
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') throw new Error('ref not found');
@@ -261,7 +257,7 @@ describe('GitPreflight', () => {
     it('allows proceed when preview and main have different SHAs', async () => {
       const { preflight } = makePreflight();
 
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'preview-ahead-sha';
@@ -281,12 +277,13 @@ describe('GitPreflight', () => {
     it('hard-blocks with MAIN_MISSING when fetch origin/main rejects with "not found"', async () => {
       const { preflight } = makePreflight();
 
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/main') throw new Error('not found');
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         return 'sha';
       });
-      git.fetch.mockImplementation(async ({ ref }) => {
+      git.fetch.mockImplementation(async (_path, opts) => {
+        const ref = opts && opts.ref;
         if (ref === 'main') throw new Error('404 not found');
         return {};
       });
@@ -304,7 +301,7 @@ describe('GitPreflight', () => {
     it('allows proceed when preview is ahead of main (different SHAs)', async () => {
       const { preflight } = makePreflight();
 
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'preview-ahead-sha';
@@ -330,7 +327,7 @@ describe('GitPreflight', () => {
         canUserPush: false,
       });
 
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'preview-ahead-sha';
@@ -356,7 +353,7 @@ describe('GitPreflight', () => {
       // (no isDescendent) the differing SHAs correctly allow promotion.
       const { preflight } = makePreflight();
 
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-new-sha';
         if (ref === 'origin/main') return 'main-merge-sha';
         if (ref === 'preview') return 'preview-new-sha';
@@ -403,7 +400,8 @@ describe('GitPreflight', () => {
       // resolveRef('origin/preview') rejects → PREVIEW_NOT_AHEAD is returned
       // (caught), but a different reject (after main resolves) is unusual.
       // Force fetch for main to succeed but precedence to throw via fetch rejection.
-      git.fetch.mockImplementation(async ({ ref }) => {
+      git.fetch.mockImplementation(async (_path, opts) => {
+        const ref = opts && opts.ref;
         if (ref === 'main') return {};
         if (ref === 'preview') throw new Error('network glitch');
         return {};
@@ -430,7 +428,7 @@ describe('GitPreflight', () => {
       };
 
       // Precedence alone decides: preview is ahead of main → should proceed.
-      git.resolveRef.mockImplementation(async ({ ref }) => {
+      git.resolveRef.mockImplementation(async (_path, ref) => {
         if (ref === 'origin/preview') return 'preview-ahead-sha';
         if (ref === 'origin/main') return 'main-sha-behind';
         if (ref === 'preview') return 'preview-ahead-sha';

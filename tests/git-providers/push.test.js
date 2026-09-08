@@ -269,10 +269,18 @@ function describePushProvider(name, factory) {
         } catch (e) {
           err = e;
         }
-        // CONTRACT: aborted push surfaces as GitError. Timing is
-        // provider-specific (dugite: process kill; iso: internal ~5s
-        // request timeout — documented divergence, T9) and NOT asserted.
-        expect(isGitError(err)).toBe(true);
+        // CONTRACT (DugiteProvider._run, cancel-hardening T6): an aborted
+        // op rethrows the RAW abort — AbortError name / ABORT_ERR code
+        // (possibly dugite-wrapped with the AbortError on .cause) — so
+        // flow catches can dispatch {cancelled:true}. A GitError appears
+        // only when the op failed BEFORE the abort fired. Both flavors
+        // are controlled rejections: the push never hangs.
+        expect(Boolean(err)).toBe(true);
+        const abortFlavored = Boolean(err) && (
+          err.name === 'AbortError' || err.code === 'ABORT_ERR' ||
+          (err.cause && (err.cause.name === 'AbortError' || err.cause.code === 'ABORT_ERR'))
+        );
+        expect(abortFlavored || isGitError(err)).toBe(true);
       } finally {
         await new Promise((r) => remote.server.close(r));
         await closeHole();

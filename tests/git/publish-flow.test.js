@@ -42,15 +42,14 @@ function makeHandlers(projectPath) {
         callback(null, { id: 1, projectPath, repoFolderName: null }),
     }),
   };
-  // Pinned to isomorphic-git: these are the iso-git integration suites
-  // (Tasks 6-8); dual-provider parity lives in tests/git/parity-suite.test.js
-  // (describe.each by provider). Without pinning, GIT_PROVIDER=dugite would
-  // silently re-bind these suites to DugiteProvider.
+  // Pinned to dugite (publish-update-resilience T16): the production
+  // backend — dual-provider parity loops are gone; these integration
+  // suites exercise the one provider the app ships.
   const handlers = new GitHandlers({
     logger: makeLogger(),
     databaseManager,
     gitService: new GitService({
-      provider: providerFactory('isomorphic-git')(),
+      provider: providerFactory('dugite')(),
     }),
   });
   vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');

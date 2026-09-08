@@ -25,9 +25,9 @@ import path from 'path';
 
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
 import { httpBackendAvailable } from './fixtures/harness.js';
+import { gitSetup, providerFactory } from '../git-providers/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
-import { providerFactory } from '../git-providers/harness.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -45,7 +45,7 @@ function makeHandlers(projectPath) {
   const handlers = new GitHandlers({
     logger: makeLogger(),
     databaseManager,
-    gitService: new GitService({ provider: providerFactory('isomorphic-git')() }),
+    gitService: new GitService({ provider: providerFactory('dugite')() }),
   });
   vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
   vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
@@ -324,12 +324,11 @@ describe.skipIf(!httpBackendAvailable)('publish-main — conflict pending + resu
     pair.remote.writeFiles({ 'conflict.txt': 'line1\nline2-MAIN\nline3\n' });
     await pair.remote.commit('main: edit line2', 'conflict.txt');
     await pair.remote.push('main');
-    // local preview publishes the PREVIEW side of the conflict.
-    const git = (await import('isomorphic-git')).default;
-    const fsReal = fs;
+    // local preview publishes the PREVIEW side of the conflict (CLI
+    // setup — dugite exec, not the provider under test).
     const baseOid = await pair.local.head();
-    await git.branch({ fs: fsReal, dir: pair.local.dir, ref: 'preview', object: baseOid });
-    await git.checkout({ fs: fsReal, dir: pair.local.dir, ref: 'preview' });
+    await gitSetup(['branch', 'preview', baseOid], pair.local.dir);
+    await gitSetup(['checkout', 'preview'], pair.local.dir);
     pair.local.writeFiles({ 'conflict.txt': 'line1\nline2-PREVIEW\nline3\n' });
     await pair.local.commit('preview: edit line2', 'conflict.txt');
     await pair.local.push('preview');
@@ -348,9 +347,8 @@ describe.skipIf(!httpBackendAvailable)('publish-main — conflict pending + resu
     expect(result.success).toBe(true);
 
     // Round-trip through the REAL remote.
-    const git = (await import('isomorphic-git')).default;
     await pair.remote.fetch();
-    await git.checkout({ fs, dir: pair.remote.dir, ref: 'origin/main', force: true });
+    await gitSetup(['checkout', 'origin/main'], pair.remote.dir);
     const promoted = await pair.remote.readFile('conflict.txt');
     expect(promoted).toContain('line2-PREVIEW');
     expect(promoted).not.toContain('line2-MAIN');
@@ -364,9 +362,8 @@ describe.skipIf(!httpBackendAvailable)('publish-main — conflict pending + resu
     const result = await handlers.gitResolveConflict(pending.resumeToken, 'MERGE_LOCAL');
     expect(result.success).toBe(true);
 
-    const git = (await import('isomorphic-git')).default;
     await pair.remote.fetch();
-    await git.checkout({ fs, dir: pair.remote.dir, ref: 'origin/main', force: true });
+    await gitSetup(['checkout', 'origin/main'], pair.remote.dir);
     const promoted = await pair.remote.readFile('conflict.txt');
     expect(promoted).toContain('line2-MAIN');
     expect(promoted).not.toContain('line2-PREVIEW');
