@@ -7,7 +7,7 @@
  * it is the provider-layer boundary (plan checkbox 15; PRD §6.2–6.3).
  * Local operations are added to this same class by T16.
  *
- * Semantics mirrored from the legacy isomorphic-git provider (T9/T10),
+ * Semantics mirrored from the legacy provider (T9/T10),
  * which moved them verbatim from the call sites:
  *   - shallow fetch: `singleBranch: true, depth: 1`
  *     (src/ipc/git.js:1009/1520/1707/1955-1960; gitPreflight.js:369-381)
@@ -53,9 +53,9 @@
  * output cannot truncate/fail the call — we use `exec` (not `spawn`)
  * and document that choice here.
  *
- * CANCELLATION (difference vs isomorphic-git, T9): dugite forwards
+ * CANCELLATION (difference vs the legacy provider, T9): dugite forwards
  * `options.signal` to `execFile`, which KILLS the child git process on
- * abort. iso-git's http/node transport does NOT honor an in-flight
+ * abort. The legacy in-process transport did NOT honor an in-flight
  * AbortSignal — the timeout race above the provider must stay (T11/T12),
  * but with dugite the kill is real.
  *
@@ -250,7 +250,7 @@ class DugiteProvider {
   async fetch(repoPath, opts = {}) {
     // Serialize fetches per (repo, refspec): real git processes racing on
     // .git/shallow.lock fail spuriously (the flows fetch main+preview
-    // via Promise.all; iso-git is in-process and never races) — T10-D3.
+    // via Promise.all; the legacy provider is in-process and never races) — T10-D3.
     // Task 4 (fastpath perf): the key now includes the refspec so fetches
     // of DISTINCT refs no longer queue behind each other — EXCEPT for
     // fetches that WRITE .git/shallow (`--depth N` or the auto
@@ -320,7 +320,7 @@ class DugiteProvider {
   async _fetchSerialized(repoPath, opts = {}) {
     const {
       auth, signal, singleBranch = true, depth, refspec, remote = 'origin',
-      // `ref` is the arg name the flows (and iso-git callers) use for
+      // `ref` is the arg name the flows (and the legacy provider callers) use for
       // the branch being fetched; accept it as an alias of `branch`
       // (parity fix T10-D3).
       branch, ref,
@@ -337,17 +337,17 @@ class DugiteProvider {
     if (depth !== undefined) {
       args.push('--depth', String(depth));
     } else if (fs.existsSync(path.join(repoPath, '.git', 'shallow'))) {
-      // Parity fix T10-D1: iso-git's no-depth fetch fully deepens a
+      // Parity fix T10-D1: the legacy provider's no-depth fetch fully deepens a
       // shallow repo even when everything is already up to date; plain
       // git keeps the boundary in that case. `--unshallow` matches the
-      // iso-git semantics (fatal on complete repos → only when shallow).
+      // the legacy provider semantics (fatal on complete repos → only when shallow).
       args.push('--unshallow');
     }
     args.push(remote);
     if (refspec) {
       args.push(refspec);
     } else if (singleBranch) {
-      // `--single-branch` is a clone-only flag; for fetch the iso-git
+      // `--single-branch` is a clone-only flag; for fetch the legacy provider
       // semantics translate to an explicit refspec for the one branch
       // being tracked (configured by clone --single-branch).
       const name = branch || ref || await this._currentBranchName(repoPath);
@@ -361,7 +361,7 @@ class DugiteProvider {
       await this._run('fetch', args, repoPath, { repoPath, remote, auth, signal });
     } catch (err) {
       // Parity fix T10-D2: git says "couldn't find remote ref" where
-      // iso-git says "Could not find ref" — normalize so consumers
+      // the legacy provider said "Could not find ref" — normalize so consumers
       // matching /Could not find|not found|404/ behave identically.
       if (/couldn't find remote ref/i.test(String(err && err.message))) {
         throw new GitError({
@@ -374,7 +374,7 @@ class DugiteProvider {
       }
       throw err;
     }
-    // dugite has no structured FetchResult equivalent; iso-git's
+    // dugite has no structured FetchResult equivalent; the legacy provider's
     // optional fields (defaultBranch/fetchHead/pruned) are all
     // optional in the contract — resolve a bare result.
     return {};
@@ -406,10 +406,10 @@ class DugiteProvider {
    * publish flow) → `refs/heads/<branch>:refs/heads/<remoteRef>`.
    *
    * `ref` is accepted as an alias of `branch` — `_pushWithRetry`
-   * (gitOperations.js) sends `ref` (iso-git's key) and the contract
+   * (gitOperations.js) sends `ref` (the legacy provider's key) and the contract
    * must not silently drop it. A refspec starting with `:` is a DELETE
    * in the git CLI, so `remoteRef` without a branch resolves the
-   * current branch first (iso-git semantics: push HEAD to remoteRef);
+   * current branch first (the legacy provider semantics: push HEAD to remoteRef);
    * `HEAD` is used as the source when no branch is checked out.
    *
    * @param {string} repoPath - Local repository directory
@@ -428,7 +428,7 @@ class DugiteProvider {
       refspec = `refs/heads/${src}`;
     } else if (remoteRef) {
       // Never `:refs/heads/<remoteRef>` — that is branch DELETION in
-      // the git CLI. iso-git pushes the current branch instead.
+      // the git CLI. The legacy provider pushed the current branch instead.
       const current = await this._currentBranchName(repoPath);
       const source = current ? `refs/heads/${current}` : 'HEAD';
       refspec = `${source}:refs/heads/${remoteRef}`;
@@ -479,7 +479,7 @@ class DugiteProvider {
 
   // ─── Local operations + reads (T16) ─────────────────────────────────────────
   //
-  // Signatures + return formats MIRROR the legacy isomorphic-git provider
+  // Signatures + return formats MIRROR the legacy provider
   // (T10) — the
   // dual-provider suite (T18) runs the same checks against both providers,
   // so parity of contract is king. Local ops never need auth: no askpass,
@@ -490,12 +490,12 @@ class DugiteProvider {
   /**
    * Stage file(s). Contract parity with T10: `add(path, files)` where
    * files is one path or an array of paths relative to the repo root.
-   * Translation: single `git add -- <files...>` (iso-git stages
+   * Translation: single `git add -- <files...>` (the legacy provider stages
    * per-entry; one CLI call is equivalent).
    *
    * @param {string} path - Local repository directory
    * @param {string|string[]} files - File path(s) relative to the repo root
-   * @param {Record<string, unknown>} [opts] - Extra options (ignored — no iso-git cache equivalent)
+   * @param {Record<string, unknown>} [opts] - Extra options (ignored — no provider cache equivalent)
    * @returns {Promise<void>}
    */
   async add(path, files, opts = {}) {
@@ -506,10 +506,10 @@ class DugiteProvider {
 
   /**
    * Remove file(s) from the index, KEEPING the working-directory copy —
-   * iso-git 1.38.4 `remove` is index-only (empirically [1,1,0] in the
+   * the legacy provider `remove` is index-only (empirically [1,1,0] in the
    * status matrix; the dual-provider suite pins that contract). CLI:
    * `git rm --cached -f --` (`-f` because staged-but-modified files
-   * would otherwise be rejected — iso-git has no such guard).
+   * would otherwise be rejected — the legacy provider has no such guard).
    *
    * @param {string} path - Local repository directory
    * @param {string|string[]} files - File path(s) relative to the repo root
@@ -530,7 +530,7 @@ class DugiteProvider {
   /**
    * Create a commit. Contract parity with T10: `commit(path, message,
    * opts?)`; the returned OID comes from a second `git rev-parse HEAD`
-   * call. Author handling mirrors iso-git's MissingNameError fallback:
+   * call. Author handling mirrors the legacy provider's MissingNameError fallback:
    * first try the repo's own config; when git reports a missing
    * identity, retry with the app identity
    * ('documental' <documental@app> — git.js:1081, same as T10).
@@ -556,7 +556,7 @@ class DugiteProvider {
       { repoPath: path, signal }
     );
     if (!author && identity.length === 0) {
-      // Parity with T10's MissingNameError fallback: iso-git reads ONLY
+      // Parity with T10's MissingNameError fallback: the legacy provider reads ONLY
       // the repo-local config, so a global user.name must NOT win — when
       // the local config has no identity, use the app identity.
       const name = await this.getConfig(path, 'user.name');
@@ -575,7 +575,7 @@ class DugiteProvider {
 
   /**
    * Create a branch. Contract parity with T10's `branch(path, ref, opts?)`
-   * (iso-git `object` = start point, `force`, `checkout: true` =
+   * (legacy `object` = start point, `force`, `checkout: true` =
    * create + switch). Translation: `git branch [--force] <ref> [object]`,
    * followed by `git checkout <ref>` when `opts.checkout` is true.
    *
@@ -601,7 +601,7 @@ class DugiteProvider {
   }
 
   /**
-   * Delete a branch. `git branch -D` — iso-git's deleteBranch deletes
+   * Delete a branch. `git branch -D` — the legacy provider's deleteBranch deletes
    * even when the branch is not merged, so `-D` is the parity choice
    * (`-d` would refuse).
    *
@@ -616,12 +616,12 @@ class DugiteProvider {
 
   /**
    * Checkout a ref. Contract parity with T10's `checkout(path, ref,
-   * opts?)`. Translation notes (iso-git → CLI, honest mapping):
+   * opts?)`. Translation notes (the legacy provider → CLI, honest mapping):
    *   - `force` → `git checkout -f`
    *   - `createBranch` (GitTypes CheckoutOptions) → `git checkout -b`
-   *   - `noBranch: true` → iso-git semantics here are "point the ref at
+   *   - `noBranch: true` → the legacy provider semantics here are "point the ref at
    *     HEAD's commit without moving HEAD or the worktree", which is
-   *     exactly `git branch <ref>` (documented translation — iso-git
+   *     exactly `git branch <ref>` (documented translation — the legacy provider
    *     checkout with noBranch creates the branch but checks out
    *     nothing).
    *
@@ -649,12 +649,12 @@ class DugiteProvider {
 
   /**
    * Merge a ref into HEAD. Contract parity with T10's `merge(path,
-   * theirRef, opts?)`; returns MergeResult (T10 returns the raw iso-git
+   * theirRef, opts?)`; returns MergeResult (T10 returned the raw legacy provider
    * merge oid — the contract shape is `{oid, alreadyMerged, fastForward}`).
    *
    * Translation:
    *   - `strategy: 'theirs'|'ours'` (GitTypes MergeOptions) → `-X theirs|ours`
-   *   - legacy iso-git booleans `ours: true` / `theirs: true` (git.js
+   *   - legacy provider booleans `ours: true` / `theirs: true` (git.js
    *     call sites) → same `-X` mapping; a STRING `theirs` in opts
    *     overrides the positional theirRef (rest-spread parity with T10)
    *   - `mergeDriver` (a JS callback such as oursMergeDriver /
@@ -674,16 +674,16 @@ class DugiteProvider {
    *     merge FAILS EXPLICITLY before `git merge` runs (never silently
    *     degraded to `-X theirs` as the old code did).
    *
-   *     Residual divergences vs isomorphic-git drivers (documented,
+   *     Residual divergences vs the legacy provider drivers (documented,
    *     accepted at hunk granularity):
    *       - `-X ours|theirs` operates per conflicting hunk exactly like
    *         the JS drivers (non-conflicting changes from both sides are
    *         always kept), BUT delete/modify conflicts are NOT resolved
    *         by `-X` (git leaves them conflicted → errorType 'conflict')
-   *         whereas the iso-git drivers resolve them to the winning
+   *         whereas the legacy provider drivers resolve them to the winning
    *         side's content (including deletion, contents[2] = '').
    *       - dugite's merge also rewrites the working tree (git CLI
-   *         semantics); iso-git write ops leave the worktree stale —
+   *         semantics); the legacy provider write ops leave the worktree stale —
    *         callers must read the committed tree, not the files.
    *   - `fastForward: false` (git.js merge call sites) → `--no-ff`
    *
@@ -786,11 +786,11 @@ class DugiteProvider {
   /**
    * Fast-forward a branch to a ref (default: the current branch's
    * upstream `@{u}`). Contract: boolean — true when a fast-forward
-   * happened, false when already up to date (iso-git fastForward throws
+   * happened, false when already up to date (the legacy provider fastForward throws
    * on non-ff; here a non-ff "Not possible to fast-forward" surfaces as
    * GitError → errorType 'conflict', mirroring that behavior).
    *
-   * NOTE (difference): iso-git's fastForward performs a FETCH first;
+   * NOTE (difference): the legacy provider's fastForward performs a FETCH first;
    * this CLI translation only moves the local ref — callers fetch
    * separately (the app always does fetch+ff via the provider).
    *
@@ -815,9 +815,9 @@ class DugiteProvider {
 
   /**
    * Write a ref. Contract parity with T10's `writeRef(path, ref, oid,
-   * opts?)` (iso-git `value`). Translation: `git update-ref <ref> <oid>`;
+   * opts?)` (the legacy provider `value`). Translation: `git update-ref <ref> <oid>`;
    * `force: true` adds `--no-deref` (writing through symrefs is exactly
-   * what iso-git's non-force mode forbids).
+   * what the legacy provider's non-force mode forbids).
    *
    * @param {string} path - Local repository directory
    * @param {string} ref - Full ref name (e.g. 'refs/heads/main')
@@ -835,10 +835,10 @@ class DugiteProvider {
   }
 
   /**
-   * Get the working-tree state matrix — REAL parity with isomorphic-git's
+   * Get the working-tree state matrix — REAL parity with the legacy provider's
    * statusMatrix (T17). Rows `[filepath, head, workdir, stage]`.
    *
-   * iso-git builds rows from the OIDs of the three trees (HEAD, WORKDIR,
+   * the legacy provider builds rows from the OIDs of the three trees (HEAD, WORKDIR,
    * STAGE) via `entry = [undefined, headOid, workdirOid, stageOid];
    * entry.map(v => entry.indexOf(v))` — so a value is the rank of the
    * first equal OID in the triple: 0 = absent, 1/2 = distinct present
@@ -847,22 +847,22 @@ class DugiteProvider {
    * implementation reconstructs the same triple from git plumbing:
    *
    *   - head:   `git ls-tree -r -z HEAD`   (unborn HEAD → empty tree,
-   *     mirroring iso-git's getHeadTree returning [] on NotFoundError)
+   *     mirroring the legacy provider's getHeadTree returning [] on NotFoundError)
    *   - stage: `git ls-files -s -z`        (first entry per path = the
-   *     LOWEST stage — iso-git's GitIndex._addEntry keeps the first
+   *     LOWEST stage — the legacy provider's GitIndex._addEntry keeps the first
    *     index entry per path, and index entries are sorted by stage,
    *     so conflicted paths report the stage-1/base OID)
    *   - workdir: `git status --porcelain=v2 -z -uall --no-renames`
    *     tells presence/cleanliness (`-uall` because porcelain's default
-   *     collapses untracked directories while iso-git lists each file;
-   *     `--no-renames` because iso-git has no rename detection — a
+   *     collapses untracked directories while the legacy provider lists each file;
+   *     `--no-renames` because the legacy provider has no rename detection — a
    *     rename is delete+add there). Clean-vs-index files reuse the
-   *     stage OID (iso-git's stat-cache shortcut); files with workdir
+   *     stage OID (the legacy provider's stat-cache shortcut); files with workdir
    *     changes get their real blob OID via `git hash-object` (batched);
-   *     paths absent from both HEAD and index reuse iso-git's '42'
+   *     paths absent from both HEAD and index reuse the legacy provider's '42'
    *     placeholder (any OID works — only equality matters).
    *
-   * Ignored files are skipped (iso-git's default `ignored: false`).
+   * Ignored files are skipped (the legacy provider's default `ignored: false`).
    * `filter`/`filepaths` opts are not supported (callers don't use them).
    *
    * @param {string} path - Local repository directory
@@ -946,7 +946,7 @@ class DugiteProvider {
       const headOid = headMap.get(filepath);
       const stageOid = indexMap.get(filepath);
       if (headOid === undefined && stageOid === undefined) {
-        // iso-git placeholder ('42') — any OID works, only equality matters.
+        // the legacy provider placeholder ('42') — any OID works, only equality matters.
         workdirOids.set(filepath, '42');
         continue;
       }
@@ -955,7 +955,7 @@ class DugiteProvider {
         workdirOids.set(filepath, stageOid);
         continue;
       }
-      // Modified (or conflicted — iso-git hashes: conflicted stage
+      // Modified (or conflicted — the legacy provider hashes: conflicted stage
       // entries carry zeroed stats so compareStats never hits) → real OID.
       toHash.push(filepath);
     }
@@ -985,7 +985,7 @@ class DugiteProvider {
       }
     }
 
-    // iso-git row construction: [filepath, ...entry.indexOf ranks]
+    // the legacy provider row construction: [filepath, ...entry.indexOf ranks]
     /** @type {Array<[string, number, number, number]>} */
     const rows = [];
     for (const filepath of allPaths) {
@@ -1019,7 +1019,7 @@ class DugiteProvider {
   /**
    * List branches — local short names, or remote-tracking short names
    * (`origin/<name>`) when `{ remote: 'origin' }` is passed, matching
-   * iso-git's listBranches output format (T10 parity: plain string
+   * the legacy provider's listBranches output format (T10 parity: plain string
    * array).
    *
    * @param {string} path - Local repository directory
@@ -1062,7 +1062,7 @@ class DugiteProvider {
   /**
    * Resolve a ref to a commit OID. Translation: `git rev-parse
    * <ref>^{commit}` (peels annotated tags to the commit — documented
-   * divergence: iso-git's resolveRef returns the tag object OID without
+   * divergence: the legacy provider's resolveRef returns the tag object OID without
    * peeling). Error parity with T10: unresolvable refs throw GitError.
    *
    * @param {string} path - Local repository directory
@@ -1082,11 +1082,11 @@ class DugiteProvider {
 
   /**
    * Read a commit object. Returns the SAME object shape as
-   * isomorphic-git's readCommit (T10 parity):
+   * the legacy provider's readCommit (T10 parity):
    * `{oid, commit: {message, tree, parent[], author, committer},
    * payload}` where author/committer are
    * `{name, email, timestamp, timezoneOffset}` (timezoneOffset in
-   * MINUTES, sign-inverted vs the raw '+0100' string — iso-git's
+   * MINUTES, sign-inverted vs the raw '+0100' string — the legacy provider's
    * parseTimezoneOffset convention) and message keeps its trailing \n.
    * Translation: `git cat-file commit <oid>` + parse.
    *
@@ -1216,7 +1216,7 @@ class DugiteProvider {
    * `{ ref, target }` where `ref` is the ancestor candidate and `target`
    * (default 'HEAD') the descendant; boolean result, ancestor === true
    * means fast-forward possible. Equal OIDs are their own ancestors →
-   * true (git treats a commit as its own ancestor — same as the iso-git
+   * true (git treats a commit as its own ancestor — same as the legacy provider
    * equality shortcut).
    *
    * THE PERF BUG THIS CLOSES (Task 4): this class previously had NO
@@ -1249,7 +1249,7 @@ class DugiteProvider {
 
   /**
    * Read a config value from the REPO-LOCAL config only (`--local` —
-   * parity with iso-git, which reads .git/config and never the global
+   * parity with the legacy provider, which reads .git/config and never the global
    * config). Returns null when unset (exit code 1 is "not found", not
    * an error). `all: true` returns the multi-valued array.
    *
@@ -1291,7 +1291,7 @@ class DugiteProvider {
 
   /**
    * Write a config value to the repo-local config (parity with
-   * iso-git's setConfig, which writes .git/config).
+   * the legacy provider's setConfig, which writes .git/config).
    *
    * @param {string} path - Local repository directory
    * @param {string} configPath - Config key
@@ -1534,9 +1534,9 @@ class DugiteProvider {
 }
 
 /**
- * Parse `git cat-file commit <oid>` raw object into the isomorphic-git
+ * Parse `git cat-file commit <oid>` raw object into the legacy provider
  * readCommit shape: `{oid, commit: {message, tree, parent[], author,
- * committer}, payload}`. Author/committer keep iso-git's
+ * committer}, payload}`. Author/committer keep the legacy provider's
  * parseAuthor/parseTimezoneOffset convention (timestamp in seconds,
  * timezoneOffset in minutes, sign-inverted vs the raw '+0100' string,
  * 0 preserved as 0).
@@ -1551,7 +1551,7 @@ function parseCommitObject(oid, raw) {
   const sep = text.indexOf('\n\n');
   const header = sep === -1 ? text : text.slice(0, sep);
   // message = body after the header block; payload = the RAW object
-  // (headers included) — both match isomorphic-git's readCommit output.
+  // (headers included) — both match the legacy provider's readCommit output.
   const message = sep === -1 ? '' : text.slice(sep + 2);
   const payload = text;
   let tree = '';
@@ -1585,7 +1585,7 @@ function parseCommitObject(oid, raw) {
 
 /**
  * Parse an `author ...`/`committer ...` value ("Name <email> 1234567
- * +0100") exactly like iso-git's parseAuthor: regex
+ * +0100") exactly like the legacy provider's parseAuthor: regex
  * /^(.*) <(.*)> (.*) (.*)$/, timestamp Number(...), timezoneOffset via
  * the sign-inverted-minutes convention.
  *
@@ -1608,7 +1608,7 @@ function parsePerson(value) {
 }
 
 /**
- * iso-git's parseTimezoneOffset: '+0100' → -60, '-0300' → 180,
+ * the legacy provider's parseTimezoneOffset: '+0100' → -60, '-0300' → 180,
  * '+0000'/'-0000' → 0.
  *
  * @param {string} offset - Raw '+HHMM'/'-HHMM' string

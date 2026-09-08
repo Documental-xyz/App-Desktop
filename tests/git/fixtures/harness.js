@@ -3,7 +3,7 @@
  * REWRITTEN for dugite in publish-update-resilience Task 16).
  *
  * Provides REAL git repositories driven by the bundled git CLI (dugite
- * exec) — zero isomorphic-git anywhere in fixture construction. Every
+ * exec) — zero the legacy module anywhere in fixture construction. Every
  * repo-building operation (init, add, commit, push, fetch, branch,
  * checkout, log, statusMatrix) shells out to the same git binary the
  * production DugiteProvider uses; the provider-under-test is never
@@ -28,7 +28,7 @@
  *
  * Repo handle API (unchanged surface, CLI-backed): writeFiles, commit,
  * push, fetch, statusMatrix, head, resolveRef, readFile, readBytes, log.
- * The OLD `repo.git` isomorphic-git binding is GONE (Task 16) — suites
+ * The OLD `repo.git` the legacy module binding is GONE (Task 16) — suites
  * that spread it into iso calls now use the handle methods.
  *
  * Reusable scenario helpers (Tasks 2-8):
@@ -159,7 +159,7 @@ function makeRepo(dir) {
     },
 
     /**
-     * iso-git-shaped status matrix [filepath, head, workdir, stage] —
+     * the legacy module-shaped status matrix [filepath, head, workdir, stage] —
      * same plumbing as DugiteProvider.statusMatrix (proven parity in
      * tests/git-providers/provider-suite.test.js), condensed for the
      * harness: HEAD via ls-tree, stage via ls-files -s, workdir facts
@@ -170,7 +170,7 @@ function makeRepo(dir) {
       const headOut = await runIn(dir, ['ls-tree', '-r', '-z', 'HEAD']).catch((err) => {
         const msg = `${err?.stderr || ''}\n${err?.message || ''}`;
         if (/Not a valid object name|unknown revision|ambiguous argument/i.test(msg)) {
-          return ''; // unborn HEAD — empty tree (iso-git semantics)
+          return ''; // unborn HEAD — empty tree (the legacy module semantics)
         }
         throw err;
       });
@@ -224,7 +224,7 @@ function makeRepo(dir) {
         const headOid = headMap.get(filepath);
         const stageOid = indexMap.get(filepath);
         if (headOid === undefined && stageOid === undefined) {
-          workdirOids.set(filepath, '42'); // iso-git untracked placeholder
+          workdirOids.set(filepath, '42'); // the legacy module untracked placeholder
           continue;
         }
         if (info && info.cleanVsIndex) {
@@ -274,7 +274,7 @@ function makeRepo(dir) {
     },
 
     /**
-     * Commit log (newest first) with iso-git WalkEntry shape
+     * Commit log (newest first) with the legacy module WalkEntry shape
      * `{oid, commit: {message, parent}}` — message is the RAW body
      * (trailing \n kept), parent the full parent-OID array.
      */

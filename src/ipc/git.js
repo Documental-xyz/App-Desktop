@@ -223,7 +223,7 @@ class GitHandlers {
     this.databaseManager = databaseManager;
     this.gitOps = new GitOperations({ logger, databaseManager });
     // No module loaders: loadGit/loadHttp existed only to feed the
-    // isomorphic-git backend; the dugite provider takes no arguments.
+    // legacy provider; the dugite provider takes no arguments.
     this.git = gitService || new GitService({ provider: createGitProvider() });
     this.permissionHandlers = permissionHandlers || null;
     this.gitOperationInProgress = false;
@@ -298,7 +298,8 @@ class GitHandlers {
 
   /**
    * Per-step observability helper. Awaits `promise` to completion but logs a
-   * warning if it takes longer than `ms`. isomorphic-git ignores AbortSignal
+   * warning if it takes longer than `ms`. Local git ops cannot be truly
+   * cancelled mid-flight — only observed.
    * for local operations, so we cannot truly cancel — only observe.
    * @template T
    * @param {Promise<T>} promise - Operation to await.
@@ -369,7 +370,7 @@ class GitHandlers {
   }
 
   /**
-   * Returns the AbortSignal for the current operation. Pass this to isomorphic-git
+   * Returns the AbortSignal for the current operation. Pass this to the provider's
    * fetch/pull/push calls so they can be cancelled by timeout or user request.
    * @returns {AbortSignal|null}
    */
@@ -1102,7 +1103,7 @@ class GitHandlers {
     let remoteBranches = [];
     
     try {
-      // Get all branches (local and remote) using isomorphic-git's built-in method
+      // Get all branches (local and remote) via the git facade
       const allBranches = await this.git.listBranches(projectPath, { cache: this._gitCache });
       
       // Separate local and remote branches (same logic as GitOperations.js)
@@ -1694,7 +1695,7 @@ class GitHandlers {
         // topologies (PUSH_REJECTED → guided refresh merge) make origin/target
         // an ANCESTOR of HEAD, but the ancestry walk can fail on the shallow
         // depth:1 tip (isDescendent needs full history), reporting
-        // localAhead=false above. Merging anyway hits iso-git's NON-MINIMAL
+        // localAhead=false above. Merging anyway hits the legacy provider's NON-MINIMAL
         // findMergeBase (multiple bases incl. the already-merged remote tip)
         // → MergeNotSupportedError. Skipping the merge is the correct outcome:
         // the local branch is strictly ahead, the push alone syncs the remote.
@@ -1742,7 +1743,7 @@ class GitHandlers {
                 ours: targetBranch,
                 fastForward: false,
                 // T5-1: stage clean merges + conflict stages in the index
-                // BEFORE iso-git throws, so the binary fallback commit
+                // BEFORE the legacy provider throws, so the binary fallback commit
                 // keeps the remote's clean files (dugite ignores this key).
                 abortOnConflict: false,
               ...(strat
@@ -1805,7 +1806,7 @@ class GitHandlers {
         }
 
         if (!merged) {
-          // isomorphic-git merge does NOT touch the working tree — materialize
+          // the legacy provider merge does NOT touch the working tree — materialize
           // HEAD. Safe: the caller wraps this core in withMandatoryBackup.
           await this._raceTimeout(
             this.git.checkout(projectPath, targetBranch, { force: true, signal }),
@@ -1869,7 +1870,7 @@ class GitHandlers {
     if (!isConflict) {
       return null;
     }
-    // iso-git delivers data either as string[] or as an OBJECT
+    // the legacy provider delivers data either as string[] or as an OBJECT
     // {filepaths: [...], bothModified, deleteByUs, deleteByTheirs}
     // (T5-1) — both carry the conflicted paths.
     const filepathsOf = (data) => {
@@ -1917,7 +1918,7 @@ class GitHandlers {
    *    large-file stderr, 409);
    *  - T5 classes auth / large_file / conflict.
    *
-   * Retriable: T5 classes timeout | network, iso-git's empty-payload
+   * Retriable: T5 classes timeout | network, the legacy provider's empty-payload
    * pack-response ParseError (the client-side signature of a connection
    * dropped mid-push — the server died before "unpack ok"), and the
    * legacy provider evidence in gitOperations._isRetriablePushError
@@ -1937,7 +1938,7 @@ class GitHandlers {
     if (this._isPushRejected(error)) return false;
     const errorType = _classifyError ? _classifyError(error) : 'unknown';
     if (errorType === 'timeout' || errorType === 'network') return true;
-    // iso-git's signature of a connection dropped mid-push: the pack
+    // the legacy provider's signature of a connection dropped mid-push: the pack
     // response ends BEFORE "unpack ok" (ParseError on the raw error; the
     // provider wrap copies it into GitError.stderr/cause). Only the
     // empty-payload form is transient — a present-but-garbage payload
@@ -2751,7 +2752,7 @@ class GitHandlers {
           ours: BRANCH_PREVIEW,
           fastForward: false,
           // T5-1: stage clean merges + conflict stages in the index BEFORE
-          // iso-git throws, so the binary fallback commit keeps the
+          // the legacy provider throws, so the binary fallback commit keeps the
           // remote's clean files (dugite ignores this key).
           abortOnConflict: false,
           ...(strat
@@ -2785,7 +2786,7 @@ class GitHandlers {
       );
     }
 
-    // isomorphic-git merge does NOT touch the working tree — materialize
+    // the legacy provider merge does NOT touch the working tree — materialize
     // HEAD. Safe: this core runs inside withMandatoryBackup (Task 5).
     this._emitStage(op, 'finalizing', 'Finalizando atualização (checkout + limpeza)...');
     await this._raceTimeout(
@@ -3286,7 +3287,7 @@ class GitHandlers {
           ours: BRANCH_MAIN,
           fastForward: false,
           // T5-1: stage clean merges + conflict stages in the index BEFORE
-          // iso-git throws, so the binary fallback commit keeps the
+          // the legacy provider throws, so the binary fallback commit keeps the
           // remote's clean files (dugite ignores this key).
           abortOnConflict: false,
           ...(strat
@@ -3329,7 +3330,7 @@ class GitHandlers {
       });
     }
 
-    // isomorphic-git merge does NOT touch the working tree — materialize
+    // the legacy provider merge does NOT touch the working tree — materialize
     // HEAD (main). Safe: this core runs inside withMandatoryBackup.
     await this._raceTimeout(
       this.git.checkout(projectPath, BRANCH_MAIN, { force: true, signal }),

@@ -1,10 +1,10 @@
 /**
  * @fileoverview Mocked DugiteProvider seam (publish-update-resilience
- * Task 16) — the dugite replacement for the old `vi.mock('isomorphic-git')`
+ * Task 16) — the dugite replacement for the old `vi.mock('the legacy module')`
  * backend seam.
  *
  * The legacy ipc suites (git.flows, git.pull-push, gitPreflight, ...)
- * mocked the isomorphic-git MODULE to drive GitHandlers with a scripted
+ * mocked the legacy git MODULE to drive GitHandlers with a scripted
  * backend and asserted on the call shapes reaching it. Since T15 removed
  * the iso provider (and git.js speaks only the GitService/provider
  * contract), the equivalent seam is the PROVIDER INSTANCE: a real

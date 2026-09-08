@@ -1,6 +1,6 @@
 /**
  * @fileoverview Task 14 — DugiteProvider interface completeness: the
- * FORMAL GATE for Task 15 (deleting IsomorphicGitProvider).
+ * FORMAL GATE for Task 15 (deleting the legacy provider).
  *
  * The interface method list is derived by REFLECTION from the JSDoc
  * contract in src/git/GitProvider.js (`@name GitProvider#<method>`
@@ -15,7 +15,7 @@
  * required. Dugite-only superset methods (mergeBase, mergeTree) are
  * allowed extras, not gate items.
  *
- * If this suite FAILS, Task 15 MUST NOT delete IsomorphicGitProvider
+ * If this suite FAILS, Task 15 MUST NOT delete the legacy provider
  * (documented exception in the plan).
  *
  * @vitest-environment node
@@ -84,7 +84,7 @@ describe('Task 14 — DugiteProvider interface completeness (T15 gate)', () => {
       missing,
       `T15 GATE BLOCKED — DugiteProvider is missing ${missing.length} ` +
         `GitProvider interface method(s): [${missing.join(', ')}]. ` +
-        'Task 15 must NOT delete IsomorphicGitProvider until these land.'
+        'Task 15 must NOT delete the legacy provider until these land.'
     ).toEqual([]);
   });
 

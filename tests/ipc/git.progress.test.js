@@ -481,7 +481,7 @@ describe.skipIf(!httpBackendAvailable)('gitPullFromPreview — legacy payload re
     for (const e of events) {
       expect(typeof e.current).toBe('number');
       expect(typeof e.total).toBe('number');
-      // Transfer percentages were iso-git-only (its http client streamed
+      // Transfer percentages were the legacy module-only (its http client streamed
       // fetch progress); dugite does not stream them, so `percentage` is
       // an OPTIONAL key on the legacy payload (documented T2 divergence).
       expect(e.terminal).toBeUndefined();

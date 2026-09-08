@@ -1,12 +1,12 @@
 /**
  * @fileoverview Provider contract suite (plan checkbox 18 / PRD §28;
- * dugite-ONLY since publish-update-resilience T16 — the isomorphic-git
+ * dugite-ONLY since publish-update-resilience T16 — the legacy module
  * provider was deleted in T15, the battery runs exactly once against
  * the production backend).
  *
  * `describeGitProvider(name, factory)` runs the parametrized battery of
  * specs against the provider built by the real factory. Fixture
- * expectations were originally derived from the incumbent (iso-git);
+ * expectations were originally derived from the incumbent (the legacy module);
  * they now pin the contract directly.
  *
  * Runner contract: GIT_PROVIDER env selects the provider; unset runs
@@ -49,7 +49,7 @@ function rowFor(matrix, file) {
 
 /**
  * The parametrized dual-provider battery.
- * @param {string} name - provider name ('isomorphic-git' | 'dugite')
+ * @param {string} name - provider name ('the legacy module' | 'dugite')
  * @param {() => Object} factory - builds a FRESH provider instance
  */
 function describeGitProvider(name, factory) {
@@ -209,7 +209,7 @@ function describeGitProvider(name, factory) {
         strategy: 'theirs',
       });
 
-      // Documented divergence (workdir side effects): iso-git write ops
+      // Documented divergence (workdir side effects): the legacy module write ops
       // do NOT update the working tree (the file stays at the OURS
       // content), while dugite's `git merge -X theirs` rewrites it. The
       // CONTRACT both must honor is the committed TREE — read the blob
@@ -234,7 +234,7 @@ function describeGitProvider(name, factory) {
       await provider.setConfig(dir, 'dual.suite.marker', 'ok-42');
       expect(await provider.getConfig(dir, 'dual.suite.marker')).toBe('ok-42');
 
-      // iso-git returns undefined, dugite null for unset keys — both
+      // the legacy module returns undefined, dugite null for unset keys — both
       // nullish (documented, contract-level equality).
       const unset = await provider.getConfig(dir, 'dual.suite.absent');
       expect(unset == null).toBe(true);
@@ -305,7 +305,7 @@ function describeGitProvider(name, factory) {
       await provider.remove(dir, 'tracked.txt');
       const row = rowFor(await provider.statusMatrix(dir), 'tracked.txt');
       // UNIFIED contract (post 7afc290): remove is index-only
-      // (`git rm --cached -f` parity with iso-git 1.38.4) — the workdir
+      // (`git rm --cached -f` parity with the legacy provider contract) — the workdir
       // file survives and the row is the 'rm --cached' shape [1,1,0]
       // in BOTH providers.
       expect(fs.existsSync(path.join(dir, 'tracked.txt'))).toBe(true);
@@ -347,7 +347,7 @@ function describeGitProvider(name, factory) {
       ).toBe(true);
 
       // (b) The conflicted-index STATE (T17 methodology): created with the
-      // real git CLI — iso-git's merge implementation never writes
+      // real git CLI — the legacy provider's merge implementation never writes
       // conflicted index entries, so the state cannot be produced via the
       // iso provider; both providers then READ the same on-disk state.
       const dir2 = path.join(base, 'cli-conflict');

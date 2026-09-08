@@ -39,7 +39,7 @@ const WORKFLOWS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Substrings that indicate "remote branch does not exist" in an
- * isomorphic-git fetch error message. Matched case-insensitively.
+ * a git fetch error message. Matched case-insensitively.
  */
 const REMOTE_BRANCH_MISSING_HINTS = ['could not find', 'not found', '404'];
 

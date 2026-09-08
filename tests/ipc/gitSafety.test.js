@@ -2,7 +2,7 @@
  * @fileoverview Unit tests for GitSafety — backup branch creation, dirty-tree
  * pre-commit, heartbeat/stale-lock detection, and backup listing.
  *
- * Mocks isomorphic-git at the module level. Each test constructs its own
+ * Mocks the legacy module at the module level. Each test constructs its own
  * GitSafety instance with a spy logger so call history is isolated.
  *
  * @author Documental Team

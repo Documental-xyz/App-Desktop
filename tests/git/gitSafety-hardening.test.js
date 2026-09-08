@@ -19,13 +19,16 @@ vi.unmock('fs');
 vi.unmock('path');
 
 import fs from 'fs';
-import gitModule from 'isomorphic-git';
 import { GitSafety, GitSafetyError, createObjectStyleOps } from '../../src/ipc/gitSafety.js';
+import { GitService } from '../../src/git/GitService.js';
 import { createMockGitProvider } from './fixtures/mockProvider.js';
 import { createRepoPair, commitFile, makeDirty } from './fixtures/harness.js';
 import { httpBackendAvailable } from './fixtures/harness.js';
 
-const git = gitModule.default || gitModule;
+// Object-style git ops over the production facade (same interface the
+// app injects into GitSafety via createObjectStyleOps).
+const git = createObjectStyleOps(new GitService());
+
 
 const quietLogger = {
   info: () => {},

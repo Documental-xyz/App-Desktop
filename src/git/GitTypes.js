@@ -72,7 +72,7 @@
  */
 
 /**
- * A single row of the status matrix, mirroring isomorphic-git semantics:
+ * A single row of the status matrix, mirroring the legacy provider semantics:
  * [filePath, headStatus, workdirStatus, stageStatus] where statuses are
  * 0=absent, 1=present, 2=modified (dugite derives from `git status --porcelain=v2 -z`).
  *

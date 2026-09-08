@@ -2,7 +2,7 @@
  * @fileoverview Task 6 (git-sync-strategy): publish flow rewritten as
  * commit-first + merge LOCAL-WINS.
  *
- * Integration tests against REAL repositories (isomorphic-git over a
+ * Integration tests against REAL repositories (bundled CLI over a
  * loopback http bare origin — see tests/git/fixtures/harness.js), driven
  * through the production GitHandlers class. Scenarios (plan QA):
  *   (a) publish with non-conflicting remote divergence → push ok, both
@@ -246,9 +246,9 @@ describe('_isPushRejected — ref-lock race variants (T11-D1)', () => {
 //
 // Post-recovery topology (PUSH_REJECTED → Atualizar → re-publish):
 // origin/preview is an ANCESTOR of HEAD, but the depth:1 fetch +
-// iso-git's broken canFastForward (module has NO such export — the
+// the legacy provider's broken canFastForward (module has NO such export — the
 // provider call always threw) forced the merge path, where
-// findMergeBase returns NON-MINIMAL multiple bases and iso-git merge
+// findMergeBase returns NON-MINIMAL multiple bases and the legacy module merge
 // dies with MergeNotSupportedError. Recovery must skip the merge
 // entirely (local strictly ahead) and push.
 
@@ -273,7 +273,7 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
     pair.dispose();
   });
 
-  it('provider canFastForward resolves ancestry (isomorphic-git has no native export)', async () => {
+  it('provider canFastForward resolves ancestry (the legacy module has no native export)', async () => {
     await makeDivergent(pair, {
       localFiles: { 'docs.txt': 'local\n' },
       localMessage: 'local: ahead',
@@ -292,7 +292,7 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
   it('re-publish after recovery skips the merge (local ahead) and succeeds', async () => {
     // T17-proof dirty contents: every docs.txt rewrite has a DIFFERENT
     // LENGTH. Same-length rewrites ('v0'→'v1'→'v2'→'v3', 3 bytes) hit
-    // iso-git's same-second stat-cache: statusMatrix reports the file
+    // the legacy provider's same-second stat-cache: statusMatrix reports the file
     // clean when the write lands in the same mtime second as the last
     // staged stat, so publish 1 nondeterministically no-opped (no commit,
     // origin stuck at base) — the flake this suite used to have.
@@ -304,7 +304,7 @@ describe.skipIf(!httpBackendAvailable)('F3-D1 — re-publish after PUSH_REJECTED
     // 2. origin advances (the advertisement race the UI cannot absorb).
     //    syncRemote: the colleague must advance ON TOP of origin's CURRENT
     //    tip (publish 1 moved it) — pushing a base-rooted commit would be
-    //    a non-FF push iso-git rejects client-side.
+    //    a non-FF push the legacy module rejects client-side.
     await makeDivergent(pair, {
       remoteFiles: { 'c.md': 'remote race\n' },
       remoteMessage: 'remote: race commit',

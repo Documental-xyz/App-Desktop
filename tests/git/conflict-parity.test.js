@@ -36,7 +36,6 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
 import { providersUnderTest } from '../git-providers/harness.js';
 import { createRepoPair, makeDivergent, makeDirty } from './fixtures/harness.js';
@@ -47,8 +46,12 @@ import {
   divergentFlowsWork,
   binaryFallbackWorks,
 } from './fixtures/providerHarness.js';
+import { GitService } from '../../src/git/GitService.js';
+import { createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 
-const git = gitModule.default || gitModule;
+// Object-style git ops over the production facade (setup engine).
+const git = createObjectStyleOps(new GitService());
+
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 // ─── Shared fixtures (SAME shapes for every provider) ────────────────────────
@@ -57,7 +60,7 @@ const A_MD_BASE = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'
 const A_MD_LOCAL = A_MD_BASE.replace('line5', 'line5-LOCAL');
 const A_MD_REMOTE = A_MD_BASE.replace('line5', 'line5-REMOTE');
 
-// Distinct LENGTHS per side (iso-git stat heuristic — see parity-suite).
+// Distinct LENGTHS per side (the legacy module stat heuristic — see parity-suite).
 const BIN_BASE = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
 const BIN_LOCAL = Buffer.from([1, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 7, 8, 9]);
 const BIN_REMOTE = Buffer.from([1, 2, 0xaa, 0xbb, 0, 7, 8]);
@@ -295,7 +298,7 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('conflict-stra
 
       it('modal fires (pending files = [asset.bin]); strategy decides the winning bytes', async (ctx) => {
         gateOnCapability(ctx, gateOpen, 'T10-D1/T10-D2 (binary-only conflict)');
-        // T5-1: iso-git binary fallback no-ops (wrong REMOTE bytes, clean
+        // T5-1: the legacy module binary fallback no-ops (wrong REMOTE bytes, clean
         // remote files dropped) — see issues.md; gate re-evaluates every run.
         gateOnCapability(ctx, binaryGateOpen, 'T5-1 (binary fallback resolution)');
         const pending = await handlers.gitPublishPreview(1, 'local: binary edit');

@@ -69,7 +69,7 @@ Mantenha esse arquivo versionado. Sem ele, o LFS não funciona para outros colab
 
 ## Por que o app não implementa LFS em código
 
-O Documental usa **isomorphic-git** (puro JavaScript, v1.38.4) para todas as operações Git dentro do Electron. O isomorphic-git não tem suporte nativo a Git LFS. Implementar LFS no app significaria reimplementar o protocolo de smudge/clean filters, o servidor de transferência LFS e o cache de objetos, tudo isso fora do escopo do isomorphic-git.
+O Documental usa o **dugite** (Git CLI oficial empacotado, invocado como subprocesso) para todas as operações Git dentro do Electron. O app não implementa filtros LFS próprios: implementar LFS em código significaria reimplementar o protocolo de smudge/clean filters, o servidor de transferência LFS e o cache de objetos — tudo desnecessário, pois o Git real já traz o suporte a LFS.
 
 Mais importante: **LFS é uma preocupação operacional do repositório do usuário, não do app.** O app lê e escreve arquivos no diretório de trabalho. Se o repositório está configurado para LFS, o Git LFS nativo do sistema (instalado no passo 1) cuida do smudge/clean transparentemente. O app não precisa saber que LFS existe.
 

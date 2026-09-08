@@ -2,7 +2,7 @@
  * @fileoverview Task 8 (git-sync-strategy): publish-main flow rewritten
  * as lock + WIP commit + mandatory backup + merge PREVIEW-WINS.
  *
- * Integration tests against REAL repositories (isomorphic-git over a
+ * Integration tests against REAL repositories (bundled CLI over a
  * loopback http bare origin — see tests/git/fixtures/harness.js), driven
  * through the production GitHandlers class. Scenarios (plan QA):
  *   (a) ANTI-INVERSION — same conflicting fixture shape as the Task 7

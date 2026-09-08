@@ -7,12 +7,12 @@
  * silently swallowed as `localAhead = false` — forcing deepen-fetch +
  * full merge on every publish/update even when the local branch was
  * simply ahead. This suite pins the contract of the new implementation
- * (`git merge-base --is-ancestor`) against the IsomorphicGitProvider
+ * (`git merge-base --is-ancestor`) against the deleted legacy provider
  * signature (`{ ref, target }`, ancestor=true means ff-possible):
  *
  *   - ancestor            → true  (fast-forward possible)
  *   - diverged/descendant → false (exit 1 is a RESULT, not an error)
- *   - equal OIDs          → true  (iso-git equality shortcut parity)
+ *   - equal OIDs          → true  (the legacy module equality shortcut parity)
  *   - default target      → HEAD
  *   - nonexistent ref     → GitError (exit 128) — thrown, never a
  *     boolean lie; call sites already treat this as "cannot tell"
@@ -105,14 +105,14 @@ describe('DugiteProvider.canFastForward (merge-base --is-ancestor)', () => {
     ).resolves.toBe(false);
   });
 
-  it('equal OIDs → true (iso-git equality shortcut parity)', async () => {
+  it('equal OIDs → true (the legacy module equality shortcut parity)', async () => {
     const { dir, provider, mainOid } = repo;
     await expect(
       provider.canFastForward(dir, { ref: mainOid, target: mainOid })
     ).resolves.toBe(true);
   });
 
-  it('target defaults to HEAD (iso-git contract)', async () => {
+  it('target defaults to HEAD (the legacy module contract)', async () => {
     const { dir, provider, baseOid } = repo;
     // HEAD = main; base is an ancestor of HEAD
     await expect(

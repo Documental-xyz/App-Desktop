@@ -4,7 +4,7 @@
  * Backend seam (publish-update-resilience T16): the REAL dugite provider
  * (through GitService, as constructed in production) drives every
  * repository fixture; spies are installed on the GitService facade
- * (`ops.git`) — the old isomorphic-git module spies died with the
+ * (`ops.git`) — the old the legacy module module spies died with the
  * provider (T15). Fixtures and SHA verification use the bundled git CLI
  * (gitSetup), not a second JS git implementation.
  *

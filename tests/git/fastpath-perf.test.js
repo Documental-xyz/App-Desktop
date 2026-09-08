@@ -38,7 +38,6 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
 import {
   createRepoPair,
@@ -50,10 +49,12 @@ import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
 import { providerFactory } from '../git-providers/harness.js';
 import { DugiteProvider } from '../../src/git/providers/DugiteProvider.js';
-import { GitSafety } from '../../src/ipc/gitSafety.js';
+import { GitSafety, createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 import { BACKUP_BRANCH_PREFIX } from '../../src/ipc/gitFlowTypes.js';
 
-const git = gitModule.default || gitModule;
+// Object-style git ops over the production facade (setup engine).
+const git = createObjectStyleOps(new GitService());
+
 const EVIDENCE = Boolean(process.env.GENERATE_TASK4_EVIDENCE);
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -66,7 +67,7 @@ function makeLogger() {
 
 /**
  * Production GitHandlers PINNED to dugite (the provider whose missing
- * canFastForward caused the bottleneck — iso-git's works already).
+ * canFastForward caused the bottleneck — the legacy provider's works already).
  */
 function makeHandlers(projectPath) {
   const databaseManager = {
@@ -142,7 +143,7 @@ function writeEvidence(name, payload) {
   );
 }
 
-// Distinct-length fixtures (iso-git same-second stat-cache gotcha).
+// Distinct-length fixtures (the legacy module same-second stat-cache gotcha).
 const A_BASE = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n') + '\n';
 const A_LOCAL = A_BASE.replace('line5', 'line5-LOCAL-EDIT');
 const A_REMOTE = A_BASE.replace('line5', 'line5-REMOTE-EDIT');

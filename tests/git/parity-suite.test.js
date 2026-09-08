@@ -6,7 +6,7 @@
  * refresh dirty/conflict/no-upstream; publish-main preview-wins/
  * anti-inversion) runs against the ONE production backend — dugite —
  * via `describe.each(providersUnderTest())` (['dugite'] since T15
- * deleted the isomorphic-git provider; the loop plumbing stays for the
+ * deleted the legacy provider; the loop plumbing stays for the
  * GIT_PROVIDER runner contract).
  *
  * PARITY POLICY (historical, Task 10): a parity failure used to be a
@@ -64,7 +64,7 @@ const MAIN_BASE = 'line1\nline2\nline3\n';
 const MAIN_VERSION = 'line1\nline2-MAIN\nline3\n';
 const PREVIEW_VERSION = 'line1\nline2-PREVIEW\nline3\n';
 
-// NB: distinct LENGTHS on every side — iso-git's stat heuristic treats a
+// NB: distinct LENGTHS on every side — the legacy provider's stat heuristic treats a
 // same-size rewrite inside the same second as unmodified, which would
 // hide the dirty edit from _commitAll (see learnings, Task 10).
 const binaryBase = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -274,7 +274,7 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('flow parity [
       await pair.remote.push('main');
 
       // CLI branch+checkout (dugite exec — the Task 16 fixture pattern;
-      // the old iso git.branch/git.checkout calls died with the module).
+      // the old object-style branch/checkout calls died with the module).
       const baseOid = await pair.local.head();
       await gitSetup(['branch', 'preview', baseOid], pair.local.dir);
       await gitSetup(['checkout', 'preview'], pair.local.dir);

@@ -2,7 +2,7 @@
  * @fileoverview Task 7 (git-sync-strategy): refresh flow rewritten as
  * WIP auto-commit + merge LOCAL-WINS — the END of the hard reset.
  *
- * Integration tests against REAL repositories (isomorphic-git over a
+ * Integration tests against REAL repositories (bundled CLI over a
  * loopback http bare origin — see tests/git/fixtures/harness.js), driven
  * through the production GitHandlers class. Scenarios (plan QA):
  *   (a) dirty tree + remote edits the SAME file on a DIFFERENT line →

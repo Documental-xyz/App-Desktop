@@ -4,7 +4,7 @@
  *
  * Creates the active git provider implementation based on GIT_PROVIDER
  * ('dugite' — the only supported backend since Task 14). Legacy
- * 'isomorphic-git' values are migrated upstream in
+ * Legacy provider values are migrated upstream in
  * git-config.resolveGitProvider(); by the time a value reaches this
  * factory it is either 'dugite' or a fatal error — there is NO silent
  * fallback.

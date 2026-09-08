@@ -3,7 +3,7 @@
  * (git-sync-strategy plan, Task 1 — QA scenario "divergência local x
  * remota").
  *
- * Real repos, real origin, isomorphic-git end-to-end.
+ * Real repos, real origin, the legacy module end-to-end.
  *
  * @vitest-environment node
  */

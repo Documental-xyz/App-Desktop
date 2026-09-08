@@ -17,7 +17,7 @@ const realChildProcess = require('child_process');
 // ── Hoisted mocks ─────────────────────────────────────────────────────────
 
 const {
-  mockGitGetRemoteInfo,
+  mockServiceGetRemoteInfo,
   mockGitOps,
   mockElectron,
   mockServiceClone,
@@ -26,7 +26,7 @@ const {
   mockServiceListBranches,
   mockServiceRemoteBranches,
 } = vi.hoisted(() => ({
-  mockGitGetRemoteInfo: vi.fn(),
+  mockServiceGetRemoteInfo: vi.fn(),
   mockGitOps: { getGitHubToken: vi.fn() },
   mockElectron: {
     ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
@@ -43,29 +43,18 @@ const {
   mockServiceRemoteBranches: vi.fn(),
 }));
 
-// ── Module._load monkey-patch for electron, isomorphic-git, GitService
-// and execa — vi.mock() does NOT intercept native require() in CJS
-// source files. Two seams (T16):
-//  1. 'isomorphic-git' still feeds the LIVE pre-clone PROBE
-//     (_probeRemoteRefs → getRemoteInfo — mock-visible by design; the
-//     probe itself is migrated to dugite ls-remote in T17).
-//  2. '../git/GitService.js' (as required by projectCreation.js) is
-//     replaced by a stub class routing clone/currentBranch/checkout/
-//     listBranches to provider-contract spies.
+// ── Module._load monkey-patch for electron, GitService and execa —
+// vi.mock() does NOT intercept native require() in CJS source files.
+// The seam (T17): '../git/GitService.js' (as required by
+// projectCreation.js) is replaced by a stub class routing clone/
+// currentBranch/checkout/listBranches/getRemoteInfo (the pre-clone
+// probe) to provider-contract spies.
 
 const Module = require('module');
 const originalLoad = Module._load;
 Module._load = function(request, ...args) {
   if (request === 'electron') {
     return mockElectron;
-  }
-  if (request === 'isomorphic-git') {
-    return {
-      getRemoteInfo: mockGitGetRemoteInfo,
-    };
-  }
-  if (request === 'isomorphic-git/http/node') {
-    return {};
   }
   if (request === '../git/GitService.js') {
     return {
@@ -74,6 +63,7 @@ Module._load = function(request, ...args) {
         clone(url, dir, opts) { return mockServiceClone(url, dir, opts); }
         currentBranch(dir) { return mockServiceCurrentBranch(dir); }
         checkout(dir, ref, opts) { return mockServiceCheckout(dir, ref, opts); }
+        getRemoteInfo(url, opts) { return mockServiceGetRemoteInfo(url, opts); }
         listBranches(dir, opts) {
           return opts && opts.remote
             ? mockServiceRemoteBranches(dir, opts)
@@ -119,10 +109,8 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
     // Remote reports a "main" branch + HEAD -> main so the probe succeeds
     // immediately and clone proceeds with an explicit ref.
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      HEAD: 'main',
-      refs: { heads: { main: 'abc123' } },
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { HEAD: { oid: 'abc123' }, 'refs/heads/main': { oid: 'abc123' } },
     });
 
     // Use Object.create to bypass the constructor (avoids GitOperations /
@@ -199,7 +187,7 @@ describe('ProjectCreationHandler.gitClone security guardrail', () => {
 // ── Regression: empty-clone race (the bug being fixed) ────────────────────
 //
 // After createFromTemplate, GitHub's REST API reports size > 0 before the
-// git smart-HTTP /info/refs endpoint serves any refs. isomorphic-git then
+// git smart-HTTP /info/refs endpoint serves any refs. the legacy module then
 // silently completes a clone with zero branches (line 10181 of its source:
 // `if (fetchHead === null) return`). gitClone must probe /info/refs and
 // retry until refs appear, then clone with an explicit ref.
@@ -245,13 +233,11 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
 
     // First two probes return zero refs (simulating GitHub propagation lag),
     // third probe returns a populated remote.
-    mockGitGetRemoteInfo
-      .mockResolvedValueOnce({ capabilities: [], refs: {} })
-      .mockResolvedValueOnce({ capabilities: [], refs: {} })
+    mockServiceGetRemoteInfo
+      .mockResolvedValueOnce({ refs: {} })
+      .mockResolvedValueOnce({ refs: {} })
       .mockResolvedValueOnce({
-        capabilities: ['shallow'],
-        HEAD: 'main',
-        refs: { heads: { main: 'abc123' } },
+        refs: { HEAD: { oid: 'abc123' }, 'refs/heads/main': { oid: 'abc123' } },
       });
 
     // Speed up the probe backoff by setting probe interval to 10ms.
@@ -266,7 +252,7 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
       global.setTimeout = origSetTimeout;
     }
 
-    expect(mockGitGetRemoteInfo).toHaveBeenCalledTimes(3);
+    expect(mockServiceGetRemoteInfo).toHaveBeenCalledTimes(3);
     expect(mockServiceClone).toHaveBeenCalledTimes(1);
     const [, , cloneOpts] = mockServiceClone.mock.calls[0];
     expect(cloneOpts.ref).toBe('main');
@@ -277,7 +263,7 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     const url = 'https://github.com/foo/bar.git';
 
     // Remote never exposes refs — probe always returns null-ish.
-    mockGitGetRemoteInfo.mockResolvedValue({ capabilities: [], refs: {} });
+    mockServiceGetRemoteInfo.mockResolvedValue({ refs: {} });
     // Simulate the silent empty clone: no .git, no branches, no files.
     // Wipe the seeded state so post-clone verification sees emptiness.
     realFs.rmSync(realPath.join(tmpDir, '.git'), { recursive: true, force: true });
@@ -305,28 +291,23 @@ describe('ProjectCreationHandler.gitClone empty-clone race regression', () => {
     }
 
     // Multiple probes happened before giving up...
-    expect(mockGitGetRemoteInfo.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mockServiceGetRemoteInfo.mock.calls.length).toBeGreaterThanOrEqual(2);
     // ...and clone was still attempted (fallback)...
     expect(mockServiceClone).toHaveBeenCalledTimes(1);
   });
 });
 
-// ── _probeRemoteRefs: SHA / undefined HEAD handling ─────────────────────────
+// ── _probeRemoteRefs: unresolvable / missing HEAD handling ──────────────────
 //
-// After template/fork creation, getRemoteInfo may return info.HEAD as a 40-char
-// SHA (commit hash) instead of a branch name due to GitHub propagation lag.
-// _probeRemoteRefs must detect and reject SHA values, falling back to the first
-// discovered branch. When HEAD is undefined entirely, same fallback applies.
-describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
+// ls-remote advertises HEAD as a plain OID; the probe resolves the default
+// branch by matching that OID against the branch OIDs. When HEAD points at
+// no advertised branch (GitHub propagation lag) or is not advertised at
+// all, the probe must fall back to the first discovered branch.
+describe('_probeRemoteRefs unresolvable/missing HEAD handling', () => {
   let handler;
   let mockLogger;
-  const mockHttp = {};
   const testUrl = 'https://github.com/foo/bar.git';
   const auth = { username: 'token', password: 'x-oauth-basic' };
-  // _probeRemoteRefs(git, http, url, auth) only consumes git.getRemoteInfo.
-  const mockGit = {
-    getRemoteInfo: mockGitGetRemoteInfo,
-  };
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -344,14 +325,12 @@ describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
     handler.gitOps = mockGitOps;
   });
 
-  it('returns head=main, headSource=top when HEAD is a branch name', async () => {
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      HEAD: 'main',
-      refs: { heads: { main: 'abc123' } },
+  it('returns head=main, headSource=top when the HEAD OID resolves to exactly one branch', async () => {
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { HEAD: { oid: 'abc123' }, 'refs/heads/main': { oid: 'abc123' } },
     });
 
-    const result = await handler._probeRemoteRefs(mockGit, mockHttp, testUrl, auth);
+    const result = await handler._probeRemoteRefs(testUrl, auth);
 
     expect(result).not.toBeNull();
     expect(result.head).toBe('main');
@@ -359,15 +338,13 @@ describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
     expect(result.branches).toEqual(['main']);
   });
 
-  it('returns head=first-branch, headSource=sha-rejected when HEAD is a 40-char SHA', async () => {
-    const sha = 'abc123def456abc789def012abc345def678abcd';
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      HEAD: sha,
-      refs: { heads: { main: 'abc123' } },
+  it('returns head=first-branch when the HEAD OID matches no advertised branch', async () => {
+    const orphanOid = 'abc123def456abc789def012abc345def678abcd';
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { HEAD: { oid: orphanOid }, 'refs/heads/main': { oid: 'abc123' } },
     });
 
-    const result = await handler._probeRemoteRefs(mockGit, mockHttp, testUrl, auth);
+    const result = await handler._probeRemoteRefs(testUrl, auth);
 
     expect(result).not.toBeNull();
     expect(result.head).toBe('main');
@@ -375,13 +352,12 @@ describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
     expect(result.branches).toEqual(['main']);
   });
 
-  it('returns head=first-branch, headSource=first-branch when HEAD is undefined but branches exist', async () => {
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      refs: { heads: { main: 'abc123' } },
+  it('returns head=first-branch when HEAD is not advertised but branches exist', async () => {
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { 'refs/heads/main': { oid: 'abc123' } },
     });
 
-    const result = await handler._probeRemoteRefs(mockGit, mockHttp, testUrl, auth);
+    const result = await handler._probeRemoteRefs(testUrl, auth);
 
     expect(result).not.toBeNull();
     expect(result.head).toBe('main');
@@ -389,21 +365,18 @@ describe('_probeRemoteRefs SHA/undefined HEAD handling', () => {
     expect(result.branches).toEqual(['main']);
   });
 
-  it('returns null when HEAD is undefined/SHA and NO branches exist', async () => {
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: [],
-      refs: { heads: {} },
-    });
+  it('returns null when no branches exist', async () => {
+    mockServiceGetRemoteInfo.mockResolvedValue({ refs: {} });
 
-    const result = await handler._probeRemoteRefs(mockGit, mockHttp, testUrl, auth);
+    const result = await handler._probeRemoteRefs(testUrl, auth);
 
     expect(result).toBeNull();
   });
 
   it('returns null when getRemoteInfo throws', async () => {
-    mockGitGetRemoteInfo.mockRejectedValue(new Error('network error'));
+    mockServiceGetRemoteInfo.mockRejectedValue(new Error('network error'));
 
-    const result = await handler._probeRemoteRefs(mockGit, mockHttp, testUrl, auth);
+    const result = await handler._probeRemoteRefs(testUrl, auth);
 
     expect(result).toBeNull();
   });
@@ -441,10 +414,8 @@ describe('ProjectCreationHandler.gitClone branch mismatch retry', () => {
     mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
     // Remote has HEAD -> main but we'll mock listBranches to return wrong branch
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      HEAD: 'main',
-      refs: { heads: { main: 'abc123' } },
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { HEAD: { oid: 'abc123' }, 'refs/heads/main': { oid: 'abc123' } },
     });
 
     const { ProjectCreationHandler } = await import('../../src/ipc/projectCreation.js');
@@ -531,10 +502,8 @@ describe('ProjectCreationHandler.gitClone pre-clone cleanup', () => {
     mockServiceListBranches.mockResolvedValue(['main']);
     mockServiceRemoteBranches.mockResolvedValue(['origin/main']);
     mockGitOps.getGitHubToken.mockResolvedValue('ghp_fake_token');
-    mockGitGetRemoteInfo.mockResolvedValue({
-      capabilities: ['shallow'],
-      HEAD: 'main',
-      refs: { heads: { main: 'abc123' } },
+    mockServiceGetRemoteInfo.mockResolvedValue({
+      refs: { HEAD: { oid: 'abc123' }, 'refs/heads/main': { oid: 'abc123' } },
     });
 
     const { ProjectCreationHandler } = await import('../../src/ipc/projectCreation.js');

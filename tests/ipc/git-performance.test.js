@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Backend seam (T16): mockDugiteProvider replaces the isomorphic-git
+// Backend seam (T16): mockDugiteProvider replaces the legacy module
 // module mock.
 
 vi.mock('electron', () => ({

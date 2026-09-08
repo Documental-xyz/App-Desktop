@@ -33,7 +33,7 @@ const {
 } = require('./gitFlowTypes.js');
 
 /**
- * Build an object-style git-ops interface (the historical isomorphic-git
+ * Build an object-style git-ops interface (the historical object-style
  * module call convention: `op({ fs, dir, ... })`) on top of a GitService
  * facade. GitSafety methods accept whatever implements this interface —
  * unit tests inject spies directly; the app injects the adapter returned
@@ -432,7 +432,7 @@ class GitSafety {
    * the argument. The same info is also returned as `backupInfo`.
    *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
-   * @param {object} fs - filesystem client accepted by isomorphic-git
+   * @param {object} fs - filesystem client (object-style interface convention)
    * @param {string} projectPath - absolute path to the repository
    * @param {(backupInfo: {name: string, branch: string, localHead: string, timestamp: number}|null) => Promise<T>} operation - the protected (destructive) flow body
    * @param {object} [options]
@@ -467,7 +467,7 @@ class GitSafety {
    * one is reused. Any mismatch → fresh backup (safety first).
    *
    * @param {object} gitMod - object-style git ops (facade-backed via createObjectStyleOps)
-   * @param {object} fs - filesystem client accepted by isomorphic-git
+   * @param {object} fs - filesystem client (object-style interface convention)
    * @param {string} projectPath - absolute path to the repository
    * @param {string} targetRef - ref to reset to (e.g. `'origin/preview'`)
    * @param {object} [options]
@@ -586,7 +586,7 @@ class GitSafety {
             author: backupAuthor,
           });
         } catch (commitErr) {
-          // isomorphic-git throws when there is nothing to commit (e.g. dirty
+          // the provider throws when there is nothing to commit (e.g. dirty
           // entries were staged-only-noise). That's fine — HEAD already points
           // at the right state on the backup branch.
           const m = (commitErr && commitErr.message) || '';

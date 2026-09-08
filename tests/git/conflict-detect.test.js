@@ -10,7 +10,7 @@
  *   moved — asserted by a bit-identical state hash (refs + HEAD +
  *   statusMatrix + worktree content) before/after detection.
  *
- *   - iso-git: in-memory diff3 over divergent blobs (driver-detector
+ *   - the legacy module: in-memory diff3 over divergent blobs (driver-detector
  *     semantics — mirrors gitMergeDriver's hunk partitioning)
  *   - dugite: `git merge-tree --write-tree` (write-tree mode never
  *     touches the working tree or refs; exit 1 = conflicts)
@@ -32,6 +32,8 @@ import { createRepoPair, makeConflict } from './fixtures/harness.js';
 import { httpBackendAvailable } from './fixtures/harness.js';
 
 import { detectMergeConflicts } from '../../src/ipc/gitConflictDetect.js';
+import { GitService } from '../../src/git/GitService.js';
+import { createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -128,7 +130,7 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('conflict dete
     await pair.local.commit('base: doc', ['doc.md']);
     await pair.local.push(pair.branch);
     await pair.remote.fetch();
-    const gitMod = (await import('isomorphic-git')).default;
+    const gitMod = createObjectStyleOps(new GitService());
     const originTip = await gitMod.resolveRef({
       fs, dir: pair.remote.dir, ref: `origin/${pair.branch}`,
     });

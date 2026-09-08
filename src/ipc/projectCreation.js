@@ -10,51 +10,19 @@ const { ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsPromises = fs.promises;
-const { createRequire } = require('module');
 const { GitOperations } = require('./gitOperations.js');
 const { GitService } = require('../git/GitService.js');
 const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { ProcessManager } = require('./processManager.js');
 const { t } = require('../utils/mainI18n');
 
-// iso-git acquisition for the DIRECT remote-probe path below
-// (_probeRemoteRefs runs git.getRemoteInfo against the URL before cloning).
-// Unlike dynamic import(), this file MUST acquire via require semantics:
-// tests/ipc/gitClone-security.test.js installs a Module._load monkey
-// patch, which intercepts require() (incl. createRequire) but NOT dynamic
-// import(). Loader promises are memoized (concurrent-import vitest race).
-const nodeRequire = createRequire(__filename);
-let _gitModulePromise = null;
-let _httpModulePromise = null;
 let _gitService = null;
-
-function loadGitModule() {
-  if (!_gitModulePromise) {
-    _gitModulePromise = Promise.resolve().then(() => nodeRequire('isomorphic-git'));
-  }
-  return _gitModulePromise;
-}
-
-function loadHttpModule() {
-  if (!_httpModulePromise) {
-    _httpModulePromise = Promise.resolve().then(() => nodeRequire('isomorphic-git/http/node'));
-  }
-  return _httpModulePromise;
-}
 
 function getGitService() {
   if (!_gitService) {
     _gitService = new GitService({ provider: createGitProvider() });
   }
   return _gitService;
-}
-
-// iso-git's parallel-mkdir race surfaces as ENOENT/mkdir. Across the
-// provider boundary the error is a GitError carrying the original as
-// `cause` (code is copied, syscall is not) — check both layers.
-function _isMkdirRace(error) {
-  const candidates = [error, error && error.cause];
-  return candidates.some((e) => e && e.code === 'ENOENT' && e.syscall === 'mkdir');
 }
 
 /**
@@ -168,51 +136,57 @@ class ProjectCreationHandler {
   /**
    * Probe the remote git smart-HTTP protocol for refs.
    *
-   * Returns the discovered refs (branches/tags) and HEAD symref, or `null`
-   * if the remote reports zero refs (which is what happens right after a
-   * template/fork creation while GitHub is still populating git objects).
+   * Returns the discovered refs (branches/tags) and the default branch,
+   * or `null` if the remote reports zero refs (which is what happens
+   * right after a template/fork creation while GitHub is still
+   * populating git objects).
    *
-   * @param {Object} git - isomorphic-git module.
-   * @param {Object} http - isomorphic-git http/node client.
+   * Backed by the git facade (`getRemoteInfo` → `git ls-remote` against
+   * the remote URL — no local repository required).
+   *
    * @param {string} url - Remote URL.
    * @param {Object} [auth] - Auth object ({ token }) or undefined.
    * @returns {Promise<{ head?: string, branches: string[] }|null>}
    * @private
    */
-  async _probeRemoteRefs(git, http, url, auth) {
+  async _probeRemoteRefs(url, auth) {
     try {
-      const info = await git.getRemoteInfo({
-        http,
-        url,
-        auth,
-      });
-      const heads = (info && info.refs && info.refs.heads) || {};
+      const info = await getGitService().getRemoteInfo(url, { auth });
+      const allRefs = (info && info.refs) || {};
+      // ls-remote advertises flat full refs ('refs/heads/<name>'); group
+      // them back into a branch-name → oid map.
+      const heads = {};
+      for (const [ref, val] of Object.entries(allRefs)) {
+        if (ref.startsWith('refs/heads/')) {
+          heads[ref.slice('refs/heads/'.length)] = val && val.oid;
+        }
+      }
       const branches = Object.keys(heads);
       if (branches.length === 0) {
         return null;
       }
-      
-      // Determine head source and validate
-      let head = info.HEAD;
+
+      // Default branch: ls-remote advertises HEAD as a plain OID (no
+      // symref name), so resolve it by matching the HEAD OID against the
+      // branch OIDs. Unresolvable/ambiguous HEAD falls back to the first
+      // advertised branch.
+      let head = null;
       let headSource = null;
-      
-      // Check if HEAD is a 40-character SHA (commit hash) - reject it
-      if (head && /^[0-9a-f]{40}$/i.test(head)) {
-        this.logger?.warn?.('_probeRemoteRefs: HEAD is a SHA, rejecting:', head);
-        head = null;
-        headSource = 'sha-rejected';
-      }
-      
-      // Use HEAD if it's a valid branch name
-      if (head) {
+      const headOid = allRefs.HEAD && allRefs.HEAD.oid;
+      const oidMatches = headOid
+        ? branches.filter((name) => heads[name] === headOid)
+        : [];
+
+      if (oidMatches.length === 1) {
+        head = oidMatches[0];
         headSource = 'top';
       } else {
-        // Fall back to first branch when HEAD is missing or SHA
+        // Fall back to first branch when HEAD is missing or ambiguous
         head = branches[0];
         headSource = 'first-branch';
-        this.logger?.info?.('_probeRemoteRefs: HEAD missing/SHA, using first branch:', head);
+        this.logger?.info?.('_probeRemoteRefs: HEAD unresolved/ambiguous, using first branch:', head);
       }
-      
+
       return { head, headSource, branches };
     } catch (error) {
       this.logger?.warn?.('_probeRemoteRefs failed:', error?.message);
@@ -225,12 +199,12 @@ class ProjectCreationHandler {
    *
    * Robust against the "empty clone" race: when a template/fork has just been
    * created, GitHub's REST API reports `size > 0` before the git smart-HTTP
-   * `/info/refs` endpoint actually serves any refs. `isomorphic-git` then
-   * silently completes a clone with zero branches and an empty working tree.
+   * `/info/refs` endpoint actually serves any refs. A clone at that moment
+   * silently completes with zero branches and an empty working tree.
    *
-   * To avoid this, we probe `/info/refs` (via `getRemoteInfo`) and retry for
-   * up to ~30s until the remote exposes at least one branch. We then pass the
-   * discovered default branch as an explicit `ref` to `git.clone`.
+   * To avoid this, we probe `/info/refs` (via ls-remote `getRemoteInfo`) and
+   * retry for up to ~30s until the remote exposes at least one branch. We then
+   * pass the discovered default branch as an explicit `ref` to the clone.
    *
    * @param {string} url - Repository URL.
    * @param {string} dir - Directory to clone into.
@@ -239,10 +213,6 @@ class ProjectCreationHandler {
    * @throws {Error} When the clone fails or yields an empty working tree.
    */
   async gitClone(url, dir, sendOutput) {
-    const git = await loadGitModule();
-    const http = await loadHttpModule();
-    const nodeFs = require('fs');
-
     try {
       // ── Diagnostic: pre-clone state ─────────────────────────────────────
       let dirExistsBefore = false;
@@ -323,7 +293,7 @@ class ProjectCreationHandler {
       // ── Probe remote refs (guards against empty-clone race) ─────────────
       // The REST API may report size > 0 while git-upload-pack still serves
       // zero refs. Poll /info/refs until at least one branch appears.
-      let remoteInfo = await this._probeRemoteRefs(git, http, url, auth);
+      let remoteInfo = await this._probeRemoteRefs(url, auth);
       let attempt = 0;
       const probeIntervalMs = 2000;
       const probeTimeoutMs = 30000;
@@ -339,7 +309,7 @@ class ProjectCreationHandler {
         sendOutput(`⏳ Aguardando git objects ficarem disponíveis... (tentativa ${attempt})\n`);
         this.logger.info(`[clone-diag] remote exposed 0 refs (attempt ${attempt}); retrying in ${probeIntervalMs}ms`);
         await new Promise((resolve) => setTimeout(resolve, probeIntervalMs));
-        remoteInfo = await this._probeRemoteRefs(git, http, url, auth);
+        remoteInfo = await this._probeRemoteRefs(url, auth);
       }
 
       const ref = remoteInfo && remoteInfo.head ? remoteInfo.head : undefined;
@@ -392,56 +362,7 @@ class ProjectCreationHandler {
         }
 
         // ── Clone ───────────────────────────────────────────────────────────
-        // isomorphic-git v1.38.4 races on parallel mkdir for nested dirs like
-        // `.github/workflows/` (index.cjs:7009-7023). The fast path stays as-is;
-        // on ENOENT/mkdir we fall back to a noCheckout clone + safe checkout.
-        const cloneOptsNoCheckout = { ...cloneOpts, noCheckout: true };
-        try {
-          await getGitService().clone(url, dir, cloneOpts);
-        } catch (cloneErr) {
-          if (!_isMkdirRace(cloneErr)) {
-            throw cloneErr;
-          }
-          this.logger.info(
-            '[clone-diag] race condition in parallel mkdir — retrying with noCheckout + safe checkout',
-            cloneErr
-          );
-          sendOutput('🔧 Corrigindo race condition em diretórios aninhados (noCheckout)...\n');
-
-          // Clean partial clone (rm -rf dir, mkdir recursive)
-          const { execa: execaRetry } = require('execa');
-          const isWindowsRetry = process.platform === 'win32';
-          try {
-            const rmCommand = isWindowsRetry ? 'rmdir' : 'rm';
-            const rmArgs = isWindowsRetry ? ['/s', '/q', dir] : ['-rf', dir];
-            await execaRetry(rmCommand, rmArgs, { stdio: 'ignore', killDescendants: true });
-          } catch (rmErr) {
-            this.logger.warn('[clone-diag] rm failed before noCheckout retry:', rmErr?.message);
-          }
-          await fsPromises.mkdir(dir, { recursive: true });
-
-          // Clone without checkout, then checkout safely
-          await getGitService().clone(url, dir, cloneOptsNoCheckout);
-
-          let checkoutRef;
-          try {
-            checkoutRef = await getGitService().currentBranch(dir);
-          } catch (cbErr) {
-            checkoutRef = ref ? ref.replace(/^refs\/heads\//, '') : 'main';
-            this.logger.warn('[clone-diag] currentBranch failed, using fallback:', cbErr?.message, '→', checkoutRef);
-          }
-
-          try {
-            await getGitService().checkout(dir, checkoutRef, { force: true });
-          } catch (checkoutErr) {
-            if (!_isMkdirRace(checkoutErr)) {
-              throw checkoutErr;
-            }
-            this.logger.info('[clone-diag] checkout also raced on mkdir — pre-creating tree dirs');
-            await this._preCreateTreeDirs(git, nodeFs, dir, checkoutRef);
-            await getGitService().checkout(dir, checkoutRef, { force: true });
-          }
-        }
+        await getGitService().clone(url, dir, cloneOpts);
 
         // ── Diagnostic: post-clone state ────────────────────────────────────
         let gitDirExists = false;
@@ -502,53 +423,7 @@ class ProjectCreationHandler {
   }
 
   /**
-   * Pre-create every directory referenced in a commit's tree so that
-   * isomorphic-git's non-recursive checkout cannot race on missing parents
-   * (e.g. `.github/workflows/`). Best-effort: errors are logged, not thrown.
-   *
-   * @param {object} git - isomorphic-git module.
-   * @param {object} fs - Node fs module (the same one passed to git.clone).
-   * @param {string} dir - Working tree root.
-   * @param {string} ref - Ref name to materialize (branch / tag / HEAD).
-   * @returns {Promise<void>}
-   */
-  async _preCreateTreeDirs(git, fs, dir, ref) {
-    try {
-      const oid = await git.resolveRef({ fs, dir, ref });
-      const commit = await git.readCommit({ fs, dir, oid });
-      const treeOid = commit.commit.tree;
-      await this._walkAndMkdir(git, fs, dir, treeOid, '');
-    } catch (err) {
-      this.logger.warn('[clone-diag] _preCreateTreeDirs best-effort failed:', err?.message);
-    }
-  }
-
-  /**
-   * Recursive helper for `_preCreateTreeDirs`. Reads a tree, mkdir -p every
-   * subtree entry, then recurses into each subtree using `filepath` so that
-   * nested trees resolve against the right path.
-   *
-   * @param {object} git - isomorphic-git module.
-   * @param {object} fs - Node fs module.
-   * @param {string} dir - Working tree root.
-   * @param {string} treeOid - OID of the tree to walk.
-   * @param {string} prefix - Path prefix (relative to dir) for nested walks.
-   * @returns {Promise<void>}
-   */
-  async _walkAndMkdir(git, fs, dir, treeOid, prefix) {
-    const { readTree } = git;
-    const tree = await readTree({ fs, dir, oid: treeOid, ...(prefix ? { filepath: prefix } : {}) });
-    for (const entry of tree.tree) {
-      if (entry.type === 'tree') {
-        const subdir = prefix ? path.join(prefix, entry.path) : entry.path;
-        await fs.promises.mkdir(path.join(dir, subdir), { recursive: true });
-        await this._walkAndMkdir(git, fs, dir, entry.oid, subdir);
-      }
-    }
-  }
-
-   /**
-    * Update repo folder name in database
+   * Update repo folder name in database
     * @param {number} projectId - Project ID
     * @param {string} folderName - Folder name
     * @returns {Promise<void>}
@@ -811,14 +686,12 @@ class ProjectCreationHandler {
             // NEW: git protocol readiness probe — guards against empty-clone race
             // after template creation. REST API may report ready while git smart-HTTP
             // /info/refs still serves zero refs. Probe up to 3 times (3s intervals).
-            const git = await loadGitModule();
-            const http = await loadHttpModule();
             const isGithubUrl = /^https:\/\/github\.com\//i.test(repoUrl);
             const token = isGithubUrl ? await this.gitOps.getGitHubToken() : null;
             const auth = token ? { token } : undefined;
             let probeSuccess = false;
             for (let i = 0; i < 3; i++) {
-              const refs = await this._probeRemoteRefs(git, http, repoUrl, auth);
+              const refs = await this._probeRemoteRefs(repoUrl, auth);
               if (refs) {
                 this.logger?.info?.('[readiness-probe] attempt', i + 1, ': refs found:', refs);
                 step0Output('✅ Git objects confirmados via protocolo git\n');

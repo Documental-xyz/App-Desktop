@@ -27,9 +27,8 @@ vi.unmock('path');
 
 import fs from 'fs';
 import path from 'path';
-import gitModule from 'isomorphic-git';
 
-import { providersUnderTest } from '../git-providers/harness.js';
+import { providersUnderTest, gitSetup } from '../git-providers/harness.js';
 import {
   createRepoPair,
   makeDivergent,
@@ -42,8 +41,12 @@ import {
   divergentFlowsWork,
   dugiteMissingRefFetchTolerated,
 } from './fixtures/providerHarness.js';
+import { GitService } from '../../src/git/GitService.js';
+import { createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 
-const git = gitModule.default || gitModule;
+// Object-style git ops over the production facade (setup engine).
+const git = createObjectStyleOps(new GitService());
+
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const A_BASE = 'line1\nline2\nline3\n';
@@ -279,10 +282,10 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('edge cases [%
       const seedPair = await createRepoPair({ branch: 'preview', files: { 'b.md': BASE } });
       try {
         const userDir = path.join(seedPair.baseDir, 'user-shallow');
-        await git.clone({
-          fs, dir: userDir, http: (await import('isomorphic-git/http/node')).default,
-          url: seedPair.url, ref: 'preview', singleBranch: true, depth: 1,
-        });
+        await gitSetup(
+          ['clone', '--single-branch', '--depth', '1', '--branch', 'preview', '--', seedPair.url, userDir],
+          seedPair.baseDir
+        );
 
         // Origin advances AFTER the shallow clone → no merge-base in the
         // user's shallow history.
@@ -300,7 +303,7 @@ describe.skipIf(!httpBackendAvailable).each(providersUnderTest())('edge cases [%
         const bMd = fs.readFileSync(path.join(userDir, 'b.md'), 'utf8');
         expect(bMd).toContain('line5-LOCAL');
         expect(bMd).toContain('line25-REMOTE');
-        const messages = (await git.log({ fs, dir: userDir, depth: 20 })).map((c) => c.commit.message);
+        const messages = (await gitSetup(['log', '-n', '20', '--format=%s'], userDir)).stdout.split('\n').filter(Boolean);
         expect(messages.some((m) => m.includes('remote: after shallow clone'))).toBe(true);
         expect(messages.some((m) => m.startsWith('WIP by testuser at'))).toBe(true);
       } finally {

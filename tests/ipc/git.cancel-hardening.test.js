@@ -59,6 +59,7 @@ import {
 } from '../git/fixtures/harness.js';
 import { GitHandlers } from '../../src/ipc/git.js';
 import { GitService } from '../../src/git/GitService.js';
+import { createObjectStyleOps } from '../../src/ipc/gitSafety.js';
 import { providerFactory } from '../git-providers/harness.js';
 
 const execFileAsync = promisify(execFile);
@@ -282,7 +283,7 @@ describe.skipIf(!httpBackendAvailable)('CANCEL HARDENING — real child kill via
     // Park the local repo on a side branch so gitPublishPreview's entry
     // checkout (preview) actually runs — the exact call site that gained
     // `{ signal }` in Task 6.
-    const git = (await import('isomorphic-git')).default || (await import('isomorphic-git'));
+    const git = createObjectStyleOps(new GitService());
     await git.branch({ fs, dir: pair.local.dir, ref: 'side' });
     await git.checkout({ fs, dir: pair.local.dir, ref: 'side' });
 

@@ -8,7 +8,7 @@
  *   1. Push with `auth: {token}` works under BOTH providers against a
  *      loopback bare remote and creates refs/heads/preview (the regression
  *      that used to fail with "No anonymous write access" under dugite
- *      when the token was passed in the iso-git onAuth shape).
+ *      when the token was passed in the legacy module onAuth shape).
  *   2. Non-GitHub remote + token → NO askpass helper is created, no crash
  *      (GitHub-only credential guard, parity with security.test.js).
  *   3. DUGITE boundary: against a remote URL configured as github.com,

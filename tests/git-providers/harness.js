@@ -8,7 +8,7 @@
  * 127.0.0.1 only) and the provider under test talks to the same
  * http://127.0.0.1:<port>/remote.git URL — no external network, no
  * credentials. (Historically this loopback existed because
- * isomorphic-git spoke ONLY http(s); it is KEPT after the dugite
+ * the legacy backend spoke ONLY http(s); it is KEPT after the dugite
  * migration because the blackhole/abort and origin-down scenarios need
  * a real socket to sever.)
  *
@@ -232,7 +232,7 @@ export function createGitHttpServer(rootDir) {
 /**
  * Server that accepts connections and NEVER responds — used to make a
  * push genuinely SLOW/hung so an AbortSignal fires mid-operation.
- * (iso-git http/node does not honor in-flight aborts and falls back to
+ * (the legacy http transport did not honor in-flight aborts and fell back to
  * its internal ~5s 'Request timed out'; dugite kills the process via the
  * signal — both surface as GitError.)
  * @returns {Promise<{server: http.Server, url: string}>}
@@ -363,9 +363,9 @@ export async function initLocalRepo(dir) {
 
 /**
  * Providers under test: dugite is the ONLY backend since
- * publish-update-resilience T14/T15 (the isomorphic-git provider was
+ * publish-update-resilience T14/T15 (the legacy provider was
  * deleted from src/). GIT_PROVIDER='dugite' selects it explicitly;
- * anything else (including legacy 'isomorphic-git') is a hard error —
+ * anything else (including legacy provider values) is a hard error —
  * there is NO second provider to fall back to. The dual-provider loops
  * that consumed this list (provider-suite, push, auth-contract, parity
  * suites) therefore run their battery exactly ONCE, under the real
@@ -388,7 +388,7 @@ export function providersUnderTest() {
 /**
  * Factory for a provider instance via the REAL factory (env + cache
  * reset per inherited wisdom — resetGitProviderCache between suites).
- * dugite only since T16 — the string 'isomorphic-git' is rejected
+ * dugite only since T16 — any legacy provider string is rejected
  * loudly so no suite silently re-binds to a deleted backend.
  * @param {string} name
  * @returns {() => Object} provider factory

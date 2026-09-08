@@ -127,7 +127,7 @@ async function seedBackupAtAge(repo, name, ageDays) {
 }
 
 // Distinct-content fixtures (10 lines; the edited line changes LENGTH —
-// iso-git's same-second stat-cache gotcha documented in the notepad).
+// the legacy provider's same-second stat-cache gotcha documented in the notepad).
 const A_BASE = Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n') + '\n';
 const A_LOCAL = A_BASE.replace('line5', 'line5-LOCAL-EDIT');
 const A_REMOTE = A_BASE.replace('line5', 'line5-REMOTE-EDIT');

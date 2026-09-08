@@ -1,5 +1,10 @@
 # PRD — Migração de `isomorphic-git` para `dugite` + `dugite-native` (revisto)
 
+> **NOTA (2026-09-08):** migração CONCLUÍDA — o dugite é o único backend Git do
+> app desde a tarefa 14, e a dependência legada foi removida na tarefa 17 do
+> plano `publish-update-resilience`. Este documento é HISTÓRICO (decisões e
+> racional da migração); para o comportamento atual, ver `docs/release-workflow.md`.
+
 **Status:** Proposto (revisto contra a realidade do código em 2026-08-22)
 **Estratégia:** Migração gradual com fallback via `GIT_PROVIDER`
 **Plataformas atuais:** Windows x64, macOS x64, Linux x64 (ARM64 = fase futura, fora do escopo inicial)

@@ -108,13 +108,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Scoped test suites per git provider — NEVER the full `npm test` here:
+      # Scoped test suites — NEVER the full `npm test` here:
       # it includes quarantined KNOWN-FAILURES that are unrelated to packaging.
-      - name: Test (isomorphic-git)
-        run: npx vitest run tests/ipc tests/git-providers tests/git-layer-boundary.test.js tests/build-scripts.test.js
-        env:
-          GIT_PROVIDER: isomorphic-git
-
       - name: Test (dugite)
         run: npx vitest run tests/git-providers
         env:

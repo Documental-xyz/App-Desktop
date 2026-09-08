@@ -32,7 +32,7 @@ vi.mock('electron', () => {
 
 // Sentinel used to short-circuit startProjectCreation AFTER the enablePages
 // block so the integration test does not have to drive the full clone flow
-// (which depends on fs/execa/isomorphic-git and is exercised elsewhere).
+// (which depends on fs/execa/the legacy module and is exercised elsewhere).
 const SHORT_CIRCUIT = 'SHORT_CIRCUIT_AFTER_PAGES';
 
 describe('configurePagesEnvironment wiring (preview-branch-sync)', () => {

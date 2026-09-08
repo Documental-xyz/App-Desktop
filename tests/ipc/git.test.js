@@ -276,7 +276,7 @@ describe('GitHandlers Unit Tests', () => {
       const { mockDugiteProvider } = await import('../git/fixtures/mockDugiteProvider.js');
       // T16 seam: a fully-spied DugiteProvider injected as the handlers'
       // git backend — the equivalent of the old spies installed on the
-      // isomorphic-git module object.
+      // the legacy module module object.
       provider = mockDugiteProvider();
 
       gitHandlers = new GitHandlers({

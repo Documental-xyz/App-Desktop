@@ -60,7 +60,7 @@ async function getGitHubToken() {
 }
 
 /**
- * Clone repository using isomorphic-git
+ * Clone repository using the git facade
  * @param {string} url - Repository URL
  * @param {string} dir - Target directory
  * @param {Object} options - Additional options

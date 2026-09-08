@@ -4,7 +4,7 @@
  * Wiring under test: MAX_PUBLISH_RETRIES (gitFlowTypes.js) drives
  * `_pushWithTransientRetry` around the publish cores' push step — up to
  * 2 retries (3 attempts) with 1s/2s backoff for TRANSIENT failures
- * only (T5 classes timeout|network; iso-git's empty-payload pack
+ * only (T5 classes timeout|network; the legacy provider's empty-payload pack
  * ParseError = connection dropped mid-push; legacy
  * gitOperations._isRetriablePushError evidence).
  *
@@ -390,13 +390,13 @@ describe('_isTransientPushError — retry whitelist (unit)', () => {
     expect(transient(err('fatal: could not resolve host'))).toBe(true);
   });
 
-  it('retries iso-git empty-payload ParseError (connection dropped mid-push)', () => {
+  it('retries empty-payload ParseError (connection dropped mid-push)', () => {
     expect(transient(err('Expected "unpack ok" or "unpack [error message]" but received "".', { name: 'ParseError' }))).toBe(true);
     // Provider wrap form: GitError carries the parse text in stderr,
     // raw ParseError rides on .cause.
     const wrapped = new GitError({
       operation: 'push',
-      provider: 'isomorphic-git',
+      provider: 'dugite',
       stderr: 'Expected "unpack ok" or "unpack [error message]" but received "".',
       cause: Object.assign(new Error('same'), { name: 'ParseError' }),
     });

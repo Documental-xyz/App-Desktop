@@ -109,7 +109,7 @@ describe('Git flows — gitRefresh / gitPublishPreview / gitPublishMain', () => 
 
     // T16: the backend seam is the provider INSTANCE — a DugiteProvider
     // with every public method spied to a sane default resolution. No
-    // isomorphic-git module mock (the provider was deleted in T15).
+    // the legacy module module mock (the provider was deleted in T15).
     git = mockDugiteProvider();
 
     handlers = new GitHandlers({

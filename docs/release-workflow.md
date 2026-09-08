@@ -188,13 +188,12 @@ Cuidado: NUNCA defina as variáveis `APPLE_*` em build não assinado. A notariza
 
 ## 10. Providers Git no pipeline (testes escopados, cache do dugite e verificação do Git embutido)
 
-O app suporta dois providers Git (`isomorphic-git` e `dugite`). O release pipeline os cobre em três pontos:
+O app usa um único provider Git (`dugite`). O release pipeline o cobre em três pontos:
 
 ### Testes escopados por provider (antes do build)
 
-Logo após o `npm ci` e antes de qualquer comando `build:*`, cada leg da matrix roda **duas** suítes escopadas:
+Logo após o `npm ci` e antes de qualquer comando `build:*`, cada leg da matrix roda a suíte escopada do provider:
 
-- **Test (isomorphic-git)**: `GIT_PROVIDER=isomorphic-git npx vitest run tests/ipc tests/git-providers tests/git-layer-boundary.test.js tests/build-scripts.test.js`
 - **Test (dugite)**: `GIT_PROVIDER=dugite npx vitest run tests/git-providers`
 
 Deliberadamente **não** se roda o `npm test` completo: a suíte cheia inclui os casos quarentenados em `KNOWN-FAILURES`, que não dizem respeito ao empacotamento e falhariam o release sem trazer sinal útil.

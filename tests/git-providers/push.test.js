@@ -4,7 +4,7 @@
  * Same transport for BOTH providers: local bare repo served over loopback
  * http (git http-backend CGI) — see harness.js. No external network, no
  * credentials. Fixture expectations derive from the incumbent
- * (isomorphic-git) behavior.
+ * (the legacy module) behavior.
  *
  * Scenarios (PRD §29):
  *   1. small push                         6. push to an existing branch (ff)

@@ -31,7 +31,7 @@ const MAX_PUBLISH_RETRIES = 2;
 const BATCH_SIZE_STAGING = 25;
 
 // ─── Per-Step Timeout Constants ───────────────────────────────────────────────
-// AbortSignal is ignored by isomorphic-git local ops, so these are for
+// Local ops historically ignored AbortSignal, so these are for
 // Promise.race-based timeout warnings, not actual cancellation.
 /** @type {number} Fetch is network-bound, allow 30s */
 const STEP_TIMEOUT_FETCH_MS = 30000;

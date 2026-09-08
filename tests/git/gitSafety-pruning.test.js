@@ -22,14 +22,18 @@ vi.unmock('path');
 
 import fs from 'fs';
 import { describe, it, expect, afterEach } from 'vitest';
-import gitModule from 'isomorphic-git';
 
 import { GitSafety, createObjectStyleOps } from '../../src/ipc/gitSafety.js';
+import { GitService } from '../../src/git/GitService.js';
+import { gitSetup } from '../git-providers/harness.js';
 import { createRepoPair } from './fixtures/harness.js';
 import { httpBackendAvailable } from './fixtures/harness.js';
+
+// Object-style git ops over the production facade (same interface the
+// app injects into GitSafety via createObjectStyleOps).
+const git = createObjectStyleOps(new GitService());
 import { createMockGitProvider } from './fixtures/mockProvider.js';
 
-const git = gitModule.default || gitModule;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const silence = () => {};
 const logger = { info: silence, warn: silence, error: silence, debug: silence };
@@ -54,18 +58,18 @@ async function makeBackupAtAge(repo, name, ageDays) {
   const ts = Math.floor((Date.now() - ageDays * DAY_MS) / 1000);
   const file = `bk-${name.replace(/[/\\]/g, '_')}.txt`;
   repo.writeFiles({ [file]: name });
-  await git.add({ fs, dir: repo.dir, filepath: file });
-  const oid = await git.commit({
-    fs,
-    dir: repo.dir,
-    message: `backup seed ${name}`,
-    author: { name: 'test', email: 'test@test.local', timestamp: ts },
-  });
-  await git.branch({ fs, dir: repo.dir, ref: name, checkout: false });
+  await gitSetup(['add', '--', file], repo.dir);
+  await gitSetup(
+    ['commit', '-m', `backup seed ${name}`],
+    repo.dir,
+    { GIT_AUTHOR_DATE: `@${ts}`, GIT_COMMITTER_DATE: `@${ts}` }
+  );
+  const oid = (await gitSetup(['rev-parse', 'HEAD'], repo.dir)).stdout.trim();
+  await git.branch({ dir: repo.dir, ref: name });
   return oid;
 }
 
-const branchNames = (dir) => git.listBranches({ fs, dir });
+const branchNames = (dir) => git.listBranches({ dir });
 
 // ─── 1. Real repo: pruning window ────────────────────────────────────────────
 
@@ -97,13 +101,12 @@ describe.skipIf(!httpBackendAvailable)('pruneOldBackups — real repo, 7-day win
     // 8-day-old commit on a NORMAL branch — must survive pruning.
     const ts = Math.floor((Date.now() - 8 * DAY_MS) / 1000);
     pair.local.writeFiles({ old: 'old' });
-    await git.add({ fs, dir: pair.local.dir, filepath: 'old' });
-    await git.commit({
-      fs,
-      dir: pair.local.dir,
-      message: 'old commit on main',
-      author: { name: 'test', email: 'test@test.local', timestamp: ts },
-    });
+    await gitSetup(['add', '--', 'old'], pair.local.dir);
+    await gitSetup(
+      ['commit', '-m', 'old commit on main'],
+      pair.local.dir,
+      { GIT_AUTHOR_DATE: `@${ts}`, GIT_COMMITTER_DATE: `@${ts}` }
+    );
 
     const safety = new GitSafety({ logger });
     await safety.pruneOldBackups(git, fs, pair.local.dir, 7);

@@ -19,7 +19,7 @@ describe('Static code invariants', () => {
     // FORBID force: true or force=true in any push path. Allowed only:
     // (1) the body of _hardResetBranch (local `git reset --hard` equivalent)
     // (2) this.git.checkout(...) calls — checkout is always a local
-    //     operation in isomorphic-git and can never push.
+    //     operation in the legacy module and can never push.
     const withoutHardReset = content.replace(
       /async _hardResetBranch\(projectPath, targetRef\) \{[\s\S]*?\n  \}/,
       ''

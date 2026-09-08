@@ -100,7 +100,7 @@ let deepenProbeResult = null;
 
 /**
  * Probe T10-D1: does `provider.fetch` WITHOUT `depth` deepen a repo that
- * was previously fetched with `depth: 1` (historical iso-git semantics, kept as the flow contract)?
+ * was previously fetched with `depth: 1` (historical the legacy module semantics, kept as the flow contract)?
  * The flow's divergent path depends on it for the merge-base.
  * @param {string} [providerName='dugite']
  * @returns {Promise<boolean>} true when the capability works
@@ -155,7 +155,7 @@ let missingRefProbeResult = null;
 /**
  * Probe T10-D2: fetching a branch ABSENT on the remote must fail with a
  * message the flow's first-publish detection matches
- * (/Could not find|not found|404/i) — iso-git raises "Could not find
+ * (/Could not find|not found|404/i) — the legacy module raises "Could not find
  * ref". dugite currently surfaces "couldn't find remote ref" (lowercase,
  * no "not found") which the flow does NOT recognize.
  * @param {string} [providerName='dugite']
@@ -219,7 +219,7 @@ const binaryFallbackProbeResults = new Map();
 /**
  * Probe T5-1: after a binary conflict resume with a REMOTE strategy,
  * does the flow materialize the WINNING side's bytes AND integrate the
- * remote's clean (non-conflicting) files? Bug: iso-git's merge rejects
+ * remote's clean (non-conflicting) files? Bug: the legacy provider's merge rejects
  * with an OBJECT-shaped `data` ({filepaths:[...]}) that
  * GitHandlers._extractConflictFiles does not recognize → the binary
  * fallback no-ops (wrong bytes, clean remote files dropped). See
