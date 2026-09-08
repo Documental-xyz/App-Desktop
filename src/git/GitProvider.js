@@ -1,8 +1,8 @@
 /**
  * @fileoverview GitProvider interface contract (JSDoc, ~24 operations).
- * Implementations: IsomorphicGitProvider (default during migration) and
- * DugiteProvider (target). Providers must never leak their underlying
- * library types across this boundary.
+ * Implementation: DugiteProvider (the only backend since the migration).
+ * Providers must never leak their underlying library types across this
+ * boundary.
  * @see .omo/plans/prd-dugite-migration.md §6.2–6.3
  * @since 1.0.0
  */
@@ -142,8 +142,7 @@
 
 /**
  * Merge `theirRef` into the current branch. With dugite this maps to
- * `git merge [-X theirs|ours]` natively (the custom merge driver in
- * `src/ipc/gitMergeDriver.js` becomes dead code — PRD §6.3).
+ * `git merge [-X theirs|ours]` natively (PRD §6.3).
  * @function
  * @name GitProvider#merge
  * @param {string} path - Local repository directory

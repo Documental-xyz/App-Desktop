@@ -13,27 +13,12 @@ const { GitService } = require('../git/GitService.js');
 const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { secureTokenService } = require('../services/secureTokenService.js');
 
-// GitService with module-source loaders acquired in this file's scope
-// (T11 pattern — mock-visible under vitest). The loader promise is memoized
-// because concurrent dynamic imports of a mocked module race in vitest.
+// Lazily-created GitService singleton over the configured provider.
 let _gitService = null;
-let _gitModulePromise = null;
-let _httpModulePromise = null;
 
 function getGitService() {
   if (!_gitService) {
-    if (!_gitModulePromise) {
-      _gitModulePromise = import('isomorphic-git');
-    }
-    if (!_httpModulePromise) {
-      _httpModulePromise = import('isomorphic-git/http/node');
-    }
-    _gitService = new GitService({
-      provider: createGitProvider({
-        loadGit: () => _gitModulePromise,
-        loadHttp: () => _httpModulePromise,
-      }),
-    });
+    _gitService = new GitService({ provider: createGitProvider() });
   }
   return _gitService;
 }

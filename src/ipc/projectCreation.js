@@ -17,8 +17,9 @@ const { createGitProvider } = require('../git/GitProviderFactory.js');
 const { ProcessManager } = require('./processManager.js');
 const { t } = require('../utils/mainI18n');
 
-// iso-git acquisition for the GitService loaders. Unlike the other T12
-// modules (dynamic import()), this file MUST acquire via require semantics:
+// iso-git acquisition for the DIRECT remote-probe path below
+// (_probeRemoteRefs runs git.getRemoteInfo against the URL before cloning).
+// Unlike dynamic import(), this file MUST acquire via require semantics:
 // tests/ipc/gitClone-security.test.js installs a Module._load monkey
 // patch, which intercepts require() (incl. createRequire) but NOT dynamic
 // import(). Loader promises are memoized (concurrent-import vitest race).
@@ -43,12 +44,7 @@ function loadHttpModule() {
 
 function getGitService() {
   if (!_gitService) {
-    _gitService = new GitService({
-      provider: createGitProvider({
-        loadGit: loadGitModule,
-        loadHttp: loadHttpModule,
-      }),
-    });
+    _gitService = new GitService({ provider: createGitProvider() });
   }
   return _gitService;
 }

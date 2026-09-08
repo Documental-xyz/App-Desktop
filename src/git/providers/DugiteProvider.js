@@ -7,8 +7,8 @@
  * it is the provider-layer boundary (plan checkbox 15; PRD §6.2–6.3).
  * Local operations are added to this same class by T16.
  *
- * Semantics mirrored from IsomorphicGitProvider (T9/T10), which moved
- * them verbatim from the call sites:
+ * Semantics mirrored from the legacy isomorphic-git provider (T9/T10),
+ * which moved them verbatim from the call sites:
  *   - shallow fetch: `singleBranch: true, depth: 1`
  *     (src/ipc/git.js:1009/1520/1707/1955-1960; gitPreflight.js:369-381)
  *   - clone: `singleBranch: true, depth: 10`
@@ -83,7 +83,7 @@ const crypto = require('crypto');
 const PROVIDER_NAME = 'dugite';
 
 // App identity used when commit() gets no author and the repo config has
-// none — identical to IsomorphicGitProvider's DEFAULT_AUTHOR (T10, which
+// none — identical to the legacy provider's DEFAULT_AUTHOR (T10, which
 // mirrors git.js:1081).
 const DEFAULT_AUTHOR = { name: 'documental', email: 'documental@app' };
 
@@ -102,7 +102,7 @@ const ASKPASS_TOKEN_ENV = 'SMC_GIT_ASKPASS_TOKEN';
 
 /**
  * Whether a remote URL points at github.com (case-insensitive host
- * check). Identical guard to IsomorphicGitProvider.isGithubUrl —
+ * check). Identical guard to the legacy provider's isGithubUrl —
  * non-http(s) URLs (file://, local paths) never match, so a GitHub
  * token is never offered to third-party/local remotes.
  *
@@ -479,7 +479,8 @@ class DugiteProvider {
 
   // ─── Local operations + reads (T16) ─────────────────────────────────────────
   //
-  // Signatures + return formats MIRROR IsomorphicGitProvider (T10) — the
+  // Signatures + return formats MIRROR the legacy isomorphic-git provider
+  // (T10) — the
   // dual-provider suite (T18) runs the same checks against both providers,
   // so parity of contract is king. Local ops never need auth: no askpass,
   // no remote resolution — `_run` is called with `{ repoPath, signal }`
@@ -658,10 +659,9 @@ class DugiteProvider {
    *     overrides the positional theirRef (rest-spread parity with T10)
    *   - `mergeDriver` (a JS callback such as oursMergeDriver /
    *     theirsMergeDriver): a callback cannot cross a CLI boundary, so
-   *     the driver's INTENT is translated to the equivalent native
-   *     flag (`git merge -X ours` / `-X theirs`). Intent detection
-   *     (contract with src/ipc/gitMergeDriver.js, git-sync-strategy
-   *     Task 3):
+    *     the driver's INTENT is translated to the equivalent native
+    *     flag (`git merge -X ours` / `-X theirs`). Intent detection
+    *     (markers on the callback; git-sync-strategy Task 3):
    *   *       1. `mergeDriver.direction === 'ours' | 'theirs' | 'full-local'
    *          | 'full-remote'` marker (full-* translate to -X ours/theirs,
    *          see mergeDriverFavor), OR
@@ -709,7 +709,7 @@ class DugiteProvider {
    * hunks/files become integral to the winner), which is exactly the
    * hunk-level `-X` behavior. `-s ours` would discard the ENTIRE remote
    * side (all files, including non-conflicting ones) and git has no native
-   * `-s theirs`; both are documented as rejected in gitMergeDriver JSDoc.
+   * `-s theirs`; both were rejected by design in the original driver docs.
    *
    * Returns 'ours' | 'theirs' | null (null = no recognizable intent).
    * @param {Function} driver
@@ -1106,7 +1106,7 @@ class DugiteProvider {
   }
 
   /**
-   * Read a blob. iso-git semantics (gitMergeDriver.js:67): `oid` is a
+   * Read a blob. Object-style semantics: `oid` is a
    * commit/tree OID and `opts.filepath` selects the file inside it —
    * translated as `git rev-parse <oid>:<filepath>` then
    * `git cat-file blob`. Without `filepath`, `oid` is treated as the
@@ -1212,7 +1212,7 @@ class DugiteProvider {
   /**
    * Check whether a ref can be fast-forwarded onto a target without a
    * merge commit, i.e. whether `ref` is an ANCESTOR of `target`.
-   * Contract parity with IsomorphicGitProvider.canFastForward (T/F3-D1):
+   * Contract parity with the legacy provider's canFastForward (T/F3-D1):
    * `{ ref, target }` where `ref` is the ancestor candidate and `target`
    * (default 'HEAD') the descendant; boolean result, ancestor === true
    * means fast-forward possible. Equal OIDs are their own ancestors →

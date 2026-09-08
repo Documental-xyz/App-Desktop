@@ -43,17 +43,6 @@ const WORKFLOWS_CACHE_TTL_MS = 5 * 60 * 1000;
  */
 const REMOTE_BRANCH_MISSING_HINTS = ['could not find', 'not found', '404'];
 
-function _unwrapHttp(m) {
-  try {
-    if (m && m.default) {
-      return m.default;
-    }
-  } catch (_e) {
-    // vi.mock namespace without a `default` export — use the namespace as-is
-  }
-  return m;
-}
-
 /**
  * @typedef {Object} PreflightCheckEntry
  * @property {string} code - Machine-readable check code
@@ -83,11 +72,8 @@ class GitPreflight {
    * @param {Object} deps.logger - Logger instance
    * @param {Object} deps.gitOps - GitOperations instance (has getGitHubToken(), configureGitForUser())
    * @param {Object} deps.databaseManager - Database manager instance
-   * @param {Function} [deps.getGit] - Optional async function returning the isomorphic-git module.
-   *   When provided, the caller (GitHandlers) shares its cached module reference so that
-   *   test mocks applied to that instance are visible here. Defaults to local dynamic import.
    */
-  constructor({ logger, gitOps, databaseManager, getGit }) {
+  constructor({ logger, gitOps, databaseManager }) {
     this.logger = logger;
     this.gitOps = gitOps;
     this.databaseManager = databaseManager;
@@ -102,29 +88,7 @@ class GitPreflight {
      */
     this._workflowsCache = new Map();
 
-    // GitService facade backed by the provider, fed with THIS file's
-    // iso-git/http acquisition (external getGit stays honored) so vitest
-    // mocks remain visible to preflight calls.
-    this.git = new GitService({
-      provider: createGitProvider({
-        loadGit: () => this._getGit(),
-        loadHttp: () => this._getHttp(),
-      }),
-    });
-
-    /**
-     * isomorphic-git module cache (dynamic import). Lazily populated by `_getGit`.
-     * @type {Object|null}
-     * @private
-     */
-    this._gitPromise = null;
-    this._httpPromise = null;
-
-    /**
-     * Optional external git-loader (shares module cache with GitHandlers).
-     * @private
-     */
-    this._externalGetGit = typeof getGit === 'function' ? getGit : null;
+    this.git = new GitService({ provider: createGitProvider() });
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -683,36 +647,6 @@ class GitPreflight {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
-
-  /**
-   * Lazily import and cache isomorphic-git (promise-memoized). Mirrors GitHandlers._getGit.
-   * @returns {Promise<Object>}
-   * @private
-   */
-  async _getGit() {
-    // Memoize the loader promise: concurrent dynamic imports of a mocked
-    // module race in vitest (one caller gets the real module), so the
-    // acquisition must happen exactly once.
-    if (!this._gitPromise) {
-      this._gitPromise = this._externalGetGit
-        ? this._externalGetGit()
-        : import('isomorphic-git');
-    }
-    return this._gitPromise;
-  }
-
-  /**
-   * Lazily import and cache the isomorphic-git http/node transport. Handles
-   * both the real module namespace and vi.mock factories (`{ default: {} }`).
-   * @returns {Promise<Object>}
-   * @private
-   */
-  async _getHttp() {
-    if (!this._httpPromise) {
-      this._httpPromise = import('isomorphic-git/http/node').then(_unwrapHttp);
-    }
-    return this._httpPromise;
-  }
 
   /**
    * Resolve owner/repo for a project by reading the projects table.

@@ -160,7 +160,7 @@
  */
 
 /**
- * @typedef {'isomorphic-git'|'dugite'} ProviderName
+ * @typedef {'dugite'} ProviderName
  */
 
 // ─── Exports ──────────────────────────────────────────────────────────────────

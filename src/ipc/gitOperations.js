@@ -13,26 +13,6 @@ const { secureTokenService } = require('../services/secureTokenService.js');
 // Dynamic import for ESM module - will be loaded when needed
 let Octokit = null;
 
-// Module-source loaders for the provider (T11 pattern): iso-git is acquired
-// via dynamic import() in this file's scope and injected into the provider,
-// so vitest mocks stay visible where tests rely on them.
-let _gitModulePromise = null;
-let _httpModulePromise = null;
-
-// Prefer the CJS module.exports (`.default`) when populated so spies installed
-// on the isomorphic-git module object stay visible; vi.mock factory
-// namespaces use an empty `default` and are returned as-is.
-function _unwrapModule(ns) {
-  try {
-    if (ns && ns.default && Object.keys(ns.default).length > 0) {
-      return ns.default;
-    }
-  } catch (_e) {
-    // mock namespace without a `default` export
-  }
-  return ns;
-}
-
 /**
  * Git Operations Class
  */
@@ -46,31 +26,10 @@ class GitOperations {
   constructor({ logger, databaseManager }) {
     this.logger = logger;
     this.databaseManager = databaseManager;
-    this.git = new GitService({
-      provider: createGitProvider({
-        loadGit: () => this._getGit(),
-        loadHttp: () => this._getHttp(),
-      }),
-    });
+    this.git = new GitService({ provider: createGitProvider() });
     this._gitCache = {};
     this._userInfoCache = null;
     this._userInfoCacheAt = 0;
-  }
-
-  // Loader promises are memoized: concurrent dynamic imports of a mocked
-  // module race in vitest (one caller gets the real module).
-  _getGit() {
-    if (!_gitModulePromise) {
-      _gitModulePromise = import('isomorphic-git').then(_unwrapModule);
-    }
-    return _gitModulePromise;
-  }
-
-  _getHttp() {
-    if (!_httpModulePromise) {
-      _httpModulePromise = import('isomorphic-git/http/node').then(_unwrapModule);
-    }
-    return _httpModulePromise;
   }
 
   /**

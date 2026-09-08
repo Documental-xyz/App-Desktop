@@ -83,32 +83,6 @@ const { GitPreflight: _GitPreflightClass } = (() => {
   }
 })();
 
-// Resilient import: merge drivers + binary fallbacks.
-// - oursMergeDriver/resolveBinaryOurs: publish/refresh direction (LOCAL wins)
-// - theirsMergeDriver/resolveBinaryTheirs: cross-branch publish + publish-main
-// - fullLocalMergeDriver/fullRemoteMergeDriver: conflict-modal strategies
-const {
-  theirsMergeDriver, resolveBinaryTheirs,
-  oursMergeDriver, resolveBinaryOurs,
-  fullLocalMergeDriver, resolveBinaryFullLocal,
-  fullRemoteMergeDriver, resolveBinaryFullRemote,
-} = (() => {
-  try {
-    return require('./gitMergeDriver.js');
-  } catch (_e) {
-    return {
-      theirsMergeDriver: null,
-      resolveBinaryTheirs: null,
-      oursMergeDriver: null,
-      resolveBinaryOurs: null,
-      fullLocalMergeDriver: null,
-      resolveBinaryFullLocal: null,
-      fullRemoteMergeDriver: null,
-      resolveBinaryFullRemote: null,
-    };
-  }
-})();
-
 // Resilient import: pre-merge conflict detection (conflict-strategy-modal Task 1).
 const { detectMergeConflicts: _detectMergeConflicts } = (() => {
   try {
@@ -248,15 +222,9 @@ class GitHandlers {
     this.logger = logger;
     this.databaseManager = databaseManager;
     this.gitOps = new GitOperations({ logger, databaseManager });
-    // vitest's vi.mock() only intercepts imports in files it transforms;
-    // this file is transformed, so iso-git is acquired HERE (mock-visible)
-    // and injected into the provider via module-source loaders.
-    this.git = gitService || new GitService({
-      provider: createGitProvider({
-        loadGit: () => this._getGit(),
-        loadHttp: () => this._getHttp(),
-      }),
-    });
+    // No module loaders: loadGit/loadHttp existed only to feed the
+    // isomorphic-git backend; the dugite provider takes no arguments.
+    this.git = gitService || new GitService({ provider: createGitProvider() });
     this.permissionHandlers = permissionHandlers || null;
     this.gitOperationInProgress = false;
     this.LOCK_TIMEOUT_MS = _IMPORTED_LOCK_TIMEOUT_MS;
@@ -271,8 +239,6 @@ class GitHandlers {
     this._gitCache = {};
     this._sendOutputBuffer = [];
     this._sendOutputTimer = null;
-    this._gitModuleCache = null;
-    this._httpModuleCache = null;
     this.cancelRequested = false;
     /**
      * In-memory registry of pending conflict decisions (Task 3).
@@ -283,7 +249,7 @@ class GitHandlers {
     this._pendingConflicts = new Map();
     this.gitSafety = _GitSafetyClass ? new _GitSafetyClass({ logger }) : null;
     this.gitPreflight = _GitPreflightClass
-      ? new _GitPreflightClass({ logger, gitOps: this.gitOps, databaseManager, getGit: () => this._getGit() })
+      ? new _GitPreflightClass({ logger, gitOps: this.gitOps, databaseManager })
       : null;
     // Task 3: wire the dugite command observer into the operation
     // journal. _run does not know the operationId — recordCommand(null,…)
@@ -295,13 +261,6 @@ class GitHandlers {
     if (this.operationJournal && _dugiteSetCommandObserver) {
       _dugiteSetCommandObserver((entry) => this.operationJournal.recordCommand(null, entry));
     }
-  }
-
-  async _getGit() {
-    if (!this._gitModuleCache) {
-      this._gitModuleCache = await import('isomorphic-git');
-    }
-    return this._gitModuleCache;
   }
 
   /**
@@ -316,13 +275,6 @@ class GitHandlers {
         : null;
     }
     return this._safetyOpsCache;
-  }
-
-  async _getHttp() {
-    if (!this._httpModuleCache) {
-      this._httpModuleCache = await import('isomorphic-git/http/node');
-    }
-    return this._httpModuleCache;
   }
 
   /**
@@ -1756,9 +1708,9 @@ class GitHandlers {
         let merged = stillLocalAhead;
         if (!merged) {
           // Direction contract (anti-inversion):
-          //  - working-branch publish: ours = LOCAL commits → oursMergeDriver
+          //  - working-branch publish: ours = LOCAL commits → -X ours
           //  - cross-branch publish:   ours = target(remote state), theirs =
-          //    the local commits → theirsMergeDriver keeps LOCAL winning
+          //    the local commits → -X theirs keeps LOCAL winning
           const theirRef = onWorkingBranch ? `origin/${targetBranch}` : originalBranch;
 
           // Task 3: on the auto path, ask the user BEFORE merging a real
@@ -1793,11 +1745,10 @@ class GitHandlers {
                 // BEFORE iso-git throws, so the binary fallback commit
                 // keeps the remote's clean files (dugite ignores this key).
                 abortOnConflict: false,
-                ...(strat
-                  ? { mergeDriver: strat.driver }
-                  : (onWorkingBranch && oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
-                ...(!onWorkingBranch && !strat && theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {}),
-                message: `Merge publish${conflictStrategy ? ` (${conflictStrategy})` : ''} (${targetBranch}) — ${new Date().toISOString()}`,
+              ...(strat
+                ? { strategy: strat.side }
+                : { strategy: onWorkingBranch ? 'ours' : 'theirs' }),
+              message: `Merge publish${conflictStrategy ? ` (${conflictStrategy})` : ''} (${targetBranch}) — ${new Date().toISOString()}`,
                 author,
                 ...(signal ? { signal } : {}),
               }),
@@ -1835,17 +1786,10 @@ class GitHandlers {
                   ? originOid
                   : this.git.resolveRef(projectPath, originalBranch);
               };
-              const binaryFn = strat ? strat.binary : null;
-              const binaryOid = await binaryOidFor();
+              const binaryOid = strat ? await binaryOidFor() : headBeforeMerge;
               for (const filepath of conflictFiles) {
                 try {
-                  if (binaryFn) {
-                    await binaryFn(this.git, projectPath, filepath, binaryOid);
-                  } else if (onWorkingBranch) {
-                    await resolveBinaryOurs(this.git, projectPath, filepath, headBeforeMerge);
-                  } else {
-                    await resolveBinaryTheirs(this.git, projectPath, filepath, headBeforeMerge);
-                  }
+                  await this._resolveBinarySide(projectPath, filepath, binaryOid);
                 } catch (resolveErr) {
                   this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
                 }
@@ -2131,7 +2075,8 @@ class GitHandlers {
   }
 
   /**
-   * Driver/binary-resolver pair for a user-chosen conflict strategy.
+   * Winning merge side for a user-chosen conflict strategy, translated by
+   * the provider into `git merge -X ours|theirs`.
    *
    * `localIsOurs` tells which MERGE side holds the "local" content:
    *  - refresh / working-branch publish / publish-main(ours=main →
@@ -2142,24 +2087,29 @@ class GitHandlers {
    *
    * @param {string} strategy - one of CONFLICT_STRATEGIES
    * @param {boolean} [localIsOurs=true]
-   * @returns {{driver: Function, binary: Function, side: 'ours'|'theirs'}}
+   * @returns {{side: 'ours'|'theirs'}}
    */
   _conflictDriverFor(strategy, localIsOurs = true) {
     const wantLocal = strategy === 'MERGE_LOCAL' || strategy === 'FULL_LOCAL';
     const oursFamilyWins = wantLocal === localIsOurs;
-    const full = strategy === 'FULL_LOCAL' || strategy === 'FULL_REMOTE';
-    if (oursFamilyWins) {
-      return {
-        driver: full ? fullLocalMergeDriver : oursMergeDriver,
-        binary: full ? resolveBinaryFullLocal : resolveBinaryOurs,
-        side: 'ours',
-      };
-    }
-    return {
-      driver: full ? fullRemoteMergeDriver : theirsMergeDriver,
-      binary: full ? resolveBinaryFullRemote : resolveBinaryTheirs,
-      side: 'theirs',
-    };
+    return { side: oursFamilyWins ? 'ours' : 'theirs' };
+  }
+
+  /**
+   * Binary-conflict fallback (port of the former resolveBinaryOurs/Theirs
+   * helpers): materialize the winning side's blob into the
+   * working tree and stage it. Provider-agnostic — goes through the
+   * GitService facade (readBlob/add).
+   *
+   * @param {string} projectPath - repository working tree root
+   * @param {string} filepath - conflicted file, relative to the repo
+   * @param {string} oid - commit/tree/blob oid of the winning side
+   * @returns {Promise<void>}
+   */
+  async _resolveBinarySide(projectPath, filepath, oid) {
+    const { blob } = await this.git.readBlob(projectPath, oid, { filepath });
+    require('fs').writeFileSync(path.join(projectPath, filepath), Buffer.from(blob));
+    await this.git.add(projectPath, filepath);
   }
 
   /**
@@ -2488,10 +2438,10 @@ class GitHandlers {
    *     missing upstream counts as "everything unpushed".
    *  3. Shallow fetch origin/preview; deepen when diverged so a
    *     merge-base exists.
-   *  4. Diverged (and not merely local-ahead): merge origin/preview with
-   *     oursMergeDriver (LOCAL wins conflicting hunks; remote
-   *     non-conflicting changes are integrated); binary conflicts fall
-   *     back to resolveBinaryOurs. NO hard reset on ANY path.
+    *  4. Diverged (and not merely local-ahead): merge origin/preview with
+    *     -X ours (LOCAL wins conflicting hunks; remote
+    *     non-conflicting changes are integrated); binary conflicts fall
+    *     back to _resolveBinarySide. NO hard reset on ANY path.
    *  5. HEAD == upstream after merge (or already) → done.
    *  6. Best-effort pruneOldBackups (7-day retention, Task 4).
    *
@@ -2779,8 +2729,8 @@ class GitHandlers {
     this._emitStage(op, 'merging', 'Verificando e mesclando alterações...');
 
     // Direction contract (anti-inversion): refresh merges origin/preview
-    // INTO the local working branch → ours = LOCAL commits →
-    // oursMergeDriver keeps LOCAL winning conflicting hunks while remote
+    // INTO the local working branch → ours = LOCAL commits → -X ours
+    // keeps LOCAL winning conflicting hunks while remote
     // non-conflicting changes are integrated.
     //
     // Task 3: on the auto path, a REAL conflict pauses the flow for a user
@@ -2805,8 +2755,8 @@ class GitHandlers {
           // remote's clean files (dugite ignores this key).
           abortOnConflict: false,
           ...(strat
-            ? { mergeDriver: strat.driver }
-            : (oursMergeDriver ? { mergeDriver: oursMergeDriver } : {})),
+            ? { strategy: strat.side }
+            : { strategy: 'ours' }),
           message: `Merge refresh${conflictStrategy ? ` (${conflictStrategy})` : ''} (origin/${BRANCH_PREVIEW}) — ${new Date().toISOString()}`,
           author,
           ...(signal ? { signal } : {}),
@@ -2820,11 +2770,10 @@ class GitHandlers {
         throw mergeErr;
       }
       this.sendOutput('⚠️ Conflito binário detectado — usando sua versão.');
-      const binaryFn = strat ? strat.binary : resolveBinaryOurs;
       const binaryOid = strat && strat.side === 'theirs' ? originOid : headBefore;
       for (const filepath of conflictFiles) {
         try {
-          await binaryFn(this.git, projectPath, filepath, binaryOid);
+          await this._resolveBinarySide(projectPath, filepath, binaryOid);
         } catch (resolveErr) {
           this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
         }
@@ -2858,9 +2807,9 @@ class GitHandlers {
    *     a missing upstream counts as "everything unpushed".
    *  2. _commitAll — commit-first, always before fetch/merge/push.
    *  3. Shallow fetch; deepen when diverged so a merge-base exists.
-   *  4. Merge origin/preview into the working preview branch with
-   *     oursMergeDriver (LOCAL wins conflicting hunks); binary conflicts
-   *     fall back to resolveBinaryOurs.
+    *  4. Merge origin/preview into the working preview branch with
+    *     -X ours (LOCAL wins conflicting hunks); binary conflicts
+    *     fall back to _resolveBinarySide.
    *  5. Push force:false; rejection → typed PUSH_REJECTED error guiding
    *     the user to "Atualizar primeiro".
    *  6. Success: NO hard reset (the merge already synced), NO backup
@@ -2982,9 +2931,9 @@ class GitHandlers {
    *     merge-base exists — pattern of _publishCore).
    *  5. Local main := origin/main via _safeResetToOrigin (backup-guarded,
    *     no raw hard reset), then merge origin/preview into main with the
-   *     PREVIEW-WINS contract: in the main←preview merge ours=main,
-   *     theirs=preview → theirsMergeDriver + resolveBinaryTheirs keep
-   *     PREVIEW winning (the OPPOSITE winner of the refresh flow).
+    *     PREVIEW-WINS contract: in the main←preview merge ours=main,
+    *     theirs=preview → -X theirs + _resolveBinarySide keep
+    *     PREVIEW winning (the OPPOSITE winner of the refresh flow).
    *  6. Push main force:false; a rejection is a typed GitFlowError
    *     PUSH_REJECTED (Task 6 contract — one attempt, renderer guides
    *     the user to "Atualizar primeiro").
@@ -3220,11 +3169,11 @@ class GitHandlers {
    * into the _safeResetToOrigin calls (2nd-backup dedupe — skipped only
    * while it provably covers the current state).
    *
-   * Direction contract (ANTI-INVERSION): in the merge main←preview,
-   * ours=main, theirs=preview → theirsMergeDriver /
-   * resolveBinaryTheirs keep PREVIEW winning conflicting hunks — the
-   * OPPOSITE winner of the refresh flow (which merges preview into the
-   * local working branch with oursMergeDriver).
+    * Direction contract (ANTI-INVERSION): in the merge main←preview,
+    * ours=main, theirs=preview → -X theirs + _resolveBinarySide
+    * keep PREVIEW winning conflicting hunks — the
+    * OPPOSITE winner of the refresh flow (which merges preview into the
+    * local working branch with -X ours).
    *
    * @returns {Promise<{success: boolean, branch?: string, cancelled?: boolean, error?: string, code?: string}>}
    */
@@ -3341,8 +3290,8 @@ class GitHandlers {
           // remote's clean files (dugite ignores this key).
           abortOnConflict: false,
           ...(strat
-            ? { mergeDriver: strat.driver }
-            : (theirsMergeDriver ? { mergeDriver: theirsMergeDriver } : {})),
+            ? { strategy: strat.side }
+            : { strategy: 'theirs' }),
           message: `Promote preview to main${conflictStrategy ? ` (${conflictStrategy})` : ''} — ${new Date().toISOString()}`,
           author,
           ...(signal ? { signal } : {}),
@@ -3365,11 +3314,10 @@ class GitHandlers {
       // Binary conflicts: bytes from the winning side of the strategy
       // (auto path = PREVIEW wins, theirs = origin/preview).
       this.sendOutput('⚠️ Conflito binário detectado — usando versão do preview.');
-      const binaryFn = strat ? strat.binary : resolveBinaryTheirs;
       const binaryOid = strat && strat.side === 'ours' ? originMainOid : theirsOid;
       for (const filepath of conflictFiles) {
         try {
-          await binaryFn(this.git, projectPath, filepath, binaryOid);
+          await this._resolveBinarySide(projectPath, filepath, binaryOid);
         } catch (resolveErr) {
           this.logger.warn(`Could not resolve binary ${filepath}: ${resolveErr.message}`);
         }
