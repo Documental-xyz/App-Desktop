@@ -527,8 +527,8 @@ describe('_assessAndBackup recentBackup reuse conditions', () => {
       recentBackup: freshContext(),
     });
     expect(gitMod.branch).toHaveBeenCalledTimes(1);
-    // the fresh backup snapshot-stages the dirty file
-    expect(gitMod.add).toHaveBeenCalledWith(expect.objectContaining({ filepath: 'f.txt' }));
+    // the fresh backup snapshot-stages the dirty file (P-1: batched per lot)
+    expect(gitMod.add).toHaveBeenCalledWith(expect.objectContaining({ filepath: ['f.txt'] }));
   });
 
   it('creates a fresh backup when the flow backup was pruned or moved', async () => {

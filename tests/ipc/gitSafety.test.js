@@ -112,8 +112,9 @@ describe('GitSafety', () => {
       );
       expect(checkoutBackupCall).toBeDefined();
 
+      // P-1: staging is batched per lot — filepath is an array now.
       expect(git.add).toHaveBeenCalledWith(
-        expect.objectContaining({ filepath: 'src/file.ts' })
+        expect.objectContaining({ filepath: ['src/file.ts'] })
       );
 
       expect(git.commit).toHaveBeenCalled();
@@ -131,7 +132,7 @@ describe('GitSafety', () => {
       await safety._safeResetOrCheckout(git, fsStub, PROJECT_PATH, 'origin/preview');
 
       expect(git.remove).toHaveBeenCalledWith(
-        expect.objectContaining({ filepath: 'deleted.txt' })
+        expect.objectContaining({ filepath: ['deleted.txt'] })
       );
       expect(git.add).not.toHaveBeenCalled();
     });

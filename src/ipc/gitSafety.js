@@ -60,6 +60,8 @@ function createObjectStyleOps(gitService) {
           ? { ...(object !== undefined ? { object } : {}), ...(checkout !== undefined ? { checkout } : {}), ...(force !== undefined ? { force } : {}) }
           : undefined
       ),
+    // P-1: filepath is string|string[] — arrays stage a whole lot in ONE
+    // provider command (single .git/index.lock acquisition).
     add: ({ dir, filepath }) => gitService.add(dir, filepath),
     remove: ({ dir, filepath }) => gitService.remove(dir, filepath),
     commit: ({ dir, message, author }) =>
@@ -549,23 +551,32 @@ class GitSafety {
         // Stage dirty files (add present / remove deleted) in batches.
         // 100 (Task 4): large publishes were bounded by 10-file batches;
         // 100 keeps the argv-limit guard while cutting batch count 10×.
+        // P-1: ONE add/remove PER LOT — the old Promise.all of per-file
+        // ops raced concurrent `git add`s on .git/index.lock (git has no
+        // lock retry); the object-style adapter forwards filepath arrays
+        // straight to the provider's batched add/remove, so a single
+        // command per lot = a single lock acquisition = zero race.
         const BATCH = 100;
         const stageErrors = [];
         for (let i = 0; i < dirty.length; i += BATCH) {
           const batch = dirty.slice(i, i + BATCH);
-          await Promise.all(
-            batch.map(async ([filepath, , worktreeStatus]) => {
-              try {
-                if (worktreeStatus) {
-                  await gitMod.add({ fs, dir: projectPath, filepath });
-                } else {
-                  await gitMod.remove({ fs, dir: projectPath, filepath });
-                }
-              } catch (fileErr) {
-                stageErrors.push({ filepath, error: fileErr.message });
-              }
-            })
-          );
+          const present = [];
+          const deleted = [];
+          for (const [filepath, , worktreeStatus] of batch) {
+            (worktreeStatus ? present : deleted).push(filepath);
+          }
+          try {
+            if (present.length > 0) {
+              await gitMod.add({ fs, dir: projectPath, filepath: present });
+            }
+            if (deleted.length > 0) {
+              await gitMod.remove({ fs, dir: projectPath, filepath: deleted });
+            }
+          } catch (batchErr) {
+            for (const [filepath] of batch) {
+              stageErrors.push({ filepath, error: batchErr.message });
+            }
+          }
         }
 
         if (stageErrors.length > 0) {
