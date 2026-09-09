@@ -1,6 +1,6 @@
 # Release pipeline for Documental — push a tag "v*" (e.g. v1.2.3) to trigger.
 # Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap) and macOS
-# (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
+# (dmg + zip, separate x64 and arm64 builds), publishing all artifacts to a DRAFT GitHub release for manual review.
 # Requires the GH_CLIENT_ID secret and the THEME/THEME_MODE values (repo Settings → Secrets and variables → Actions);
 # theme values are required and verified against the packaged runtime env after each build.
 # Git providers: scoped vitest suites run per provider before packaging, and
@@ -49,21 +49,31 @@ jobs:
             || gh release create "$TAG" --draft --title "$TAG" --notes "Documental $TAG" --repo "$GITHUB_REPOSITORY"
 
   build:
-    name: Build (${{ matrix.name }})
+    name: Build (${{ matrix.name || matrix.os }})
     needs: prepare
     if: always() && !failure() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
-    runs-on: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS x64
-            os: macos-15-intel
+          - os: windows-latest
+            build_cmd: npm run build:win -- $PUBLISH
+          - os: ubuntu-latest
+            build_cmd: npm run build:linux -- AppImage deb rpm $PUBLISH
+          # Two separate macOS legs, both on runners >= macOS 14:
+          # - x64 builds natively on the standard macos-15-intel runner (Intel hardware,
+          #   free for public repos; scheduled for retirement ~Aug 2027 — macos-26-intel
+          #   is the successor label when that happens).
+          # - arm64 builds on macos-latest (Apple Silicon).
+          - os: macos-15-intel
+            name: macos-x64
+            arch: x64
             build_cmd: npm run build:macos:x64 -- $PUBLISH
-
-          - name: macOS arm64
-            os: macos-15
+          - os: macos-latest
+            name: macos-arm64
+            arch: arm64
             build_cmd: npm run build:macos:arm64 -- $PUBLISH
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
@@ -94,17 +104,17 @@ jobs:
             ~/Library/Caches/electron-builder
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}-eb-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-eb-
+            ${{ runner.os }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}-eb-
 
       - name: Cache dugite binaries
         uses: actions/cache@v4
         with:
           path: ${{ env.DUGITE_CACHE_DIR }}
-          key: ${{ runner.os }}-dugite-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}-dugite-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-dugite-
+            ${{ runner.os }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}-dugite-
 
       - name: Install dependencies
         run: npm ci
