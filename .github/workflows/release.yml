@@ -1,15 +1,11 @@
-```yaml
 # Release pipeline for Documental — push a tag "v*" (e.g. v1.2.3) to trigger.
-# Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap)
-# and macOS (dmg + zip, x64 + arm64), publishing all artifacts to a DRAFT
-# GitHub release for manual review.
-# Requires the GH_CLIENT_ID secret and the THEME/THEME_MODE values
-# (repo Settings → Secrets and variables → Actions);
+# Builds Windows (NSIS + portable), Linux (AppImage, deb, rpm + best-effort snap) and macOS
+# (dmg + zip, x64 only), publishing all artifacts to a DRAFT GitHub release for manual review.
+# Requires the GH_CLIENT_ID secret and the THEME/THEME_MODE values (repo Settings → Secrets and variables → Actions);
 # theme values are required and verified against the packaged runtime env after each build.
 # Git providers: scoped vitest suites run per provider before packaging, and
 # `npm run verify:bundled-git` checks the dugite binaries inside dist/ after each build.
 # manual runs from the Actions tab are build-only (no publish, no version change).
-#
 # Future code signing placeholders — never enable on unsigned builds (notarization fails hard):
 #   CSC_LINK / CSC_KEY_PASSWORD (Windows + macOS certificates)
 #   APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER / APPLE_TEAM_ID (macOS notarization)
@@ -34,7 +30,6 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 60
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -57,47 +52,26 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: prepare
     if: always() && !failure() && !cancelled() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.name }}
     timeout-minutes: 60
-
     strategy:
       fail-fast: false
-
       matrix:
         include:
-          - name: Windows x64
-            os: windows-latest
-            build_cmd: npm run build:win -- $PUBLISH
-
-          - name: Linux x64
-            os: ubuntu-latest
-            build_cmd: npm run build:linux -- AppImage deb rpm $PUBLISH
-
-          # IMPORTANT:
-          # macOS x64 is built on an Intel runner so native dependencies
-          # (sqlite3, dugite, etc.) are installed/rebuilt as x64.
           - name: macOS x64
             os: macos-15-intel
             build_cmd: npm run build:macos:x64 -- $PUBLISH
 
-          # IMPORTANT:
-          # macOS arm64 is built on an Apple Silicon runner so native dependencies
-          # are installed/rebuilt as arm64.
           - name: macOS arm64
             os: macos-15
             build_cmd: npm run build:macos:arm64 -- $PUBLISH
-
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-
-      # `runner` context is invalid at job-level env; github.workspace is valid
-      # and keeps the cache next to the checkout.
+      # `runner` context is invalid in job-level env; `github.workspace` is valid and keeps the cache next to the checkout.
       DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
-
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -110,21 +84,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Show runner architecture
-        shell: bash
-        run: |
-          echo "Runner:"
-          uname -a
-          echo
-          echo "Architecture:"
-          uname -m
-          echo
-          echo "Node:"
-          node -p "process.version"
-          echo
-          echo "Node architecture:"
-          node -p "process.arch"
-
       - name: Cache electron binaries
         uses: actions/cache@v4
         with:
@@ -135,18 +94,16 @@ jobs:
             ~/Library/Caches/electron-builder
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-${{ runner.arch }}-eb-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-eb-
             ${{ runner.os }}-eb-
 
       - name: Cache dugite binaries
         uses: actions/cache@v4
         with:
           path: ${{ env.DUGITE_CACHE_DIR }}
-          key: ${{ runner.os }}-${{ runner.arch }}-dugite-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-dugite-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-dugite-
             ${{ runner.os }}-dugite-
 
       - name: Install dependencies
@@ -167,7 +124,9 @@ jobs:
 
       # Must run BEFORE any build:* script — `npm run build:env` consumes
       # electron-builder.env (and the electron-builder CLI injects it as env
-      # vars) to produce resources/config/runtime-env.json.
+      # vars) to produce resources/config/runtime-env.json, so the file must
+      # exist on disk.
+      # THEME/THEME_MODE are required (job env) and verified post-build.
       - name: Generate electron-builder.env
         shell: bash
         env:
@@ -177,17 +136,13 @@ jobs:
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
-
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
-
           if [ -z "$THEME" ] || [ -z "$THEME_MODE" ]; then
             echo "::error::THEME and THEME_MODE must be configured (repo Variables or Secrets). THEME='$THEME' THEME_MODE='$THEME_MODE'"
             exit 1
           fi
-
           printf 'THEME=%s\n' "$THEME" >> electron-builder.env
           printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env
-
           echo "Theme configured: THEME=$THEME THEME_MODE=$THEME_MODE"
 
       - name: Set version from tag
@@ -204,12 +159,12 @@ jobs:
       # Runs AFTER the build step: publishing happens inside the electron-builder
       # command above (--publish always), so this cannot gate the upload — instead
       # it fails the job loudly so a draft with a broken bundled Git is never
-      # promoted for review.
+      # promoted for review. Default dist/ output matches electron-builder.
       - name: Verify bundled Git
         run: npm run verify:bundled-git
 
       # Same gating logic as above: fail the job if silent packaging drops
-      # removed startup-critical files from app.asar.
+      # removed startup-critical files from app.asar (win-asar-packaging evidence).
       - name: Verify app.asar contents
         run: npm run verify:asar
 
@@ -218,9 +173,7 @@ jobs:
         run: |
           ACTUAL_THEME=$(node -p "require('./resources/config/runtime-env.json').THEME || ''")
           ACTUAL_MODE=$(node -p "require('./resources/config/runtime-env.json').THEME_MODE || ''")
-
           echo "Packaged runtime env: THEME=$ACTUAL_THEME THEME_MODE=$ACTUAL_MODE (expected THEME=$THEME THEME_MODE=$THEME_MODE)"
-
           if [ "$ACTUAL_THEME" != "$THEME" ] || [ "$ACTUAL_MODE" != "$THEME_MODE" ]; then
             echo "::error::Theme did not reach the packaged runtime-env.json (got THEME='$ACTUAL_THEME' THEME_MODE='$ACTUAL_MODE')"
             exit 1
@@ -233,17 +186,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     continue-on-error: true
-
     env:
       PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && '--publish always' || '--publish never' }}
-
-      # `runner` context is invalid at job-level env; github.workspace is valid
-      # and keeps the cache next to the checkout.
+      # `runner` context is invalid in job-level env; `github.workspace` is valid and keeps the cache next to the checkout.
       DUGITE_CACHE_DIR: ${{ github.workspace }}/.dugite-cache
-
       THEME: ${{ vars.THEME || secrets.THEME }}
       THEME_MODE: ${{ vars.THEME_MODE || secrets.THEME_MODE }}
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -269,18 +217,19 @@ jobs:
             ~/Library/Caches/electron-builder
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
-          key: ${{ runner.os }}-${{ runner.arch }}-eb-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-eb-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-eb-
             ${{ runner.os }}-eb-
 
+      # Dugite cache only — scoped tests are intentionally skipped here:
+      # the job is best-effort (continue-on-error), so test failures would be
+      # silently absorbed anyway; the matrix build job is the test gate.
       - name: Cache dugite binaries
         uses: actions/cache@v4
         with:
           path: ${{ env.DUGITE_CACHE_DIR }}
-          key: ${{ runner.os }}-${{ runner.arch }}-dugite-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-dugite-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-dugite-
             ${{ runner.os }}-dugite-
 
       - name: Install dependencies
@@ -295,17 +244,13 @@ jobs:
             echo "::error::Secret GH_CLIENT_ID is not configured in repo settings"
             exit 1
           fi
-
           printf 'GITHUB_CLIENT_ID=%s\n' "$GITHUB_CLIENT_ID" > electron-builder.env
-
           if [ -z "$THEME" ] || [ -z "$THEME_MODE" ]; then
             echo "::error::THEME and THEME_MODE must be configured (repo Variables or Secrets). THEME='$THEME' THEME_MODE='$THEME_MODE'"
             exit 1
           fi
-
           printf 'THEME=%s\n' "$THEME" >> electron-builder.env
           printf 'THEME_MODE=%s\n' "$THEME_MODE" >> electron-builder.env
-
           echo "Theme configured: THEME=$THEME THEME_MODE=$THEME_MODE"
 
       - name: Set version from tag
@@ -331,12 +276,8 @@ jobs:
         run: |
           ACTUAL_THEME=$(node -p "require('./resources/config/runtime-env.json').THEME || ''")
           ACTUAL_MODE=$(node -p "require('./resources/config/runtime-env.json').THEME_MODE || ''")
-
           echo "Packaged runtime env: THEME=$ACTUAL_THEME THEME_MODE=$ACTUAL_MODE (expected THEME=$THEME THEME_MODE=$THEME_MODE)"
-
           if [ "$ACTUAL_THEME" != "$THEME" ] || [ "$ACTUAL_MODE" != "$THEME_MODE" ]; then
             echo "::error::Theme did not reach the packaged runtime-env.json (got THEME='$ACTUAL_THEME' THEME_MODE='$ACTUAL_MODE')"
             exit 1
           fi
-```
-
