@@ -11,6 +11,7 @@ const { ProjectHandlers } = require('./projects.js');
 const { GitHandlers } = require('./git.js');
 const { BrowserHandlers } = require('./browser.js');
 const { SystemHandlers } = require('./system.js');
+const { CloseProjectHandlers } = require('./closeProject.js');
 const { FileHandlers } = require('./file.js');
 const { ProjectCreationHandler } = require('./projectCreation.js');
 const { registerNodeDetectionHandlers, unregisterNodeDetectionHandlers } = require('./nodeDetection.js');
@@ -57,12 +58,23 @@ class IpcRegistry {
     });
     this.fileHandlers = new FileHandlers(dependencies);
     
+    // Terminates project process trees on "Fechar Ambiente" and secondary
+    // window close; constructed before systemHandlers so its routine can be
+    // injected into the window 'closed' hook.
+    this.closeProjectHandlers = new CloseProjectHandlers({
+      logger: this.logger,
+      processManager: this.projectCreationHandler.processManager
+    });
+
     this.systemHandlers = new SystemHandlers({
       ...dependencies,
       processManager: this.projectCreationHandler.processManager,
       // Reuses BrowserHandlers.cleanupWindowBrowserViews when navigate()
       // moves a window away from main.html (same-window workspace switch).
-      browserHandlers: this.browserHandlers
+      browserHandlers: this.browserHandlers,
+      // Reuses CloseProjectHandlers.closeProject when a secondary window
+      // mapped to a project is closed.
+      closeProjectHandlers: this.closeProjectHandlers
     });
     
     // Register Node.js detection handlers
@@ -97,6 +109,7 @@ class IpcRegistry {
     try {
       // Register handlers in logical order
       this.systemHandlers.registerHandlers();
+      this.closeProjectHandlers.registerHandlers();
       this.authHandlers.registerHandlers();
       this.projectHandlers.registerHandlers();
       this.gitHandlers.registerHandlers();
@@ -143,6 +156,7 @@ class IpcRegistry {
       this.projectHandlers.unregisterHandlers();
       this.authHandlers.unregisterHandlers();
       this.systemHandlers.unregisterHandlers();
+      this.closeProjectHandlers.unregisterHandlers();
       unregisterNodeDetectionHandlers();
 
       this.isRegistered = false;

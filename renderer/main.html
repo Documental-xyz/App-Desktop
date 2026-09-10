@@ -572,12 +572,19 @@ clearingCache: false,
         sessionStorage.removeItem('serverOutput');
         sessionStorage.removeItem('commandOutput');
         
+        // Encerrar os processos do projeto (dev server/builds) no main quando
+        // nenhuma outra janela ainda os utiliza. Fire-and-forget: a navegação
+        // abaixo NUNCA espera nem é impedida pelo kill (falha só loga no main).
+        if (projectId && window.electronAPI && window.electronAPI.closeProject) {
+            window.electronAPI.closeProject(projectId).catch((error) => {
+                console.error('Falha ao encerrar os processos do projeto:', error);
+            });
+        }
+
         // Navegar na MESMA janela para a tela de seleção (index.html). O estado
         // Alpine é reiniciado naturalmente pelo carregamento da página e as
-        // BrowserViews são desanexadas pelo handler 'navigate' do main.
-        // Paridade intencional: o servidor dev e processos filhos NÃO são
-        // encerrados aqui (o fluxo antigo também os mantinha; killAll só
-        // dispara no before-quit).
+        // BrowserViews são desanexadas pelo handler 'navigate' do main, que
+        // também dissocia a janela do projeto no mapa janela→projeto do main.
         if (window.electronAPI && window.electronAPI.navigateTo) {
             this.isNavigating = true;
             window.isNavigating = true; // suprime o modal de saída no beforeunload durante a navegação

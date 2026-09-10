@@ -438,7 +438,12 @@ class ProcessManager {
 
         // Handle process completion
         subprocess.on('exit', (code, signal) => {
-          delete activeProcesses[processId];
+          // Identity guard: a late 'exit' of a REPLACED handle (same key,
+          // e.g. quick close+reopen of a project) must not delete the new
+          // subprocess from tracking.
+          if (activeProcesses[processId] === subprocess) {
+            delete activeProcesses[processId];
+          }
           this._untrackSpawnedPid(subprocess.pid);
           if (!spawned) {
             reject(Object.assign(new Error('Command failed to spawn'), { isStartupError: true }));
@@ -455,7 +460,9 @@ class ProcessManager {
 
         // Handle process errors
         subprocess.on('error', (err) => {
-          delete activeProcesses[processId];
+          if (activeProcesses[processId] === subprocess) {
+            delete activeProcesses[processId];
+          }
           this._untrackSpawnedPid(subprocess.pid);
           if (!spawned) {
             reject(Object.assign(new Error(`Failed to start command: ${err.message}`), { isStartupError: true }));
@@ -782,7 +789,12 @@ class ProcessManager {
           devProcess.stderr?.on('data', processOutput);
 
           devProcess.on('exit', async (code, signal) => {
-            delete activeProcesses[processId];
+            // Same identity guard as runTrackedCommand: a replaced dev
+            // server (quick close+reopen) must survive the old handle's
+            // late 'exit'.
+            if (activeProcesses[processId] === devProcess) {
+              delete activeProcesses[processId];
+            }
             this._untrackSpawnedPid(devProcess.pid);
             this._notifyDevServerUrlWaiters(devProcess.pid, null);
             if (devProcess.pid) {
@@ -799,7 +811,9 @@ class ProcessManager {
 
           // Handle process errors
           devProcess.on('error', async (err) => {
-            delete activeProcesses[processId];
+            if (activeProcesses[processId] === devProcess) {
+              delete activeProcesses[processId];
+            }
             this._untrackSpawnedPid(devProcess.pid);
             this._notifyDevServerUrlWaiters(devProcess.pid, null);
             if (devProcess.pid) {
@@ -1029,6 +1043,24 @@ class ProcessManager {
   }
 
   /**
+   * Instance accessors for the module-level window→project map so IPC
+   * modules consume it through dependency injection instead of a
+   * cross-module require (which lands on a different module instance
+   * under vitest's CJS bridge than the test-side import).
+   */
+  dissociateWindow(windowId) {
+    return dissociateWindow(windowId);
+  }
+
+  getWindowProject(windowId) {
+    return getWindowProject(windowId);
+  }
+
+  getWindowsUsingProject(projectId) {
+    return getWindowsUsingProject(projectId);
+  }
+
+  /**
    * Terminate a specific tracked process
    * @param {string} processKey - Process key identifier
    */
@@ -1048,7 +1080,11 @@ class ProcessManager {
         await this.removeDocumentalProcess(processRef.pid);
         this._untrackSpawnedPid(processRef.pid);
       }
-      delete activeProcesses[processKey];
+      // Identity guard: only drop the slot if it still belongs to the
+      // process being terminated (a replaced handle must survive).
+      if (activeProcesses[processKey] === processRef) {
+        delete activeProcesses[processKey];
+      }
       resolvePromise();
     };
 
@@ -1175,4 +1211,13 @@ class ProcessManager {
 
 }
 
-module.exports = { ProcessManager, acquireProcessManagerLock, releaseProcessManagerLock };
+module.exports = {
+  ProcessManager,
+  acquireProcessManagerLock,
+  releaseProcessManagerLock,
+  mapWindowToProject,
+  associateWindowWithProject,
+  dissociateWindow,
+  getWindowProject,
+  getWindowsUsingProject
+};

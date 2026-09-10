@@ -134,14 +134,18 @@ class SystemHandlers {
    * @param {Object} [dependencies.browserHandlers] - BrowserView handlers instance
    *   (cleanupWindowBrowserViews is reused by navigate() when a window leaves
    *   the editor page; injected by the IPC registry to avoid cross-module requires)
+   * @param {Object} [dependencies.closeProjectHandlers] - Close-project handler
+   *   instance (closeProject is reused by the secondary-window 'closed' hook
+   *   to terminate project processes no other window uses)
    */
-  constructor({ logger, windowManager, processManager, themeService, nodeDetectionService, browserHandlers }) {
+  constructor({ logger, windowManager, processManager, themeService, nodeDetectionService, browserHandlers, closeProjectHandlers }) {
     this.logger = logger;
     this.windowManager = windowManager;
     this.processManager = processManager;
     this.themeService = themeService || null;
     this.nodeDetectionService = nodeDetectionService || null;
     this.browserHandlers = browserHandlers || null;
+    this.closeProjectHandlers = closeProjectHandlers || null;
     this.platformService = new PlatformService({ logger });
 
     this.installationProgress = {
@@ -187,8 +191,7 @@ class SystemHandlers {
       // Handle window closed event
       newWindow.on('closed', () => {
         this.logger.info(`🪟 Secondary window ${windowId} closed`);
-        // Note: We intentionally don't call any app-level cleanup here
-        // The window should close independently without affecting other windows
+        this._handleSecondaryWindowClosed(windowId);
       });
       
       // Handle window close event (before it's closed)
@@ -215,6 +218,29 @@ class SystemHandlers {
     } catch (error) {
       this.logger.error('❌ Error creating new window:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Secondary-window teardown: when the closed window was mapped to a
+   * project, run the same close-project routine ("Fechar Ambiente") so the
+   * project's process trees die once no window uses them. Windows without a
+   * project are a no-op. Fire-and-forget — window close is never blocked.
+   * @param {number} windowId - Id of the closed window
+   * @private
+   */
+  _handleSecondaryWindowClosed(windowId) {
+    try {
+      const projectId = this.processManager?.getWindowProject?.(windowId);
+      if (!projectId || !this.closeProjectHandlers) {
+        return;
+      }
+      this.closeProjectHandlers.closeProject(windowId, projectId)
+        .catch((error) => {
+          this.logger.warn(`⚠️ Failed to clean up project ${projectId} after window ${windowId} closed:`, error?.message || error);
+        });
+    } catch (error) {
+      this.logger.warn(`⚠️ Secondary window ${windowId} closed cleanup failed:`, error?.message || error);
     }
   }
 
@@ -434,6 +460,11 @@ async getHomeDirectory() {
         // attached and visible over the target page otherwise.
         if (path.basename(String(page)) !== 'main.html') {
           this._teardownWindowBrowserViews(window);
+          // The window is leaving its project workspace (e.g. "Fechar
+          // Ambiente" navigating back to index.html): drop its window→project
+          // association. Process termination is decided by the close-project
+          // IPC, not here.
+          this.processManager?.dissociateWindow?.(window.id);
         }
         
         window.loadFile(rendererPath)

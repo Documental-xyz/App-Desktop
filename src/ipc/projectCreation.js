@@ -560,7 +560,7 @@ class ProjectCreationHandler {
    * @param {boolean} [isPrivateRepo] - Whether the created repo should be private
    * @returns {Promise<Object>} Result object
    */
-    async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false) {
+    async startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false, senderWebContents) {
     try {
       this.logger.info('Starting complete project creation:', { projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder });
       
@@ -901,7 +901,7 @@ class ProjectCreationHandler {
       // Step 5: npm run dev (keep in background)
       step5ServerOutput('🚀 Starting development server...\n');
       try {
-        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status);
+        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status, senderWebContents);
       } catch (error) {
         step5ServerOutput(`❌ Error starting development server: ${error.message}\n`);
         throw error;
@@ -926,7 +926,7 @@ class ProjectCreationHandler {
    * @param {string} repoFolderName - Repository folder name
    * @returns {Promise<Object>} Result object
    */
-  async openProjectOnlyPreviewAndServer(projectId, projectPath, repoUrl, repoFolderName) {
+  async openProjectOnlyPreviewAndServer(projectId, projectPath, repoUrl, repoFolderName, senderWebContents) {
     try {
       this.logger.info('Opening project with preview and server only:', { projectId, projectPath, repoUrl, repoFolderName });
       
@@ -1025,7 +1025,7 @@ class ProjectCreationHandler {
       // Step 5: npm run dev (keep in background)
       step5ServerOutput('🚀 Executando servidor do modo dev...\n');
       try {
-        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status);
+        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status, senderWebContents);
       } catch (error) {
         step5ServerOutput(`❌ Erro ao iniciar servidor de desenvolvimento: ${error.message}\n`);
         throw error;
@@ -1047,7 +1047,7 @@ class ProjectCreationHandler {
    * @param {string} repoFolderName - Repository folder name
    * @returns {Promise<Object>} Result object
    */
-  async reopenProject(projectId, projectPath, repoUrl, repoFolderName) {
+  async reopenProject(projectId, projectPath, repoUrl, repoFolderName, senderWebContents) {
     try {
       this.logger.info('Reopening project:', { projectId, projectPath, repoUrl, repoFolderName });
       
@@ -1145,7 +1145,7 @@ class ProjectCreationHandler {
       // Step5: npm run dev (keep in background)
       step5ServerOutput('🚀 Starting development server...\n');
       try {
-        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status);
+        await this.processManager.startDevServer(repoDirPath, projectId, step5ServerOutput, step5Status, senderWebContents);
       } catch (error) {
         step5ServerOutput(`❌ Error starting development server: ${error.message}\n`);
         throw error;
@@ -1215,7 +1215,7 @@ class ProjectCreationHandler {
      */
     ipcMain.handle('start-project-creation', async (event, projectId, projectPath, repoUrl, isExistingGitRepo = false, isEmptyFolder = false, useTemplate = false, projectName = '', enablePages = false, organization = null, isPrivateRepo = false) => {
       try {
-        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, useTemplate, projectName, enablePages, organization, isPrivateRepo);
+        return await this.startProjectCreation(projectId, projectPath, repoUrl, isExistingGitRepo, isEmptyFolder, useTemplate, projectName, enablePages, organization, isPrivateRepo, event.sender);
       } catch (error) {
         this.logger.error('Error in start-project-creation handler:', error);
         throw error;
@@ -1260,7 +1260,7 @@ class ProjectCreationHandler {
      */
     ipcMain.handle('open-project-only-preview-and-server', async (event, projectId, projectPath, repoUrl, repoFolderName) => {
       try {
-        return await this.openProjectOnlyPreviewAndServer(projectId, projectPath, repoUrl, repoFolderName);
+        return await this.openProjectOnlyPreviewAndServer(projectId, projectPath, repoUrl, repoFolderName, event.sender);
       } catch (error) {
         this.logger.error('Error in open-project-only-preview-and-server handler:', error);
         throw error;
@@ -1272,7 +1272,7 @@ class ProjectCreationHandler {
      */
     ipcMain.handle('reopen-project', async (event, projectId, projectPath, repoUrl, repoFolderName) => {
       try {
-        return await this.reopenProject(projectId, projectPath, repoUrl, repoFolderName);
+        return await this.reopenProject(projectId, projectPath, repoUrl, repoFolderName, event.sender);
       } catch (error) {
         this.logger.error('Error in reopen-project handler:', error);
         throw error;

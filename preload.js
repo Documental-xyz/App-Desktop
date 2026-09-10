@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),
   cancelProjectCreation: (projectId, projectPath, repoFolderName, shouldDeleteFiles = false) =>
     ipcRenderer.invoke('cancel-project-creation', projectId, projectPath, repoFolderName, shouldDeleteFiles),
+  closeProject: (projectId) => ipcRenderer.invoke('close-project', projectId),
 
   onCommandOutput: (callback) => ipcRenderer.on('command-output', (event, ...args) => callback(...args)),
   onCommandStatus: (callback) => ipcRenderer.on('command-status', (event, ...args) => callback(...args)),
