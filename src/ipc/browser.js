@@ -6,7 +6,7 @@
 
 'use strict';
 
-const { ipcMain, BrowserView, BrowserWindow } = require('electron');
+const { ipcMain, BrowserView, BrowserWindow, net } = require('electron');
 const path = require('path');
 
 /**
@@ -23,6 +23,13 @@ const path = require('path');
 const FOOTER_HEIGHT = 32;
 
 /**
+ * Hard limits for the cms:content-saved preview route poll (~10s worst case).
+ * Never raise without revisiting the "no infinite loop" plan constraint.
+ */
+const PREVIEW_POLL_MAX_ATTEMPTS = 20;
+const PREVIEW_POLL_INTERVAL_MS = 500;
+
+/**
  * BrowserView Management IPC Handlers
  */
 class BrowserHandlers {
@@ -31,13 +38,29 @@ class BrowserHandlers {
    * @param {Object} dependencies - Dependency injection container
    * @param {Object} dependencies.logger - Logger instance
    * @param {Object} dependencies.windowManager - Window manager instance
+   * @param {Function} [dependencies.previewFetch] - Injectable fetch for the
+   *   preview route poll (defaults to Electron's net.fetch; injected in tests)
+   * @param {number} [dependencies.previewPollIntervalMs] - Poll interval override (tests)
+   * @param {number} [dependencies.previewMaxAttempts] - Max attempts override (tests)
    */
-  constructor({ logger, windowManager, processManager }) {
+  constructor({
+    logger,
+    windowManager,
+    processManager,
+    previewFetch = null,
+    previewPollIntervalMs = PREVIEW_POLL_INTERVAL_MS,
+    previewMaxAttempts = PREVIEW_POLL_MAX_ATTEMPTS
+  }) {
     this.logger = logger;
     this.windowManager = windowManager;
     this.processManager = processManager;
+    this.previewFetch = previewFetch;
+    this.previewPollIntervalMs = previewPollIntervalMs;
+    this.previewMaxAttempts = previewMaxAttempts;
     this.windowBrowserViews = new Map(); // Store BrowserViews per window
     this.windowSlugMap = new Map(); // Store page slugs per window for preview sync
+    this.previewPollGeneration = 0; // Last-wins debounce token for preview polls
+    this.previewPollAbort = null; // AbortController of the active preview poll
   }
 
   /**
@@ -539,6 +562,102 @@ class BrowserHandlers {
   }
 
   /**
+   * Build the preview URL for a freshly saved page.
+   * Route contract (Template/public/admin/config.yml pages collection +
+   * Core/src/routes/[slug].astro + Core/src/content.config.ts generateId):
+   * `/<slug>/` — frontmatter `slug` field becomes the page id, so non-ASCII
+   * slugs are legal and MUST be percent-encoded per segment while `/`
+   * separators inside the slug stay structural.
+   * @param {string} devServerUrl - Dev server base URL
+   * @param {string} slug - Raw page slug
+   * @returns {string} Encoded preview URL with trailing slash
+   * @private
+   */
+  _buildPreviewUrl(devServerUrl, slug) {
+    const base = devServerUrl.endsWith('/') ? devServerUrl : `${devServerUrl}/`;
+    const encodedSlug = String(slug)
+      .split('/')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment !== '')
+      .map(encodeURIComponent)
+      .join('/');
+    return `${base}${encodedSlug}/`;
+  }
+
+  /**
+   * Fetch through the injectable preview fetcher (net.fetch in production).
+   * @param {string} url - URL to fetch
+   * @param {Object} options - Fetch options (AbortSignal etc.)
+   * @returns {Promise} Fetch response
+   * @private
+   */
+  _fetchPreview(url, options) {
+    const fetcher = this.previewFetch || ((u, opts) => net.fetch(u, opts));
+    return Promise.resolve(fetcher(url, options));
+  }
+
+  /**
+   * Poll the preview route until it answers 2xx-3xx, then navigate the
+   * viewer. Hard-bounded by previewMaxAttempts × previewPollIntervalMs
+   * (~10s); a newer save supersedes this poll via the generation token.
+   * On exhaustion: warn and keep the viewer's current content.
+   * @param {Object} args
+   * @param {BrowserWindow} args.window - Owner window
+   * @param {BrowserView} args.viewerView - Viewer BrowserView
+   * @param {string} args.targetUrl - Encoded preview URL
+   * @param {string} args.slug - Raw slug (for windowSlugMap bookkeeping)
+   * @param {number} args.generation - This poll's debounce token
+   * @param {AbortController} args.abortController - AbortController for the in-flight fetch
+   * @private
+   */
+  async _pollPreviewAndNavigate({ window, viewerView, targetUrl, slug, generation, abortController }) {
+    const maxAttempts = this.previewMaxAttempts;
+    const intervalMs = this.previewPollIntervalMs;
+    const isCurrent = () =>
+      generation === this.previewPollGeneration && !abortController.signal.aborted;
+    const isViewerDead = () =>
+      !viewerView ||
+      !viewerView.webContents ||
+      (typeof viewerView.webContents.isDestroyed === 'function' && viewerView.webContents.isDestroyed());
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (!isCurrent()) return;
+
+      let status = 0;
+      try {
+        const response = await this._fetchPreview(targetUrl, { signal: abortController.signal });
+        if (!isCurrent()) return;
+        status = response?.status || 0;
+      } catch (error) {
+        if (!isCurrent()) return;
+        this.logger.debug(`[preview] tentativa ${attempt}/${maxAttempts} falhou para ${targetUrl}: ${error.message}`);
+      }
+
+      if (status >= 200 && status < 400) {
+        if (isViewerDead()) return;
+        this.windowSlugMap.set(window.id, slug);
+        this.logger.info(`🔗 Preview route ready after ${attempt} tentativa(s): ${targetUrl}`);
+        this.trackBrowserViewLoad(viewerView, 'viewer', window);
+        viewerView.webContents.loadURL(targetUrl);
+        return;
+      }
+
+      if (status > 0) {
+        this.logger.debug(`[preview] tentativa ${attempt}/${maxAttempts}: HTTP ${status} para ${targetUrl}`);
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        if (!isCurrent()) return;
+      }
+    }
+
+    if (isCurrent()) {
+      this.logger.warn(`[preview] rota não respondeu após ${maxAttempts} tentativas: ${targetUrl}`);
+    }
+  }
+
+  /**
    * Register all BrowserView management IPC handlers
    */
   registerHandlers() {
@@ -644,44 +763,68 @@ class BrowserHandlers {
     });
 
     /**
-     * Handle CMS content saved event from Sveltia preload script
-     * Only updates preview if the slug has changed
+     * Handle CMS content saved event from Sveltia preload script.
+     * Payload: { slug, isNew } — sent by the preload postSave listener for
+     * NEWLY CREATED pages (the Sveltia post-save navigation uses
+     * notifyChange: false, so no hashchange/page-loaded fires). The viewer
+     * only navigates after the target route answers 2xx-3xx (Astro dev
+     * server needs a beat to compile the fresh page).
      */
-    ipcMain.on('cms:content-saved', (event, newSlug) => {
+    ipcMain.on('cms:content-saved', (event, payload) => {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (!window) {
         this.logger.warn('❌ Could not determine window for cms:content-saved event');
         return;
       }
 
-      // Validate and sanitize slug
-      const validatedSlug = this._validateAndSanitizeSlug(newSlug);
-      if (!validatedSlug) {
-        this.logger.error(`❌ cms:content-saved rejected: invalid slug "${newSlug}"`);
+      // The channel was dead until now; accept a bare string too for safety.
+      const data = typeof payload === 'string' ? { slug: payload } : (payload || {});
+      const slug = typeof data.slug === 'string' ? data.slug.trim() : '';
+      const isNew = data.isNew === true;
+
+      if (!slug) {
+        this.logger.warn(`💾 cms:content-saved ignored: empty slug (payload: ${JSON.stringify(data)})`);
         return;
       }
 
       const windowId = window.id;
       const lastSlug = this.windowSlugMap.get(windowId);
 
-      if (validatedSlug !== lastSlug) {
-        this.windowSlugMap.set(windowId, validatedSlug);
-        this.logger.info(`💾 Content saved - slug changed from "${lastSlug}" to "${validatedSlug}" for window ${windowId}`);
-
-        // Get dev server URL from processManager (dynamically captured from Astro server)
-        const devServerUrl = this.processManager?.getGlobalDevServerUrl() || 'http://localhost:4321';
-        const previewUrl = `${devServerUrl}${validatedSlug}/`;
-
-        // Update preview URL in viewer BrowserView
-        const { viewerView } = this.getOrCreateBrowserViews(window);
-        if (viewerView) {
-          this.logger.info(`🔗 Updating preview URL in viewer: ${previewUrl}`);
-          this.trackBrowserViewLoad(viewerView, 'viewer', window);
-          viewerView.webContents.loadURL(previewUrl);
-        }
-      } else {
-        this.logger.info(`💾 Content saved - slug unchanged "${validatedSlug}" for window ${windowId}, skipping preview update`);
+      // Existing page with unchanged slug: dev server HMR already covers it.
+      if (!isNew && slug === lastSlug) {
+        this.logger.info(`💾 Content saved - slug unchanged "${slug}" for window ${windowId}, skipping preview update`);
+        return;
       }
+
+      const devServerUrl = this.processManager?.getGlobalDevServerUrl() || '';
+      if (!devServerUrl) {
+        this.logger.warn(`💾 cms:content-saved aborted: dev server URL unknown (slug "${slug}")`);
+        return;
+      }
+
+      const targetUrl = this._buildPreviewUrl(devServerUrl, slug);
+      const { viewerView } = this.getOrCreateBrowserViews(window);
+      if (
+        !viewerView ||
+        !viewerView.webContents ||
+        (typeof viewerView.webContents.isDestroyed === 'function' && viewerView.webContents.isDestroyed())
+      ) {
+        return; // dead viewer: silent no-op
+      }
+
+      // Last-wins debounce: a newer save aborts the in-flight poll.
+      this.previewPollGeneration += 1;
+      const generation = this.previewPollGeneration;
+      if (this.previewPollAbort) {
+        try {
+          this.previewPollAbort.abort();
+        } catch (_) { /* already aborted */ }
+      }
+      const abortController = new AbortController();
+      this.previewPollAbort = abortController;
+
+      this.logger.info(`💾 Content saved - polling preview route before viewer navigation: ${targetUrl}`);
+      this._pollPreviewAndNavigate({ window, viewerView, targetUrl, slug, generation, abortController });
     });
     /**
      * Handle CMS slug changed event from Sveltia preload script

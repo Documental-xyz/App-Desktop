@@ -369,6 +369,48 @@ const initPostSaveListener = () => {
       name: 'postSave',
       handler: ({ entry }) => {
         log('✅ postSave event received from Sveltia');
+
+        // Payload postSave (sveltia-cms events.js → createEntryMap): `entry` é
+        // um Immutable Map. ATENÇÃO: o campo `isNew` do draft é serializado
+        // como `newRecord` no Map (compat Decap CMS) — lemos ambos por
+        // defensividade. Ver sveltia-cms/src/lib/services/contents/api/entries.js.
+        const entryIsMap = !!entry && typeof entry.get === 'function';
+        const entrySlug = entryIsMap ? entry.get('slug') : null;
+        const entryIsNew =
+          entryIsMap &&
+          (entry.get('newRecord') === true || entry.get('isNew') === true);
+
+        let slugToSend = entrySlug;
+        let isNewToSend = entryIsNew;
+
+        // Fallback (payload divergente do contrato): initialSlug === null
+        // significa que nunca capturamos o slug de uma página EXISTENTE ao
+        // entrar no editor ⇒ trata-se de página nova. Usar o slug atual do DOM.
+        if (!isNewToSend && initialSlug === null) {
+          const domSlug = extractSlug();
+          if (domSlug) {
+            slugToSend = domSlug;
+            isNewToSend = true;
+            log(`🛟 Fallback: using DOM slug for new page: "${domSlug}"`);
+          }
+        }
+
+        if (
+          isNewToSend &&
+          typeof slugToSend === 'string' &&
+          slugToSend.trim() !== ''
+        ) {
+          try {
+            ipcRenderer.send('cms:content-saved', {
+              slug: slugToSend.trim(),
+              isNew: true
+            });
+            log(`📤 Sent cms:content-saved (new page): "${slugToSend.trim()}"`);
+          } catch (error) {
+            log(`Error sending cms:content-saved: ${error.message}`, 'error');
+          }
+        }
+
         // Use checkAndSendSlugChange for both configs (stay on page or redirect)
         checkAndSendSlugChange('postSave');
       }
