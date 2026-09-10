@@ -107,6 +107,37 @@ class WindowsProcessInspector {
   }
 
   /**
+   * Get the full command line of a process (for PID identity checks).
+   * Uses wmic; resolves to null when unavailable (newer Windows builds
+   * removed wmic — callers fall back to getProcessInfo).
+   * @param {number} pid - Process ID
+   * @returns {Promise<string|null>} Command line or null if unavailable
+   */
+  static async getCommandLine(pid) {
+    return new Promise((resolve) => {
+      const wmic = spawn('wmic', ['process', 'where', `processid=${pid}`, 'get', 'commandline'], { windowsHide: true });
+      let output = '';
+      wmic.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+      wmic.on('close', (code) => {
+        if (code !== 0) {
+          resolve(null);
+          return;
+        }
+        const lines = output
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line && !/^commandline$/i.test(line));
+        resolve(lines.length > 0 ? lines[0] : null);
+      });
+      wmic.on('error', () => {
+        resolve(null);
+      });
+    });
+  }
+
+  /**
    * Get all processes matching a name pattern
    * @param {string} namePattern - Process name pattern (supports wildcards)
    * @returns {Promise<ProcessInfo[]>} Array of matching processes

@@ -56,6 +56,11 @@ let ipcRegistry;
 let isInitialized = false;
 let isCleaningUp = false;
 
+// Hard budget for the async will-quit cleanup (kill of all process trees +
+// registry clear). Kill routing is two-phase per tree (SIGTERM → grace →
+// SIGKILL); raise to 5000 if QA with a real tree measures > 2s.
+const KILL_BUDGET_MS = 2000;
+
 // Reference to processManager extracted from ipcRegistry for will-quit handler
 /** @type {import('./src/ipc/processManager.js')|null} */
 let processManager = null;
@@ -463,11 +468,11 @@ function setupAppEventHandlers() {
     event.preventDefault();
     logger.info('🛑 will-quit: starting async cleanup...');
 
-    // Hard timeout: AC3 budget = 2000ms
+    // Hard timeout: AC3 budget for the whole will-quit cleanup sequence
     const hardTimeout = setTimeout(() => {
       logger.error('❌ will-quit cleanup timed out, forcing exit');
       app.exit(0);
-    }, 2000);
+    }, KILL_BUDGET_MS);
 
     try {
       // 1. Kill all child processes via ProcessManager

@@ -191,6 +191,113 @@ describe('PIDRegistryFile', () => {
     expect(result).toEqual({ reaped: [] });
   });
 
+  // --------------------------------------- PID-reuse guard (identity check)
+  describe('PID-reuse guard', () => {
+    let warnSpy;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT kill an orphan whose live command diverges (presumed PID reuse)', async () => {
+      const reg = new PIDRegistryFile(registryPath);
+      // pid 44444 alive, parent 1000 dead — but the live process runs an
+      // unrelated command: the OS recycled the PID.
+      await reg.register(44444, { command: 'npm run dev', cwd: '/p', parentPid: 1000 });
+
+      const inspector = {
+        processExists: vi.fn(async (pid) => pid === 44444),
+        getProcessInfo: vi.fn(async () => ({
+          pid: 44444, name: 'sleep', command: 'sleep 300', cwd: 'N/A'
+        }))
+      };
+      const result = await reg.reapOrphans(inspector);
+
+      expect(killPidTreeSpy).not.toHaveBeenCalled();
+      expect(result.reaped).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('mismatch'));
+
+      // Entry dropped without killing — it no longer describes our process.
+      const entries = await reg.load();
+      expect(entries).toHaveLength(0);
+    });
+
+    it('kills an orphan whose live command matches the registered identity', async () => {
+      const reg = new PIDRegistryFile(registryPath);
+      await reg.register(44445, {
+        command: 'npm run dev',
+        cwd: '/p',
+        parentPid: 1000
+      });
+
+      const inspector = {
+        processExists: vi.fn(async (pid) => pid === 44445),
+        getProcessInfo: vi.fn(async () => ({
+          pid: 44445,
+          name: 'node',
+          command: '/usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js run dev',
+          cwd: '/p'
+        }))
+      };
+      const result = await reg.reapOrphans(inspector);
+
+      expect(killPidTreeSpy).toHaveBeenCalledWith(44445);
+      expect(result.reaped).toEqual([44445]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('prefers getCommandLine over getProcessInfo for identity', async () => {
+      const reg = new PIDRegistryFile(registryPath);
+      await reg.register(44446, {
+        command: '/usr/bin/node /tmp/marker.js crash-reap-marker',
+        cwd: '/tmp',
+        parentPid: 1000
+      });
+
+      const getProcessInfo = vi.fn();
+      const getCommandLine = vi.fn(async () => '/usr/bin/node /tmp/marker.js crash-reap-marker');
+      const inspector = {
+        processExists: vi.fn(async (pid) => pid === 44446),
+        getCommandLine,
+        getProcessInfo
+      };
+      await reg.reapOrphans(inspector);
+
+      expect(getCommandLine).toHaveBeenCalledWith(44446);
+      expect(getProcessInfo).not.toHaveBeenCalled();
+      expect(killPidTreeSpy).toHaveBeenCalledWith(44446);
+    });
+
+    it('keeps legacy reap behavior when the inspector has no identity capability', async () => {
+      const reg = new PIDRegistryFile(registryPath);
+      await reg.register(44447, { command: 'npm start', cwd: '/p', parentPid: 1000 });
+
+      // processExists only — same shape the pre-guard tests use.
+      const result = await reg.reapOrphans(makeInspector({ 44447: true, 1000: false }));
+
+      expect(killPidTreeSpy).toHaveBeenCalledWith(44447);
+      expect(result.reaped).toEqual([44447]);
+    });
+
+    it('commandIdentityMatches: exact argv substring, basename+token, and mismatch', async () => {
+      const { commandIdentityMatches } = require('../../src/main/processes/PIDRegistryFile.js');
+
+      // Whole-command substring (same argv).
+      expect(commandIdentityMatches('node /tmp/a.js x', 'node /tmp/a.js x')).toBe(true);
+      // Basename + distinctive token (Windows image-name fallback).
+      expect(commandIdentityMatches('npm run dev', 'node.exe C:\\npm-cli.js run dev')).toBe(true);
+      // Reused PID running an unrelated command.
+      expect(commandIdentityMatches('npm run dev', 'sleep 300')).toBe(false);
+      // Missing identity never matches (conservative).
+      expect(commandIdentityMatches('npm run dev', null)).toBe(false);
+      expect(commandIdentityMatches('', 'sleep 300')).toBe(false);
+    });
+  });
+
   // ----------------------------------------------- implementation contract
   it('uses fs.promises, not fs.*Sync (forbidden in main process)', () => {
     const sutPath = require.resolve('../../src/main/processes/PIDRegistryFile.js');

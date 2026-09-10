@@ -119,11 +119,16 @@ class EmbeddedRuntimeService {
 
   /**
    * Spawn a child process using the embedded runtime's env scrub.
-   * All options except `env` and `windowsHide` are passed through to execa
-   * verbatim (killDescendants, cleanup, cwd, stdio, ...). windowsHide is
+   * All options except `env`, `windowsHide` and `detached` are passed
+   * through to execa verbatim (cleanup, cwd, stdio, ...). windowsHide is
    * forced to true regardless of caller options: execa already defaults it
    * to true, but pinning guards against a future execa major changing the
    * default, and npm child-trees must never flash console windows on win32.
+   * `detached` defaults to true on POSIX so the child becomes a process-group
+   * leader — killPidTree's kill(-pid) then reaches the whole tree, and the
+   * PID-registry reaper can clean it up after a hard crash (an explicit
+   * caller-provided `detached` wins). On win32 detached stays false: it
+   * would break the console-host chain that windowsHide relies on.
    * On win32, spawns through a shell host when cmd is the embedded runtime:
    * electron.exe is GUI-subsystem and never attaches to a console, so the
    * shell host gives the direct cmd.exe child a single hidden console.
@@ -133,7 +138,7 @@ class EmbeddedRuntimeService {
    * @returns {Object} execa subprocess
    */
   spawnNodeChild(cmd, args, opts = {}) {
-    const { env, ...rest } = opts;
+    const { env, detached, ...rest } = opts;
     // The embedded runtime runs CLIs inside electron.exe, a GUI-subsystem
     // binary that never attaches to a console. On win32 we spawn through a
     // shell host (cmd.exe) so the DIRECT console-subsystem child gets one
@@ -148,6 +153,7 @@ class EmbeddedRuntimeService {
       shell: viaShellHost || rest.shell || false,
       env: this.buildChildEnv(env || process.env),
       extendEnv: false,
+      detached: detached !== undefined ? Boolean(detached) : process.platform !== 'win32',
       windowsHide: true
     });
   }

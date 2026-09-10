@@ -8,7 +8,7 @@
 
 const { PlatformAdapterFactory } = require('../../factories/PlatformAdapterFactory.js');
 const { spawn } = require('child_process');
-const { killProcessTree } = require('../../processes/killProcessTree.js');
+const { killPidTree } = require('../../processes/killPidTree.js');
 const fs = require('fs');
 const fsPromises = fs.promises;
 const path = require('path');
@@ -112,10 +112,12 @@ class PlatformService {
       
       child.on('error', (error) => {
         unregister();
-        // Two-phase kill the still-running child on error path so it can't leak
-        killProcessTree(child).catch((killErr) => {
-          this.logger.error(`❌ Failed to clean up command on error: ${killErr.message}`);
-        });
+        // Kill the still-running child tree on the error path so it can't leak
+        if (child.pid) {
+          killPidTree(child.pid, 300).catch((killErr) => {
+            this.logger.error(`❌ Failed to clean up command on error: ${killErr.message}`);
+          });
+        }
         this.logger.error(`❌ Command error: ${error.message}`);
         reject(error);
       });
@@ -124,7 +126,7 @@ class PlatformService {
 
   /**
    * Kill all currently active child processes spawned by executeCommand.
-   * Uses two-phase termination (SIGTERM → grace → SIGKILL) via killProcessTree.
+   * Uses two-phase tree termination (SIGTERM → grace → SIGKILL) via killPidTree.
    * Safe to call when no commands are active (no-op).
    * @param {number} [gracePeriod=1500] - Milliseconds to wait before SIGKILL escalation
    * @returns {Promise<void>} Resolves when all children have been signalled/exited
@@ -136,11 +138,13 @@ class PlatformService {
     }
     this.logger.info(`🧹 Cleaning up ${snapshot.length} active command(s)`);
     await Promise.all(
-      snapshot.map((child) =>
-        killProcessTree(child, gracePeriod).catch((err) => {
-          this.logger.error(`❌ Cleanup kill failed: ${err.message}`);
-        })
-      )
+      snapshot
+        .filter((child) => typeof child.pid === 'number')
+        .map((child) =>
+          killPidTree(child.pid, gracePeriod).catch((err) => {
+            this.logger.error(`❌ Cleanup kill failed: ${err.message}`);
+          })
+        )
     );
   }
 

@@ -58,6 +58,27 @@ class UnixProcessInspector {
   }
 
   /**
+   * Get the full command line of a process (for PID identity checks).
+   * @param {number} pid - Process ID
+   * @returns {Promise<string|null>} Command line or null if unavailable
+   */
+  static async getCommandLine(pid) {
+    return new Promise((resolve) => {
+      const ps = spawn('ps', ['-p', pid.toString(), '-o', 'command=']);
+      let output = '';
+      ps.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+      ps.on('close', (code) => {
+        resolve(code === 0 ? output.trim() || null : null);
+      });
+      ps.on('error', () => {
+        resolve(null);
+      });
+    });
+  }
+
+  /**
    * Get detailed process information
    * @param {number} pid - Process ID to inspect
    * @returns {Promise<ProcessInfo|null>} Process information or null if not found

@@ -1,16 +1,17 @@
 /**
- * @fileoverview Tests for ProcessManager.killAll / killProcessTree integration
+ * @fileoverview Tests for ProcessManager.killAll / killPidTree routing
  * (constructor takes nodeDetectionService since Task 6; killAll landed with
- * the embedded-node migration).
+ * the embedded-node migration; Task 4 of ajustes-wizard-preview-servicos
+ * routes kills through killPidTree(pid)).
  *
  * Lock-guard contract under test (matches GitHandlers pattern in src/ipc/git.js):
  *   1. acquire lock before iterating activeProcesses
- *   2. call killProcessTree(subprocess, gracePeriod) for each tracked subprocess
+ *   2. call killPidTree(pid, gracePeriod) for each tracked PID (deduped)
  *   3. release lock in a `finally` block (even on error)
  *   4. swallow ESRCH (process already dead) so killAll is idempotent
  *
  * @see src/ipc/processManager.js (activeProcesses, acquireProcessManagerLock)
- * @see src/main/processes/killProcessTree.js (two-phase kill helper)
+ * @see src/main/processes/killPidTree.js (tree kill helper)
  * @see tests/ipc/git.cancellation.test.js (lock-guard lifecycle test pattern)
  */
 
@@ -54,13 +55,11 @@ vi.mock('../../src/main/services/platform/PlatformService.js', () => ({
 // --- Helpers ----------------------------------------------------------------
 
 /**
- * Build a fake execa subprocess matching the shape killProcessTree expects:
+ * Build a fake execa subprocess shaped for PID-routed killing:
  *   - killed: false
  *   - exitCode: null
  *   - pid: number
- *   - kill(signal): returns true AND triggers 'exit' event (so real
- *     killProcessTree doesn't hang)
- *   - once(event, cb): registers callback for 'exit'/'error'
+ *   - kill(signal): returns true AND triggers 'exit' event
  */
 function createFakeSubprocess(overrides = {}) {
   const exitCallbacks = [];
@@ -69,7 +68,6 @@ function createFakeSubprocess(overrides = {}) {
     exitCode: null,
     pid: Math.floor(1000 + Math.random() * 9000),
     kill: vi.fn(() => {
-      // Trigger exit event so the real killProcessTree resolves
       exitCallbacks.forEach((fn) => fn(null, 'SIGTERM'));
       return true;
     }),
@@ -93,7 +91,7 @@ describe('ProcessManager - killAll', () => {
   let mockLogger;
   let mockNodeDetectionService;
   let pm;
-  let killProcessTreeMock;
+  let killPidTreeMock;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -102,8 +100,8 @@ describe('ProcessManager - killAll', () => {
     const pmModule = await import('../../src/ipc/processManager.js');
     pmModule.releaseProcessManagerLock();
 
-    // Standalone mock — injected per-test where needed via pm._killProcessTree.
-    killProcessTreeMock = vi.fn().mockResolvedValue(undefined);
+    // Standalone mock — injected per-test where needed via pm._killPidTree.
+    killPidTreeMock = vi.fn().mockResolvedValue(undefined);
 
     mockLogger = {
       info: vi.fn(),
@@ -128,26 +126,24 @@ describe('ProcessManager - killAll', () => {
   });
 
   describe('killAll', () => {
-    it('should kill all active processes', async () => {
-      // Arrange: populate activeProcesses with 3 fake subprocesses.
-      // Override getActiveProcesses so killAll's snapshot captures our fakes.
+    it('should route every tracked PID through killPidTree', async () => {
       const procs = {
         'build-1': createFakeSubprocess({ pid: 1001 }),
         'dev-2': createFakeSubprocess({ pid: 1002 }),
         'misc-3': createFakeSubprocess({ pid: 1003 })
       };
       pm.getActiveProcesses = () => procs;
+      pm._killPidTree = killPidTreeMock;
 
-      // Inject the mock so killAll uses it (the fake subprocess emits 'exit'
-      // on kill, so the real killProcessTree also works, but the mock is
-      // simpler for call-tracking tests).
-      pm._killProcessTree = killProcessTreeMock;
-
-      // Act
       await expect(pm.killAll()).resolves.not.toThrow();
 
-      // Assert: module-level activeProcesses was cleared. Since we overrode
-      // pm.getActiveProcesses, verify via a fresh instance's getter.
+      expect(killPidTreeMock).toHaveBeenCalledTimes(3);
+      expect(killPidTreeMock).toHaveBeenCalledWith(1001, expect.any(Number));
+      expect(killPidTreeMock).toHaveBeenCalledWith(1002, expect.any(Number));
+      expect(killPidTreeMock).toHaveBeenCalledWith(1003, expect.any(Number));
+
+      // Module-level activeProcesses was cleared. Verify via a fresh
+      // instance's getter.
       const { ProcessManager: PM2 } = await import('../../src/ipc/processManager.js');
       const freshPM = new PM2({
         logger: mockLogger,
@@ -156,61 +152,61 @@ describe('ProcessManager - killAll', () => {
       expect(freshPM.getActiveProcesses()).toEqual({});
     });
 
-    it('should acquire processManagerLock before killAll iterates', async () => {
-      // The module exports acquireProcessManagerLock; killAll must call it first.
-      const { acquireProcessManagerLock } = await import('../../src/ipc/processManager.js');
-      const spy = vi.spyOn({ acquireProcessManagerLock }, 'acquireProcessManagerLock');
-
+    it('should dedupe PIDs tracked both as subprocess and documental record', async () => {
       pm.getActiveProcesses = () => ({
-        'p-1': createFakeSubprocess({ pid: 2001 })
+        'dev-2': createFakeSubprocess({ pid: 2002 })
       });
-
-      // Inject the mock so killAll doesn't use the real killProcessTree
-      // (which would hang when the subprocess exit fires before listeners).
-      pm._killProcessTree = killProcessTreeMock;
-
-      // spy is on a *copy*; the real assertion is that killAll calls the module
-      // export. We instead verify the lock state is held during iteration by
-      // observing killProcessTree is only invoked while the lock is true.
-      const callsDuringLock = [];
-      killProcessTreeMock.mockImplementation(() => {
-        // While killAll iterates, the lock MUST be held.
-        callsDuringLock.push(true);
-        return Promise.resolve();
+      pm.getActiveDocumentalProcesses = () => ({
+        2002: { pid: 2002, port: 4321, projectId: '2', command: 'npm run dev', cwd: '/p' }
       });
+      pm._killPidTree = killPidTreeMock;
 
       await pm.killAll();
 
-      expect(callsDuringLock.length).toBeGreaterThan(0);
-      // Lock released after completion.
-      expect(killProcessTreeMock).toHaveBeenCalled();
+      // The same tree must only be signalled once.
+      expect(killPidTreeMock).toHaveBeenCalledTimes(1);
+      expect(killPidTreeMock).toHaveBeenCalledWith(2002, expect.any(Number));
+    });
+
+    it('should hold the lock while killing (concurrent killAll rejects busy)', async () => {
+      pm.getActiveProcesses = () => ({
+        'p-1': createFakeSubprocess({ pid: 2001 })
+      });
+      pm._killPidTree = killPidTreeMock;
+
+      // Gate the in-flight kill so we can probe the lock mid-iteration.
+      let releaseKill;
+      const gate = new Promise((resolve) => { releaseKill = resolve; });
+      killPidTreeMock.mockImplementation(() => new Promise((resolve) => gate.then(resolve)));
+
+      const first = pm.killAll();
+      await vi.waitFor(() => expect(killPidTreeMock).toHaveBeenCalled());
+
+      // While the first killAll is iterating, a second one must be rejected.
+      await expect(pm.killAll()).rejects.toThrow('Process manager busy');
+
+      releaseKill();
+      await first;
+
+      // After completion the lock is released — a new killAll succeeds.
+      pm.getActiveProcesses = () => ({});
+      await expect(pm.killAll()).resolves.toBeUndefined();
     });
 
     it('should release processManagerLock in finally even on error', async () => {
-      const { releaseProcessManagerLock } = await import('../../src/ipc/processManager.js');
-
       pm.getActiveProcesses = () => ({
         'bad-1': createFakeSubprocess({ pid: 3001 })
       });
-
-      // Inject the mock so killAll doesn't hang.
-      pm._killProcessTree = killProcessTreeMock;
+      pm._killPidTree = killPidTreeMock;
 
       // killAll must not propagate the lock — release happens in finally.
-      // We track whether killProcessTree was actually reached; if killAll is
-      // missing, this stays 0 and the test fails for the right reason.
       let reachedKill = false;
-      killProcessTreeMock.mockImplementation(() => {
+      killPidTreeMock.mockImplementation(() => {
         reachedKill = true;
         return Promise.reject(new Error('boom'));
       });
 
-      let threw = false;
-      try {
-        await pm.killAll();
-      } catch {
-        threw = true;
-      }
+      await pm.killAll();
 
       // killAll MUST have been invoked (reached the iteration step).
       expect(reachedKill).toBe(true);
@@ -220,7 +216,7 @@ describe('ProcessManager - killAll', () => {
       expect(() => {
         const { acquireProcessManagerLock } = require('../../src/ipc/processManager.js');
         acquireProcessManagerLock('test-after-killAll');
-        releaseProcessManagerLock();
+        require('../../src/ipc/processManager.js').releaseProcessManagerLock();
       }).not.toThrow();
     });
 
@@ -228,66 +224,96 @@ describe('ProcessManager - killAll', () => {
       pm.getActiveProcesses = () => ({
         'p-1': createFakeSubprocess({ pid: 4001 })
       });
+      pm._killPidTree = killPidTreeMock;
 
-      // Inject the mock so killAll doesn't hang.
-      pm._killProcessTree = killProcessTreeMock;
-
-      // First call kills; subsequent calls find empty/already-killed state.
       await pm.killAll();
-      // After first killAll, activeProcesses should be cleared.
       pm.getActiveProcesses = () => ({});
       await pm.killAll();
       await pm.killAll();
 
-      // No throw == pass. Idempotency contract.
       expect(true).toBe(true);
     });
 
-    it('should handle ESRCH gracefully (subprocess.kill throws ESRCH)', async () => {
+    it('should handle ESRCH gracefully (killPidTree rejects with ESRCH)', async () => {
       const esrch = new Error('kill ESRCH');
       esrch.code = 'ESRCH';
 
-      const proc = createFakeSubprocess({
-        pid: 5001,
-        kill: vi.fn(() => {
-          throw esrch;
-        })
+      pm.getActiveProcesses = () => ({
+        'esrch-1': createFakeSubprocess({ pid: 5001 })
       });
-
-      pm.getActiveProcesses = () => ({ 'esrch-1': proc });
+      pm._killPidTree = killPidTreeMock;
+      killPidTreeMock.mockRejectedValue(esrch);
 
       // killAll must swallow ESRCH, not propagate.
       await expect(pm.killAll()).resolves.not.toThrow();
+      expect(mockLogger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('error killing process'),
+        expect.anything()
+      );
     });
   });
 
-  describe('killProcessTree integration', () => {
-    it('should do two-phase kill (SIGTERM then SIGKILL after gracePeriod)', async () => {
-      // This test exercises the contract that killAll delegates to killProcessTree,
-      // which itself performs SIGTERM -> gracePeriod -> SIGKILL. We verify
-      // killAll passes a finite gracePeriod (number > 0) and that the subprocess
-      // received at least one signal.
+  describe('killPidTree integration', () => {
+    it('should forward a finite gracePeriod to killPidTree (two-phase budget)', async () => {
       const proc = createFakeSubprocess({ pid: 6001 });
-
       pm.getActiveProcesses = () => ({ 'tp-1': proc });
+      pm._killPidTree = killPidTreeMock;
 
-      // Inject the mock so killAll uses the custom implementation below.
-      pm._killProcessTree = killProcessTreeMock;
-
-      // Use the real two-phase implementation for this single integration check
-      // so we observe the actual SIGTERM/SIGKILL sequence.
-      killProcessTreeMock.mockImplementationOnce(async (subprocess, gracePeriod) => {
+      killPidTreeMock.mockImplementationOnce(async (pid, gracePeriod) => {
+        expect(pid).toBe(6001);
         expect(gracePeriod).toEqual(expect.any(Number));
         expect(gracePeriod).toBeGreaterThan(0);
-        subprocess.kill('SIGTERM');
-        // Simulate the grace timeout elapsing without exit, then SIGKILL.
-        subprocess.kill('SIGKILL');
       });
 
       await pm.killAll();
 
-      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
-      expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(killPidTreeMock).toHaveBeenCalledWith(6001, expect.any(Number));
+    });
+  });
+
+  describe('terminateProcessesForProject key filter', () => {
+    it('should terminate dev-, build-, build-* and reopen- keys for the project', async () => {
+      const procs = {
+        'dev-5': createFakeSubprocess({ pid: 7101 }),
+        'build-5': createFakeSubprocess({ pid: 7102 }),
+        'build-5-install': createFakeSubprocess({ pid: 7103 }),
+        'reopen-5': createFakeSubprocess({ pid: 7104 }),
+        'dev-6': createFakeSubprocess({ pid: 7105 }),
+        'misc': createFakeSubprocess({ pid: 7106 })
+      };
+      pm.getActiveProcesses = () => procs;
+      pm._killPidTree = killPidTreeMock;
+
+      await pm.terminateProcessesForProject(5);
+
+      const killedPids = killPidTreeMock.mock.calls.map(([pid]) => pid);
+      expect(killedPids).toEqual(expect.arrayContaining([7101, 7102, 7103, 7104]));
+      expect(killedPids).not.toContain(7105);
+      expect(killedPids).not.toContain(7106);
+    });
+
+    it('should route terminateProcessByKey through killPidTree with a short grace', async () => {
+      pm.getActiveProcesses = () => ({
+        'dev-9': createFakeSubprocess({ pid: 7201 })
+      });
+      pm._killPidTree = killPidTreeMock;
+      killPidTreeMock.mockResolvedValue(undefined);
+
+      await pm.terminateProcessByKey('dev-9');
+
+      expect(killPidTreeMock).toHaveBeenCalledWith(7201, expect.any(Number));
+      expect(killPidTreeMock.mock.calls[0][1]).toBeLessThanOrEqual(1000);
+    });
+
+    it('should finalize without killing an already-exited process', async () => {
+      pm.getActiveProcesses = () => ({
+        'dev-10': createFakeSubprocess({ pid: 7301, exitCode: 0 })
+      });
+      pm._killPidTree = killPidTreeMock;
+
+      await pm.terminateProcessByKey('dev-10');
+
+      expect(killPidTreeMock).not.toHaveBeenCalled();
     });
   });
 });

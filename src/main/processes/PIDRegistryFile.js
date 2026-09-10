@@ -27,6 +27,74 @@ function getKillPidTree() {
 }
 
 /**
+ * Resolve the live command identity of a pid via the platform inspector.
+ * Prefers the full command line (`getCommandLine`); falls back to the
+ * coarser `getProcessInfo().command`.
+ * @param {Object} inspector - Platform process inspector
+ * @param {number} pid
+ * @returns {Promise<string|null>} Command identity or null when unavailable
+ * @private
+ */
+async function resolveLiveCommand(inspector, pid) {
+  if (typeof inspector.getCommandLine === 'function') {
+    const cmdline = await inspector.getCommandLine(pid);
+    if (cmdline && cmdline.trim()) {
+      return cmdline.trim();
+    }
+  }
+  if (typeof inspector.getProcessInfo === 'function') {
+    const info = await inspector.getProcessInfo(pid);
+    if (info && info.command && info.command !== 'N/A') {
+      return String(info.command).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Compare a registered command against a live process identity for the
+ * PID-reuse guard. Matching is intentionally conservative: no identity
+ * available → no match (don't kill).
+ *
+ * Match rules (normalized, case-insensitive):
+ *   1. the whole registered command is a substring of the live identity
+ *      (same argv, e.g. Linux /proc cmdline), or
+ *   2. the registered executable's basename appears in the live identity
+ *      AND at least one distinctive argument token (when any exist) does
+ *      too — covers Windows where only the image name may be available.
+ *
+ * @param {string} registered - Command recorded at register() time
+ * @param {string|null} live - Live process identity (cmdline/image name)
+ * @returns {boolean}
+ */
+function commandIdentityMatches(registered, live) {
+  if (!registered || !live) {
+    return false;
+  }
+  const norm = (s) => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
+  const reg = norm(registered);
+  const lv = norm(live);
+  if (!reg || !lv) {
+    return false;
+  }
+  if (lv.includes(reg)) {
+    return true;
+  }
+  const tokens = reg.split(' ');
+  const first = tokens[0];
+  const base = first
+    .slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
+    .replace(/\.exe$/, '');
+  if (!base || base.length < 3 || !lv.includes(base)) {
+    return false;
+  }
+  const argTokens = tokens
+    .slice(1)
+    .filter((t) => t.length >= 3 && !t.startsWith('-') && !t.startsWith('/'));
+  return argTokens.length === 0 || argTokens.some((t) => lv.includes(t));
+}
+
+/**
  * Async on-disk registry of live PIDs with orphan reaping.
  *
  * JSON schema (flat array, no version/migration):
@@ -224,6 +292,28 @@ class PIDRegistryFile {
           parentAlive = false;
         }
         if (!parentAlive) {
+          // PID-reuse guard: a live PID whose registered parent died may
+          // have been recycled by the OS into an unrelated process. Only
+          // reap when the live command identity still matches the
+          // registered one. Inspectors without any identity capability
+          // keep the legacy reap behavior.
+          if (typeof inspector.getCommandLine === 'function' ||
+              typeof inspector.getProcessInfo === 'function') {
+            let liveCommand = null;
+            try {
+              liveCommand = await resolveLiveCommand(inspector, entry.pid);
+            } catch {
+              liveCommand = null;
+            }
+            if (!commandIdentityMatches(entry.command, liveCommand)) {
+              console.warn(
+                `reapOrphans: PID ${entry.pid} alive but command identity mismatch ` +
+                `(registered "${entry.command}", live "${liveCommand}") — ` +
+                `presumed PID reuse, dropping entry without killing`
+              );
+              return { entry, action: 'drop' };
+            }
+          }
           return { entry, action: 'reap' };
         }
         return { entry, action: 'keep' };
@@ -278,4 +368,4 @@ class PIDRegistryFile {
   }
 }
 
-module.exports = { PIDRegistryFile };
+module.exports = { PIDRegistryFile, commandIdentityMatches };

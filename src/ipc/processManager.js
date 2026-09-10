@@ -14,6 +14,8 @@ const { PlatformService } = require('../main/services/platform/PlatformService')
 const { EmbeddedRuntimeService } = require('../main/services/embeddedRuntimeService');
 const { EmbeddedFallbackService } = require('../main/services/embeddedFallbackService');
 const nodeShimManager = require('../main/services/nodeShimManager');
+const { killPidTree } = require('../main/processes/killPidTree');
+const { appTracker } = require('../main/processes/documentalTracker');
 
 const fsp = fs.promises;
 
@@ -53,12 +55,14 @@ class ProcessManager {
    * @param {Object} dependencies.logger - Logger instance
    * @param {Object} dependencies.nodeDetectionService - Node.js detection service
    */
-  constructor({ logger, nodeDetectionService, killProcessTree }) {
+  constructor({ logger, nodeDetectionService, killPidTree: killPidTreeFn }) {
     this.logger = logger;
     this.nodeDetectionService = nodeDetectionService;
     this.platformService = new PlatformService({ logger });
-    /** @type {Function|undefined} Optional injection for tests — defaults to killProcessTree from require */
-    this._killProcessTree = killProcessTree;
+    /** @type {Function|undefined} Optional injection for tests — defaults to killPidTree from require */
+    this._killPidTree = killPidTreeFn;
+    /** Shared tracker singleton: in-memory tracking + PID registry (crash-recovery reap) */
+    this.appTracker = appTracker;
     this.embeddedRuntimeService = new EmbeddedRuntimeService();
     this.fallbackService = new EmbeddedFallbackService({ logger, nodeDetectionService });
     /** @type {Promise<string>|null} Cached ensureShims() result (per app session) */
@@ -76,8 +80,8 @@ class ProcessManager {
   async loadDocumentalProcesses() {
     // DEPRECATED: PID persistence replaced by PIDRegistryFile in
     // perf-zombie-refactor. No-op — stale PIDs accumulate in the old
-    // file and are never acted upon (killProcessTree returns early for
-    // plain objects that lack execa's .kill()).
+    // file and are never acted upon (killAll routes PIDs through
+    // killPidTree instead).
     return {};
   }
 
@@ -314,12 +318,15 @@ class ProcessManager {
           cwd,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
-          killDescendants: true,
-          forceKillAfterDelay: 1500,
+          detached: process.platform !== 'win32',
           killSignal: 'SIGTERM',
           cleanup: true,
           windowsHide: true
         };
+        // detached on POSIX makes the child a process-group leader so
+        // killPidTree's kill(-pid) reaches the whole tree and the PID
+        // registry can reap it after a hard crash. On win32 it stays false
+        // (would break the console-host chain windowsHide relies on).
         // windowsHide is pinned explicitly: execa already defaults it to true,
         // but a future execa major must not be able to silently regress it.
         // On win32 the embedded runtime spawns through a shell host (cmd.exe)
@@ -340,7 +347,10 @@ class ProcessManager {
         activeProcesses[processId] = subprocess;
 
         let spawned = false;
-        subprocess.once('spawn', () => { spawned = true; });
+        subprocess.once('spawn', () => {
+          spawned = true;
+          this._trackSpawnedPid(subprocess.pid, processId, `${actualCommand} ${actualArgs.join(' ')}`, cwd);
+        });
 
         // Handle stdout
         subprocess.stdout?.on('data', (data) => {
@@ -355,6 +365,7 @@ class ProcessManager {
         // Handle process completion
         subprocess.on('exit', (code, signal) => {
           delete activeProcesses[processId];
+          this._untrackSpawnedPid(subprocess.pid);
           if (!spawned) {
             reject(Object.assign(new Error('Command failed to spawn'), { isStartupError: true }));
             return;
@@ -371,6 +382,7 @@ class ProcessManager {
         // Handle process errors
         subprocess.on('error', (err) => {
           delete activeProcesses[processId];
+          this._untrackSpawnedPid(subprocess.pid);
           if (!spawned) {
             reject(Object.assign(new Error(`Failed to start command: ${err.message}`), { isStartupError: true }));
             return;
@@ -383,6 +395,50 @@ class ProcessManager {
         reject(`Failed to execute command: ${error.message}`);
       }
     });
+  }
+
+  /**
+   * Register a spawned PID for crash recovery. Mirrors the process into
+   * appTracker (in-memory) and the on-disk PID registry (reaped on next
+   * boot if this process dies without cleaning up). projectId is derived
+   * from the tracking key when it follows the `<kind>-<id>` convention.
+   * @param {number|undefined} pid
+   * @param {string} processKey - Tracking key (e.g. `dev-3`, `build-3`)
+   * @param {string} command - Full command line (identity for the PID-reuse guard)
+   * @param {string} cwd
+   */
+  _trackSpawnedPid(pid, processKey, command, cwd) {
+    if (typeof pid !== 'number' || pid <= 0) {
+      return;
+    }
+    const idMatch = typeof processKey === 'string' ? processKey.match(/^(?:dev|build|reopen)-(.+)$/) : null;
+    try {
+      this.appTracker.addProcess(pid, {
+        port: null,
+        projectId: idMatch ? idMatch[1] : undefined,
+        command,
+        cwd
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to register PID ${pid} in tracker: ${error.message}`);
+    }
+  }
+
+  /**
+   * Unregister a PID after a clean exit so the registry doesn't linger
+   * (a lingering entry would make the next boot's reapOrphans inspect,
+   * and possibly kill, an unrelated reused PID).
+   * @param {number|undefined} pid
+   */
+  _untrackSpawnedPid(pid) {
+    if (typeof pid !== 'number' || pid <= 0) {
+      return;
+    }
+    try {
+      this.appTracker.removeProcess(pid);
+    } catch {
+      /* best-effort — registry writes are already swallowed downstream */
+    }
   }
 
   /**
@@ -502,8 +558,7 @@ class ProcessManager {
           cwd: repoDirPath,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
-          killDescendants: true,
-          forceKillAfterDelay: 1500,
+          detached: process.platform !== 'win32',
           killSignal: 'SIGTERM',
           cleanup: true,
           windowsHide: true
@@ -525,6 +580,8 @@ class ProcessManager {
         const processId = `dev-${projectId}`;
         activeProcesses[processId] = devProcess;
 
+        this._trackSpawnedPid(devProcess.pid, processId, `${actualNpmPath} ${npmArgs.join(' ')}`, repoDirPath);
+
         await this.addDocumentalProcess(devProcess.pid, {
           port: null, // Will be updated when URL is detected
           projectId: projectId,
@@ -541,6 +598,7 @@ class ProcessManager {
 
           devProcess.on('exit', async (code, signal) => {
             delete activeProcesses[processId];
+            this._untrackSpawnedPid(devProcess.pid);
             if (devProcess.pid) {
               await this.removeDocumentalProcess(devProcess.pid);
             }
@@ -556,6 +614,7 @@ class ProcessManager {
           // Handle process errors
           devProcess.on('error', async (err) => {
             delete activeProcesses[processId];
+            this._untrackSpawnedPid(devProcess.pid);
             if (devProcess.pid) {
               await this.removeDocumentalProcess(devProcess.pid);
             }
@@ -655,13 +714,15 @@ class ProcessManager {
    * Contract:
    *   - acquires the process manager lock before iterating (throws "Process
    *     manager busy: killAll" if another op holds it)
-   *   - delegates to killProcessTree for each subprocess (SIGTERM -> grace -> SIGKILL)
+   *   - routes each tracked PID through killPidTree(pid) — Unix process-group
+   *     kill (detached spawns) with ESRCH fallback to enumerated descendants,
+   *     Windows taskkill /T /F
    *   - uses Promise.allSettled so one failure doesn't short-circuit the rest
    *   - releases the lock in a `finally` block (even on error)
    *   - idempotent: safe to call repeatedly; empty state is a no-op
    *   - swallows ESRCH/EPERM (already-dead processes) so callers don't see them
    *
-   * @param {number} [gracePeriod=1500] - Grace period in ms forwarded to killProcessTree
+   * @param {number} [gracePeriod=1500] - Grace period in ms forwarded to killPidTree
    * @returns {Promise<void>}
    */
   async killAll(gracePeriod = 1500) {
@@ -671,18 +732,27 @@ class ProcessManager {
       const regular = this.getActiveProcesses() || {};
       const documental = this.getActiveDocumentalProcesses() || {};
 
-      const targets = [
-        ...Object.values(regular),
-        ...Object.values(documental)
-      ].filter((proc) => proc && (proc.pid !== undefined || typeof proc.kill === 'function'));
+      // A dev server appears both as an execa handle (regular) and as a
+      // documental record — dedupe by pid so its tree is only signalled once.
+      const pids = new Set();
+      for (const proc of Object.values(regular)) {
+        if (proc && typeof proc.pid === 'number') {
+          pids.add(proc.pid);
+        }
+      }
+      for (const proc of Object.values(documental)) {
+        if (proc && typeof proc.pid === 'number') {
+          pids.add(proc.pid);
+        }
+      }
 
-      if (targets.length > 0) {
-        // Prefer injected killProcessTree (for testability); fall back to lazy
+      if (pids.size > 0) {
+        // Prefer injected killPidTree (for testability); fall back to lazy
         // require which bypasses vi.mock in CJS context (see learnings Task 11).
-        const killFn = this._killProcessTree || require('../main/processes/killProcessTree').killProcessTree;
+        const killFn = this._killPidTree || require('../main/processes/killPidTree').killPidTree;
         const results = await Promise.allSettled(
-          targets.map((proc) =>
-            killFn(proc, gracePeriod).catch((err) => {
+          [...pids].map((pid) =>
+            killFn(pid, gracePeriod).catch((err) => {
               // ESRCH = already dead, EPERM = not ours; both are safe to ignore.
               const code = err && err.code;
               if (code !== 'ESRCH' && code !== 'EPERM') {
@@ -742,11 +812,13 @@ class ProcessManager {
    */
   async terminateProcessesForProject(projectId) {
     const normalizedId = String(projectId);
-    const keysToTerminate = Object.keys(activeProcesses).filter((key) => {
+    const keysToTerminate = Object.keys(this.getActiveProcesses()).filter((key) => {
       return (
         key === normalizedId ||
         key === `build-${normalizedId}` ||
+        key.startsWith(`build-${normalizedId}-`) ||
         key === `dev-${normalizedId}` ||
+        key === `reopen-${normalizedId}` ||
         key.startsWith(`${normalizedId}-`)
       );
     });
@@ -761,37 +833,28 @@ class ProcessManager {
    * @param {string} processKey - Process key identifier
    */
   async terminateProcessByKey(processKey) {
-    const processRef = activeProcesses[processKey];
+    const processRef = this.getActiveProcesses()[processKey];
     if (!processRef) {
       return;
     }
 
-    await new Promise((resolve) => {
-      const exitHandler = () => finalize();
-      const errorHandler = () => finalize();
-      const detachListeners = () => {
-        if (typeof processRef.off === 'function') {
-          processRef.off('exit', exitHandler);
-          processRef.off('error', errorHandler);
-        } else if (typeof processRef.removeListener === 'function') {
-          processRef.removeListener('exit', exitHandler);
-          processRef.removeListener('error', errorHandler);
-        }
-      };
-
-      const finalize = async () => {
-        detachListeners();
-        if (processRef.pid) {
-          await this.removeDocumentalProcess(processRef.pid);
-        }
-        delete activeProcesses[processKey];
-        resolve();
-      };
-
-      if (typeof processRef.once === 'function') {
-        processRef.once('exit', exitHandler);
-        processRef.once('error', errorHandler);
+    let finalized = false;
+    const finalize = async () => {
+      if (finalized) {
+        return;
       }
+      finalized = true;
+      if (processRef.pid) {
+        await this.removeDocumentalProcess(processRef.pid);
+        this._untrackSpawnedPid(processRef.pid);
+      }
+      delete activeProcesses[processKey];
+      resolvePromise();
+    };
+
+    let resolvePromise;
+    await new Promise((resolve) => {
+      resolvePromise = resolve;
 
       // If the process already exited, finalize immediately
       if (typeof processRef.exitCode === 'number' || processRef.killed) {
@@ -799,25 +862,21 @@ class ProcessManager {
         return;
       }
 
-      try {
-        const signal = this.platformService.getTerminationSignal();
-        processRef.kill(signal);
-      } catch (error) {
-        this.logger.warn(`Error terminating process ${processKey}:`, error);
-        finalize();
-        return;
-      }
-
-      setTimeout(() => {
-        if (activeProcesses[processKey]) {
-          try {
-            const forceSignal = this.platformService.getForceTerminationSignal();
-            processRef.kill(forceSignal);
-          } catch (forceError) {
-            this.logger.error(`Failed to force kill process ${processKey}:`, forceError);
-          }
+      const killTree = async () => {
+        try {
+          // Kill the whole tree (process-group kill for detached spawns,
+          // ESRCH fallback with enumerated descendants otherwise).
+          // Short grace: well-behaved children exit on SIGTERM; SIGKILL
+          // escalates fast so callers are not left waiting.
+          const killFn = this._killPidTree || killPidTree;
+          await killFn(processRef.pid, 300);
+        } catch (error) {
+          this.logger.warn(`Error terminating process ${processKey}:`, error);
         }
-      }, 3000);
+        await finalize();
+      };
+
+      killTree();
     });
   }
 

@@ -121,7 +121,6 @@ describe('EmbeddedRuntimeService', () => {
       const result = await service.spawnNodeChild(process.execPath, ['-p', 'process.cwd()'], {
         cwd: '/tmp',
         windowsHide: true,
-        killDescendants: true,
         env: {
           PATH: '/bin',
           NODE_OPTIONS: '--inspect',

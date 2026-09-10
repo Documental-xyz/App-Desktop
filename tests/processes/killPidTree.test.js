@@ -20,9 +20,24 @@ const childProcess = nodeRequire('child_process');
 
 const execFileCalls = [];
 let latestExecFileCallback = null;
+// Integration tests flip pgrepDelegateToReal on so the fallback's pgrep
+// really runs; unit tests get scripted outputs (one per BFS level, FIFO —
+// unscripted levels resolve to no children).
+let pgrepDelegateToReal = false;
+const pgrepScriptedOutputs = [];
+const realExecFile = childProcess.execFile;
 childProcess.execFile = function stubExecFile(cmd, args, opts, maybeCb) {
   execFileCalls.push({ cmd, args });
-  latestExecFileCallback = typeof opts === 'function' ? opts : maybeCb;
+  const cb = typeof opts === 'function' ? opts : maybeCb;
+  latestExecFileCallback = cb;
+  if (cmd !== 'pgrep') {
+    return; // taskkill stays manually resolved by the Windows tests
+  }
+  if (pgrepDelegateToReal) {
+    return realExecFile.call(childProcess, cmd, args, opts, maybeCb);
+  }
+  const out = pgrepScriptedOutputs.length > 0 ? pgrepScriptedOutputs.shift() : '';
+  setImmediate(() => cb(null, out, ''));
 };
 
 vi.mock('tree-kill', () => vi.fn());
@@ -54,6 +69,8 @@ describe('killPidTree', () => {
     vi.clearAllMocks();
     execFileCalls.length = 0;
     latestExecFileCallback = null;
+    pgrepDelegateToReal = false;
+    pgrepScriptedOutputs.length = 0;
     originalPlatform = process.platform;
     killSpy = vi.spyOn(process, 'kill');
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -162,9 +179,64 @@ describe('killPidTree', () => {
       });
 
       await expect(killPidTree(555, 10)).resolves.toBeUndefined();
-      // Only the first SIGTERM attempt; returns early.
-      expect(killSpy).toHaveBeenCalledTimes(1);
+      // Group SIGTERM hits ESRCH → fallback probes the pid directly, which
+      // also throws ESRCH (dead) → return. Two kill syscalls total.
+      expect(killSpy).toHaveBeenCalledTimes(2);
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ESRCH fallback (non-group-leader child)', () => {
+    beforeEach(() => {
+      setPlatform('linux');
+    });
+
+    it('should fall back to direct pid + descendant kill when group SIGTERM hits ESRCH but pid is alive', async () => {
+      // Given: kill(-pid) throws ESRCH (non-detached child) while direct
+      // signals/probes succeed, and pgrep reports one descendant (777).
+      killSpy.mockImplementation((target) => {
+        if (target < 0) {
+          throw syscallError('ESRCH');
+        }
+      });
+      pgrepScriptedOutputs.push('777\n');
+
+      // When: the fallback enumerates (pgrep -P 556 → 777, deeper → none).
+      await killPidTree(556, 10);
+
+      // Then: pgrep was asked for the root's children.
+      expect(execFileCalls).toContainEqual({ cmd: 'pgrep', args: ['-P', '556'] });
+      // And: two-phase over [556, 777] — SIGTERM both, SIGKILL both.
+      expect(killSpy).toHaveBeenCalledWith(-556, 'SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(556, 'SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(777, 'SIGTERM');
+      expect(killSpy).toHaveBeenCalledWith(556, 'SIGKILL');
+      expect(killSpy).toHaveBeenCalledWith(777, 'SIGKILL');
+    });
+
+    it('should SIGKILL only fallback members that survive the grace period', async () => {
+      // Given: root 887 with children 888, 889; 888 exits on SIGTERM,
+      // the others survive until SIGKILL.
+      const dead = new Set();
+      killSpy.mockImplementation((target, signal) => {
+        if (target < 0) {
+          throw syscallError('ESRCH');
+        }
+        if (signal === 'SIGTERM' && target === 888) {
+          dead.add(888);
+          return;
+        }
+        if (signal === 0 && dead.has(target)) {
+          throw syscallError('ESRCH');
+        }
+      });
+      pgrepScriptedOutputs.push('888\n889\n');
+
+      await killPidTree(887, 10);
+
+      expect(killSpy).toHaveBeenCalledWith(887, 'SIGKILL');
+      expect(killSpy).toHaveBeenCalledWith(889, 'SIGKILL');
+      expect(killSpy).not.toHaveBeenCalledWith(888, 'SIGKILL');
     });
   });
 
@@ -291,6 +363,74 @@ describe('killPidTree', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('taskkill failed for PID 7070')
       );
+    });
+  });
+
+  describe.skipIf(process.platform === 'win32')('REAL tree kill (integration, Unix only)', () => {
+    beforeEach(() => {
+      setPlatform('linux');
+    });
+
+    it('should kill a real 2-level non-detached tree via the ESRCH fallback', { timeout: 15000 }, async () => {
+      pgrepDelegateToReal = true;
+      // Given: a real 2-level tree spawned WITHOUT detached (group kill
+      // will hit ESRCH — exactly the Metis finding this fallback fixes).
+      const parent = childProcess.spawn(process.execPath, [
+        '-e',
+        'const {spawn}=require("child_process");' +
+        'const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"]);' +
+        'console.log("CHILD="+c.pid);' +
+        'setInterval(()=>{},1000);'
+      ], { stdio: ['ignore', 'pipe', 'ignore'] });
+      let childPid = null;
+      parent.stdout.on('data', (d) => {
+        const m = d.toString().match(/CHILD=(\d+)/);
+        if (m) childPid = parseInt(m[1], 10);
+      });
+      await new Promise((resolve) => parent.once('spawn', resolve));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(childPid).toBeTruthy();
+
+      const isAlive = (p) => {
+        try { process.kill(p, 0); return true; } catch { return false; }
+      };
+      expect(isAlive(parent.pid)).toBe(true);
+      expect(isAlive(childPid)).toBe(true);
+
+      // When: killPidTree runs against the root (real signals, real pgrep).
+      await killPidTree(parent.pid, 100);
+
+      // Then: the entire tree is dead — no survivors.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(isAlive(parent.pid)).toBe(false);
+      expect(isAlive(childPid)).toBe(false);
+    });
+
+    it('should kill a real 2-level detached tree via the group kill', { timeout: 15000 }, async () => {
+      pgrepDelegateToReal = true;
+      const parent = childProcess.spawn(process.execPath, [
+        '-e',
+        'const {spawn}=require("child_process");' +
+        'const c=spawn(process.execPath,["-e","setInterval(()=>{},1000)"]);' +
+        'console.log("CHILD="+c.pid);' +
+        'setInterval(()=>{},1000);'
+      ], { stdio: ['ignore', 'pipe', 'ignore'], detached: true });
+      let childPid = null;
+      parent.stdout.on('data', (d) => {
+        const m = d.toString().match(/CHILD=(\d+)/);
+        if (m) childPid = parseInt(m[1], 10);
+      });
+      await new Promise((resolve) => parent.once('spawn', resolve));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      await killPidTree(parent.pid, 100);
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const isAlive = (p) => {
+        try { process.kill(p, 0); return true; } catch { return false; }
+      };
+      expect(isAlive(parent.pid)).toBe(false);
+      expect(isAlive(childPid)).toBe(false);
     });
   });
 
