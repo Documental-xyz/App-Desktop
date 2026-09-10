@@ -54,7 +54,6 @@ welcome:
   redirect_info: "Será redirigido a GitHub para autorizar el acceso"
   connecting: "Conectando..."
   connect_with_github: "Conectar con GitHub"
-  login_now: "Iniciar sesión ahora"
   access_code: "Código de acceso:"
   expires_in: "Expira en {time}"
   visit_github: "Visitar GitHub"
