@@ -15,7 +15,8 @@
  * @see tests/ipc/git.cancellation.test.js (lock-guard lifecycle test pattern)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { resolve as resolvePath } from 'path';
 
 // --- Module mocks -----------------------------------------------------------
 
@@ -28,6 +29,19 @@ vi.mock('execa', () => ({
 vi.mock('rimraf', () => ({
   rimraf: vi.fn().mockResolvedValue(undefined)
 }));
+
+// electron is lazily required inside startDevServer's URL-capture path
+// (BrowserWindow.getAllWindows 'dev-server-url' broadcast); stub it.
+vi.mock('electron', () => {
+  const send = vi.fn();
+  return {
+    BrowserWindow: {
+      getAllWindows: vi.fn(() => [
+        { isDestroyed: () => false, webContents: { send } }
+      ])
+    }
+  };
+});
 
 // PlatformService is constructed in the ProcessManager constructor. Provide a
 // minimal stub so `new ProcessManager(...)` does not touch the real adapter
@@ -315,5 +329,157 @@ describe('ProcessManager - killAll', () => {
 
       expect(killPidTreeMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('ProcessManager - startDevServer dedupe', () => {
+  let mockLogger;
+  let mockNodeDetectionService;
+  let pm;
+  let killPidTreeMock;
+
+  const buildManager = async () => {
+    const { ProcessManager } = await import('../../src/ipc/processManager.js');
+    const instance = new ProcessManager({
+      logger: mockLogger,
+      nodeDetectionService: mockNodeDetectionService
+    });
+    instance._killPidTree = killPidTreeMock;
+    instance.resolveRuntimeExecutable = vi.fn().mockResolvedValue({
+      command: 'npm', args: [], env: {}, runtime: 'managed'
+    });
+    instance._trackSpawnedPid = vi.fn();
+    instance._untrackSpawnedPid = vi.fn();
+    instance.saveDocumentalProcesses = vi.fn().mockResolvedValue(undefined);
+    return instance;
+  };
+
+  /** Push a stdout chunk through the listeners startDevServer attached. */
+  const emitStdout = (fakeProcess, text) => {
+    for (const call of fakeProcess.stdout.on.mock.calls) {
+      if (call[0] === 'data') {
+        call[1](Buffer.from(text));
+      }
+    }
+  };
+
+  /** 'dev-server-url' broadcasts seen by the mocked electron window. */
+  const devServerUrlBroadcasts = async () => {
+    const electron = await import('electron');
+    const window = electron.BrowserWindow.getAllWindows()[0];
+    return window.webContents.send.mock.calls.filter(([channel]) => channel === 'dev-server-url');
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    const pmModule = await import('../../src/ipc/processManager.js');
+    pmModule.releaseProcessManagerLock();
+
+    killPidTreeMock = vi.fn().mockResolvedValue(undefined);
+
+    mockLogger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn()
+    };
+
+    mockNodeDetectionService = {
+      getPreferredNpmExecutable: vi.fn().mockResolvedValue('npm'),
+      getPreferredNpxExecutable: vi.fn().mockResolvedValue('npx'),
+      getPreferredNodeExecutable: vi.fn().mockResolvedValue('node'),
+      detectNodeInstallation: vi.fn().mockResolvedValue({ runtime: { installed: false } }),
+      getManagedRuntimeEnv: vi.fn((env) => env)
+    };
+
+    pm = await buildManager();
+  });
+
+  afterEach(async () => {
+    // Clear module-level maps so tests stay order-independent.
+    await pm.killAll();
+  });
+
+  it('returns the SAME handle on a 2nd call with the same projectId, without a 2nd spawn', async () => {
+    const spawnMock = vi.fn(() => createFakeSubprocess({ pid: 9101 }));
+    pm.embeddedRuntimeService.spawnNodeChild = spawnMock;
+
+    const first = await pm.startDevServer('/repos/alpha', 91, vi.fn(), vi.fn());
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    emitStdout(first.process, 'ready in 99 ms — http://localhost:4321/');
+
+    const output2 = vi.fn();
+    const status2 = vi.fn();
+    const second = await pm.startDevServer('/repos/alpha', 91, output2, status2);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(second.process).toBe(first.process);
+    expect(second.url).toBe('http://localhost:4321/');
+    expect(second.reused).toBe(true);
+    expect(status2).toHaveBeenCalledWith('success');
+    expect(output2).toHaveBeenCalledWith(expect.stringContaining('reusing existing process'));
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining('[devserver] reutilizando server existente para 91')
+    );
+
+    // URL broadcast stays idempotent: only the first capture broadcast.
+    expect(await devServerUrlBroadcasts()).toHaveLength(1);
+  });
+
+  it('dedupes across projectIds when the resolved repoDirPath matches', async () => {
+    const spawnMock = vi.fn(() => createFakeSubprocess({ pid: 9201 }));
+    pm.embeddedRuntimeService.spawnNodeChild = spawnMock;
+
+    const first = await pm.startDevServer('/repos/beta', 92, vi.fn(), vi.fn());
+    emitStdout(first.process, 'ready — http://localhost:4322/');
+
+    const second = await pm.startDevServer('/repos/beta', 93, vi.fn(), vi.fn());
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(second.process).toBe(first.process);
+    expect(second.url).toBe('http://localhost:4322/');
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(`reutilizando server existente para ${resolvePath('/repos/beta')}`)
+    );
+    expect(await devServerUrlBroadcasts()).toHaveLength(1);
+  });
+
+  it('spawns a new server for a distinct repo (no dedupe)', async () => {
+    const pids = [9301, 9302];
+    let nextPid = 0;
+    const spawnMock = vi.fn(() => createFakeSubprocess({ pid: pids[nextPid++] }));
+    pm.embeddedRuntimeService.spawnNodeChild = spawnMock;
+
+    const first = await pm.startDevServer('/repos/gamma', 94, vi.fn(), vi.fn());
+    const second = await pm.startDevServer('/repos/delta', 95, vi.fn(), vi.fn());
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(second.process).not.toBe(first.process);
+    expect(second.url).toBeNull();
+    expect(second.reused).toBeUndefined();
+    expect(pm.getActiveProcesses()['dev-94']).toBe(first.process);
+    expect(pm.getActiveProcesses()['dev-95']).toBe(second.process);
+  });
+
+  it('relays readiness to the re-caller when the reused server is still booting', async () => {
+    const spawnMock = vi.fn(() => createFakeSubprocess({ pid: 9401 }));
+    pm.embeddedRuntimeService.spawnNodeChild = spawnMock;
+
+    const first = await pm.startDevServer('/repos/epsilon', 96, vi.fn(), vi.fn());
+
+    const status2 = vi.fn();
+    const second = await pm.startDevServer('/repos/epsilon', 96, vi.fn(), status2);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(second.process).toBe(first.process);
+    expect(second.url).toBeNull();
+    expect(status2).not.toHaveBeenCalledWith('success');
+
+    emitStdout(first.process, 'ready — http://localhost:4323/');
+
+    expect(status2).toHaveBeenCalledWith('success');
+    expect(await devServerUrlBroadcasts()).toHaveLength(1);
   });
 });

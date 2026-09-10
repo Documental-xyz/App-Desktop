@@ -24,6 +24,9 @@ const fsp = fs.promises;
 let globalDevServerUrl = null;
 let activeProcesses = {};
 let activeDocumentalProcesses = {};
+// Readiness callbacks for re-callers of a still-booting dev server (keyed by
+// pid; kept separate because activeDocumentalProcesses is JSON-persisted).
+let devServerUrlWaiters = {};
 let processManagerLock = false;
 
 /**
@@ -43,6 +46,77 @@ function acquireProcessManagerLock(operation) {
  */
 function releaseProcessManagerLock() {
   processManagerLock = false;
+}
+
+// Window id → project id (string). Main-process source of truth for which
+// window is using which project — the renderer's sessionStorage is not
+// consultable from the main process. Populated when a dev server starts
+// (via the invoke sender), cleared on navigate-away and window close.
+const windowProjectMap = new Map();
+
+/**
+ * Record that a window uses a project (raw primitive).
+ * @param {number} windowId - BrowserWindow id
+ * @param {string|number} projectId
+ */
+function mapWindowToProject(windowId, projectId) {
+  windowProjectMap.set(windowId, String(projectId));
+}
+
+/**
+ * Record that the window owning `senderWebContents` uses the project —
+ * called from startDevServer with the webContents of the invoke that
+ * requested the server.
+ * @param {Electron.WebContents} senderWebContents - event.sender of the invoke
+ * @param {string|number} projectId
+ */
+function associateWindowWithProject(senderWebContents, projectId) {
+  if (!senderWebContents) {
+    return;
+  }
+  try {
+    const { BrowserWindow } = require('electron');
+    const window = BrowserWindow.fromWebContents(senderWebContents);
+    if (window) {
+      mapWindowToProject(window.id, projectId);
+    }
+  } catch (error) {
+    // Best-effort bookkeeping — never fail a dev server start over it.
+  }
+}
+
+/**
+ * Remove a window's project association (navigate back to index, window closed).
+ * @param {number} windowId
+ * @returns {string|undefined} The project id that was mapped, if any
+ */
+function dissociateWindow(windowId) {
+  const projectId = windowProjectMap.get(windowId);
+  windowProjectMap.delete(windowId);
+  return projectId;
+}
+
+/**
+ * @param {number} windowId
+ * @returns {string|undefined} Project id currently used by the window
+ */
+function getWindowProject(windowId) {
+  return windowProjectMap.get(windowId);
+}
+
+/**
+ * @param {string|number} projectId
+ * @returns {number[]} Ids of the windows still using the project
+ */
+function getWindowsUsingProject(projectId) {
+  const normalizedId = String(projectId);
+  const windowIds = [];
+  for (const [windowId, mappedProjectId] of windowProjectMap) {
+    if (mappedProjectId === normalizedId) {
+      windowIds.push(windowId);
+    }
+  }
+  return windowIds;
 }
 
 /**
@@ -478,14 +552,122 @@ class ProcessManager {
   }
 
   /**
+   * Find an already-running dev server a new startDevServer call could reuse.
+   * Two dev servers on the same repo race on node_modules/.astro/data-store.json
+   * and surface as ENOENT, so match by projectId slot first, then by resolved
+   * repo cwd across tracked dev servers (activeDocumentalProcesses only ever
+   * holds dev servers — addDocumentalProcess is called solely from
+   * startDevServer).
+   * @param {string} projectId - Project ID of the incoming request
+   * @param {string} repoDirPath - Repo directory of the incoming request
+   * @returns {null|{process: Object, projectId: string, url: string|null, matchedBy: string}}
+   */
+  _findReusableDevServer(projectId, repoDirPath) {
+    const isAlive = (proc) => Boolean(proc && proc.pid && proc.exitCode === null);
+    const resolvedRepo = repoDirPath ? path.resolve(repoDirPath) : null;
+
+    const byId = activeProcesses[`dev-${projectId}`];
+    if (isAlive(byId)) {
+      const record = byId.pid ? activeDocumentalProcesses[byId.pid] : null;
+      // Primary dedupe key is the resolved repo dir: if the slot's process runs
+      // in a different repo (project recreated elsewhere under the same id), it
+      // must not shadow the repo scan below. Unknown cwd falls back to id match.
+      if (!resolvedRepo || !record || !record.cwd || path.resolve(record.cwd) === resolvedRepo) {
+        return { process: byId, projectId, url: (record && record.url) || null, matchedBy: 'projectId' };
+      }
+    }
+
+    if (resolvedRepo) {
+      for (const record of Object.values(activeDocumentalProcesses)) {
+        if (!record || !record.cwd || path.resolve(record.cwd) !== resolvedRepo) {
+          continue;
+        }
+        const handle = Object.values(activeProcesses).find((proc) => proc && proc.pid === record.pid);
+        if (isAlive(handle)) {
+          return { process: handle, projectId: record.projectId, url: record.url || null, matchedBy: 'repoDirPath' };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Register a callback fired when the dev server for pid captures its URL
+   * (null if it exits before capturing one).
+   * @param {number} pid - Process ID
+   * @param {Function} callback - Receives the URL or null
+   */
+  _waitForDevServerUrl(pid, callback) {
+    if (typeof pid !== 'number' || pid <= 0) {
+      return;
+    }
+    if (!devServerUrlWaiters[pid]) {
+      devServerUrlWaiters[pid] = [];
+    }
+    devServerUrlWaiters[pid].push(callback);
+  }
+
+  /**
+   * Flush URL waiters for pid (url=null means the server died before ready).
+   * @param {number} pid - Process ID
+   * @param {string|null} url - Captured dev server URL, or null
+   */
+  _notifyDevServerUrlWaiters(pid, url) {
+    if (typeof pid !== 'number' || pid <= 0) {
+      return;
+    }
+    const waiters = devServerUrlWaiters[pid];
+    if (!waiters) {
+      return;
+    }
+    delete devServerUrlWaiters[pid];
+    for (const fn of waiters) {
+      try {
+        fn(url);
+      } catch (error) {
+        this.logger.warn(`[devserver] URL waiter failed: ${error.message}`);
+      }
+    }
+  }
+
+  /**
    * Start development server with URL detection
    * @param {string} repoDirPath - Repository directory path
    * @param {number} projectId - Project ID
    * @param {Function} sendServerOutput - Server output callback
    * @param {Function} sendStatus - Status callback
+   * @param {Electron.WebContents} [senderWebContents] - event.sender of the
+   *   invoke requesting the server; its window is mapped to the project so
+   *   close-project knows whether the processes are still in use
    * @returns {Promise<Object>} Process information
    */
-  async startDevServer(repoDirPath, projectId, sendServerOutput, sendStatus) {
+  async startDevServer(repoDirPath, projectId, sendServerOutput, sendStatus, senderWebContents) {
+    // Map the requesting window FIRST so reused (deduplicated) starts keep
+    // the window→project association fresh too.
+    associateWindowWithProject(senderWebContents, projectId);
+
+    // Dedupe: never spawn a second server for a project/repo that already has
+    // one running — re-callers (reopen-project, open-only-preview) get the
+    // existing handle and the URL already captured (or relayed when ready).
+    const existing = this._findReusableDevServer(projectId, repoDirPath);
+    if (existing) {
+      const target = existing.matchedBy === 'projectId' ? projectId : path.resolve(repoDirPath);
+      this.logger.info(`[devserver] reutilizando server existente para ${target} (PID ${existing.process.pid})`);
+      if (existing.url) {
+        sendServerOutput(`Development server already running at ${existing.url} — reusing existing process.\n`);
+        sendStatus('success');
+      } else {
+        sendServerOutput('Development server already running — reusing existing process, waiting for readiness...\n');
+        this._waitForDevServerUrl(existing.process.pid, (url) => {
+          if (url) {
+            sendServerOutput('Development server is ready.\n');
+            sendStatus('success');
+          }
+        });
+      }
+      return { process: existing.process, url: existing.url, reused: true };
+    }
+
     let serverReady = false;
     const checkServerReady = (data) => {
       if (!serverReady && (data.includes('ready') || data.includes('compiled successfully') || data.includes('listening on'))) {
@@ -515,11 +697,14 @@ class ProcessManager {
             // Update process with port information
             if (activeDocumentalProcesses[devProcess.pid]) {
               activeDocumentalProcesses[devProcess.pid].port = port;
+              activeDocumentalProcesses[devProcess.pid].url = devServerUrl;
               this.saveDocumentalProcesses();
               this.logger.info(`Updated Documental process ${devProcess.pid} with port ${port}`);
             }
           }
-          
+
+          this._notifyDevServerUrlWaiters(devProcess.pid, devServerUrl);
+
           this.logger.info(`Development server URL: ${devServerUrl}`);
           // Send to all windows for synchronization
           const { BrowserWindow } = require('electron');
@@ -599,6 +784,7 @@ class ProcessManager {
           devProcess.on('exit', async (code, signal) => {
             delete activeProcesses[processId];
             this._untrackSpawnedPid(devProcess.pid);
+            this._notifyDevServerUrlWaiters(devProcess.pid, null);
             if (devProcess.pid) {
               await this.removeDocumentalProcess(devProcess.pid);
             }
@@ -615,6 +801,7 @@ class ProcessManager {
           devProcess.on('error', async (err) => {
             delete activeProcesses[processId];
             this._untrackSpawnedPid(devProcess.pid);
+            this._notifyDevServerUrlWaiters(devProcess.pid, null);
             if (devProcess.pid) {
               await this.removeDocumentalProcess(devProcess.pid);
             }
@@ -770,6 +957,7 @@ class ProcessManager {
       // Clear both maps so repeated calls are idempotent no-ops.
       activeProcesses = {};
       activeDocumentalProcesses = {};
+      devServerUrlWaiters = {};
     } finally {
       releaseProcessManagerLock();
     }
@@ -826,6 +1014,18 @@ class ProcessManager {
     for (const key of keysToTerminate) {
       await this.terminateProcessByKey(key);
     }
+  }
+
+  /**
+   * Terminate every process tree of a project (dev-${id}, build-${id}*,
+   * reopen-${id} — see the key filter above) routed through killPidTree.
+   * Resolves once all trees are finalized; callers that must stay
+   * responsive race this promise against a timeout (close-project IPC).
+   * @param {string|number} projectId - Project ID
+   * @returns {Promise<void>}
+   */
+  async terminateProjectProcesses(projectId) {
+    return this.terminateProcessesForProject(projectId);
   }
 
   /**
