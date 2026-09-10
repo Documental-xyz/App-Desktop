@@ -2,7 +2,8 @@
  * @fileoverview Tests for ProcessManager.killAll / killPidTree routing
  * (constructor takes nodeDetectionService since Task 6; killAll landed with
  * the embedded-node migration; Task 4 of ajustes-wizard-preview-servicos
- * routes kills through killPidTree(pid)).
+ * routes kills through killPidTree(pid); the F3-fix startup-race describe
+ * covers closeProject during startDevServer via CloseProjectHandlers DI).
  *
  * Lock-guard contract under test (matches GitHandlers pattern in src/ipc/git.js):
  *   1. acquire lock before iterating activeProcesses
@@ -481,5 +482,162 @@ describe('ProcessManager - startDevServer dedupe', () => {
 
     expect(status2).toHaveBeenCalledWith('success');
     expect(await devServerUrlBroadcasts()).toHaveLength(1);
+  });
+});
+
+describe('ProcessManager - startup race (close during startDevServer)', () => {
+  let mockLogger;
+  let mockNodeDetectionService;
+  let pm;
+  let killPidTreeMock;
+  let mapFns;
+  let closeHandlers;
+
+  /**
+   * Fake execa subprocess whose 'spawn' never fires until the test releases
+   * it (pid assigned + spawn callbacks invoked) — models the slow spawn of
+   * the close-during-startup race. createFakeSubprocess covers the fast path.
+   */
+  function createPendingSubprocess() {
+    const spawnCallbacks = [];
+    const fake = createFakeSubprocess({ pid: undefined });
+    fake.pid = undefined;
+    fake.once = vi.fn((event, cb) => {
+      if (event === 'spawn') {
+        spawnCallbacks.push(cb);
+      }
+    });
+    fake.emitSpawn = (pendingPid) => {
+      fake.pid = pendingPid;
+      spawnCallbacks.forEach((cb) => cb());
+    };
+    return fake;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    const pmModule = await import('../../src/ipc/processManager.js');
+    pmModule.releaseProcessManagerLock();
+    mapFns = pmModule;
+
+    killPidTreeMock = vi.fn().mockResolvedValue(undefined);
+
+    mockLogger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn()
+    };
+
+    mockNodeDetectionService = {
+      getPreferredNpmExecutable: vi.fn().mockResolvedValue('npm'),
+      getPreferredNpxExecutable: vi.fn().mockResolvedValue('npx'),
+      getPreferredNodeExecutable: vi.fn().mockResolvedValue('node'),
+      detectNodeInstallation: vi.fn().mockResolvedValue({ runtime: { installed: false } }),
+      getManagedRuntimeEnv: vi.fn((env) => env)
+    };
+
+    pm = new mapFns.ProcessManager({
+      logger: mockLogger,
+      nodeDetectionService: mockNodeDetectionService
+    });
+    pm._killPidTree = killPidTreeMock;
+    pm.resolveRuntimeExecutable = vi.fn().mockResolvedValue({
+      command: 'npm', args: [], env: {}, runtime: 'managed'
+    });
+    pm._trackSpawnedPid = vi.fn();
+    pm._untrackSpawnedPid = vi.fn();
+    pm.saveDocumentalProcesses = vi.fn().mockResolvedValue(undefined);
+
+    const { CloseProjectHandlers } = await import('../../src/ipc/closeProject.js');
+    closeHandlers = new CloseProjectHandlers({ logger: mockLogger, processManager: pm });
+  });
+
+  afterEach(async () => {
+    await pm.killAll();
+  });
+
+  it('close DURING startup terminates the newborn once the spawn lands (no leak)', async () => {
+    const slow = createPendingSubprocess();
+    pm.embeddedRuntimeService.spawnNodeChild = vi.fn(() => slow);
+
+    const out = vi.fn();
+    const status = vi.fn();
+    const startPromise = pm.startDevServer('/repos/race', 41, out, status);
+    // Do NOT await: closeProject lands while the spawn is still pending.
+
+    mapFns.mapWindowToProject(9, '41');
+    const response = await closeHandlers.closeProject(9, 41);
+
+    expect(response).toEqual({ killed: true });
+    expect(killPidTreeMock).not.toHaveBeenCalled(); // nothing was born yet
+
+    slow.emitSpawn(5151);
+    const result = await startPromise;
+
+    expect(killPidTreeMock).toHaveBeenCalledTimes(1);
+    expect(killPidTreeMock).toHaveBeenCalledWith(5151, 300);
+    expect(pm.getActiveProcesses()['dev-41']).toBeUndefined();
+    expect(status).toHaveBeenCalledWith('failure');
+    expect(out).toHaveBeenCalledWith(expect.stringContaining('closed during startup'));
+    expect(result.url).toBeNull();
+    expect(result.process).toBe(slow);
+    // Token registry drained: a later close of the same project is a plain no-op.
+    await pm.terminateProjectProcesses(41);
+    expect(killPidTreeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('close AFTER registration (normal order) still routes the slot kill', async () => {
+    const fast = createFakeSubprocess({ pid: 5252 });
+    pm.embeddedRuntimeService.spawnNodeChild = vi.fn(() => fast);
+
+    await pm.startDevServer('/repos/race-2', 42, vi.fn(), vi.fn());
+    expect(pm.getActiveProcesses()['dev-42']).toBe(fast);
+
+    mapFns.mapWindowToProject(10, '42');
+    const response = await closeHandlers.closeProject(10, 42);
+
+    expect(response).toEqual({ killed: true });
+    expect(killPidTreeMock).toHaveBeenCalledWith(5252, 300);
+    expect(pm.getActiveProcesses()['dev-42']).toBeUndefined();
+  });
+
+  it('legitimate reopen AFTER the raced close survives, dedupes and closes cleanly', async () => {
+    const slow = createPendingSubprocess();
+    let nextProcess = slow;
+    pm.embeddedRuntimeService.spawnNodeChild = vi.fn(() => nextProcess);
+    const racedStart = pm.startDevServer('/repos/race', 41, vi.fn(), vi.fn());
+    mapFns.mapWindowToProject(9, '41');
+    await closeHandlers.closeProject(9, 41);
+    slow.emitSpawn(5151);
+    await racedStart;
+    expect(killPidTreeMock).toHaveBeenCalledWith(5151, 300);
+
+    // Fresh token: the legitimate reopen is never poisoned by the earlier close.
+    const reopened = createFakeSubprocess({ pid: 5351 });
+    nextProcess = reopened;
+    const out = vi.fn();
+    const status = vi.fn();
+    const first = await pm.startDevServer('/repos/race', 41, out, status);
+
+    expect(first.process).toBe(reopened);
+    expect(first.url).toBeNull();
+    expect(killPidTreeMock).not.toHaveBeenCalledWith(5351, expect.anything());
+    expect(pm.getActiveProcesses()['dev-41']).toBe(reopened);
+
+    // Dedupe intact: a second call with the same id+cwd reuses the survivor.
+    const second = await pm.startDevServer('/repos/race', 41, vi.fn(), vi.fn());
+    expect(second.process).toBe(reopened);
+    expect(second.reused).toBe(true);
+    expect(pm.embeddedRuntimeService.spawnNodeChild).toHaveBeenCalledTimes(2); // raced + reopened only
+    expect(pm.getActiveProcesses()['dev-41']).toBe(reopened);
+
+    // And the reopened server is terminable through the normal close path.
+    mapFns.mapWindowToProject(11, '41');
+    const response = await closeHandlers.closeProject(11, 41);
+    expect(response).toEqual({ killed: true });
+    expect(killPidTreeMock).toHaveBeenCalledWith(5351, 300);
+    expect(pm.getActiveProcesses()['dev-41']).toBeUndefined();
   });
 });

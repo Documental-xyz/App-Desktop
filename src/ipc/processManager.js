@@ -119,6 +119,51 @@ function getWindowsUsingProject(projectId) {
   return windowIds;
 }
 
+// Dev-server starts that are in flight (between startDevServer entry and
+// full registration). A closeProject/cancel arriving in this window finds
+// nothing in activeProcesses yet — without this registry the newborn server
+// would survive the close that already answered {killed:true} (F3 leak).
+// Keyed by projectId → Set of per-start tokens so a legitimate reopen that
+// begins while an aborted start is still winding down gets a FRESH token
+// and is never poisoned by the earlier close.
+const startingProjectServers = new Map();
+
+function registerStartingServer(projectId, token) {
+  const key = String(projectId);
+  let tokens = startingProjectServers.get(key);
+  if (!tokens) {
+    tokens = new Set();
+    startingProjectServers.set(key, tokens);
+  }
+  tokens.add(token);
+}
+
+function unregisterStartingServer(projectId, token) {
+  const tokens = startingProjectServers.get(String(projectId));
+  if (!tokens) {
+    return;
+  }
+  tokens.delete(token);
+  if (tokens.size === 0) {
+    startingProjectServers.delete(String(projectId));
+  }
+}
+
+/**
+ * Mark every in-flight start of the project as aborted; each start token
+ * checks its own flag after registering its newborn and terminates it.
+ * @param {string|number} projectId
+ */
+function abortStartingServers(projectId) {
+  const tokens = startingProjectServers.get(String(projectId));
+  if (!tokens) {
+    return;
+  }
+  for (const token of tokens) {
+    token.aborted = true;
+  }
+}
+
 /**
  * Process Manager Class
  */
@@ -675,6 +720,13 @@ class ProcessManager {
       return { process: existing.process, url: existing.url, reused: true };
     }
 
+    // Startup-race fix: publish this start BEFORE the first await so a
+    // closeProject arriving mid-startup can abort the newborn. This
+    // function has exactly two exits (the early return below and the
+    // final return) — both unregister the token.
+    const startToken = { aborted: false };
+    registerStartingServer(projectId, startToken);
+
     let serverReady = false;
     const checkServerReady = (data) => {
       if (!serverReady && (data.includes('ready') || data.includes('compiled successfully') || data.includes('listening on'))) {
@@ -781,6 +833,31 @@ class ProcessManager {
           cwd: repoDirPath
         });
 
+        // Startup-race fix: a closeProject that raced this start marked the
+        // token while nothing was trackable yet — terminate the newborn now
+        // instead of leaking it past the close that already answered.
+        if (startToken.aborted) {
+          this.logger.warn(`[devserver] project ${projectId} closed during startup — terminating newborn dev server (PID ${devProcess.pid})`);
+          if (activeProcesses[processId] === devProcess) {
+            await this.terminateProcessByKey(processId);
+          } else {
+            // A legitimate reopen already claimed the slot key — kill only
+            // OUR orphan by pid, never the replacement handle.
+            try {
+              const killFn = this._killPidTree || killPidTree;
+              await killFn(devProcess.pid, 300);
+            } catch (error) {
+              this.logger.warn(`Error terminating aborted newborn ${devProcess.pid}:`, error);
+            }
+            await this.removeDocumentalProcess(devProcess.pid);
+            this._untrackSpawnedPid(devProcess.pid);
+          }
+          sendServerOutput('Development server aborted: project closed during startup.\n');
+          sendStatus('failure');
+          unregisterStartingServer(projectId, startToken);
+          return { process: devProcess, url: null };
+        }
+
         // Race 3 fix: any error between spawn and listener attach must kill
         // the child and clean up tracking, else devServerReady stays false
         // forever with a leaked process.
@@ -868,6 +945,8 @@ class ProcessManager {
     // that fired right after spawn (before URL detection) is intentionally gone.
 
     sendServerOutput('Development server started in background. Waiting for readiness signal...\n');
+
+    unregisterStartingServer(projectId, startToken);
 
     return {
       process: devProcess,
@@ -1014,6 +1093,10 @@ class ProcessManager {
    */
   async terminateProcessesForProject(projectId) {
     const normalizedId = String(projectId);
+    // Startup-race fix: a start still in flight has nothing in
+    // activeProcesses for the key loop below — mark its token so the
+    // newborn gets terminated at its own post-registration check.
+    abortStartingServers(normalizedId);
     const keysToTerminate = Object.keys(this.getActiveProcesses()).filter((key) => {
       return (
         key === normalizedId ||
