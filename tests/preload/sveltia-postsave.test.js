@@ -129,3 +129,60 @@ describe('preload postSave handler → cms:content-saved', () => {
     expect(ipcSendMock).not.toHaveBeenCalled();
   });
 });
+
+describe('preload sveltiaEvents bridge (contextIsolation-safe postSave relay)', () => {
+  // createRequire bypasses setup.js's global fs/path mocks (pattern from
+  // tests/main/lifecycle.test.js) — the source assertion needs the real fs.
+  const nativeRequire = require('node:module').createRequire(__filename);
+  const realFs = nativeRequire('fs');
+  const realPath = nativeRequire('path');
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    global.mockElectron.ipcRenderer = {
+      send: ipcSendMock,
+      on: vi.fn(),
+      once: vi.fn(),
+      invoke: vi.fn(),
+      removeAllListeners: vi.fn()
+    };
+    global.mockElectron.contextBridge = { exposeInMainWorld: vi.fn() };
+
+    window.CMS = { registerEventListener: registerEventListenerMock };
+    installDomSlug(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete window.CMS;
+  });
+
+  it('source: preload exposes sveltiaEvents via contextBridge.exposeInMainWorld', async () => {
+    const source = realFs.readFileSync(
+      realPath.resolve(__dirname, '../../src/preload/sveltia-cms-preload.js'),
+      'utf8'
+    );
+    expect(source).toMatch(/contextBridge\.exposeInMainWorld\(\s*'sveltiaEvents'/);
+  });
+
+  it('exposed sveltiaEvents.contentSaved sends cms:content-saved with { slug, isNew }', async () => {
+    await import('../../src/preload/sveltia-cms-preload.js');
+
+    const exposed = global.mockElectron.contextBridge.exposeInMainWorld.mock.calls
+      .map(([name, api]) => ({ name, api }))
+      .find(({ name }) => name === 'sveltiaEvents');
+    expect(exposed).toBeTypeOf('object');
+    expect(exposed.api.contentSaved).toBeTypeOf('function');
+
+    exposed.api.contentSaved('pagina-nova', true);
+
+    expect(ipcSendMock).toHaveBeenCalledTimes(1);
+    expect(ipcSendMock).toHaveBeenCalledWith('cms:content-saved', {
+      slug: 'pagina-nova',
+      isNew: true
+    });
+  });
+});

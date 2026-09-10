@@ -30,6 +30,66 @@ const PREVIEW_POLL_MAX_ATTEMPTS = 20;
 const PREVIEW_POLL_INTERVAL_MS = 500;
 
 /**
+ * Build the MAIN-WORLD postSave registrar injected into the editor view.
+ *
+ * Why injection: the editor BrowserView runs with contextIsolation: true, so
+ * the preload's isolated world never sees the page's window.CMS (Sveltia
+ * lives in the main world) — executeJavaScript is the only main-world
+ * entry point. The registrar registers window.CMS.registerEventListener
+ * ('postSave') and relays NEW-page saves through window.sveltiaEvents
+ * (contextBridge exposed by the preload), which sends cms:content-saved.
+ *
+ * Contract: idempotent per document (window.__sveltiaPostSaveRegistered —
+ * did-finish-load and in-page navigations may re-inject); bounded retry
+ * (20 × 500ms) while Sveltia boots; entry is an Immutable Map whose
+ * new-page flag is serialized as `newRecord` (Decap compat) with `isNew`
+ * read defensively; missing bridge (page without our preload) is a no-op.
+ *
+ * Kept a pure string builder (exported) so tests execute the EXACT source
+ * that gets injected.
+ *
+ * @returns {string} JavaScript source evaluated in the editor's main world
+ */
+function buildPostSaveRegistrarScript() {
+  return `(function () {
+  if (window.__sveltiaPostSaveRegistered) { return; }
+  function register() {
+    var cms = window.CMS;
+    if (!cms || typeof cms.registerEventListener !== 'function') { return false; }
+    cms.registerEventListener({
+      name: 'postSave',
+      handler: function (payload) {
+        var entry = payload && payload.entry;
+        var slug = entry && typeof entry.get === 'function' ? entry.get('slug') : undefined;
+        if (slug === undefined || slug === null) { slug = entry ? entry.slug : undefined; }
+        var isNew = entry && typeof entry.get === 'function' ? entry.get('newRecord') : undefined;
+        if (isNew === undefined || isNew === null) {
+          isNew = entry && typeof entry.get === 'function' ? entry.get('isNew') : undefined;
+        }
+        if (isNew === undefined || isNew === null) { isNew = entry ? entry.newRecord : undefined; }
+        if (isNew === undefined || isNew === null) { isNew = entry ? entry.isNew : undefined; }
+        if (isNew === true && typeof slug === 'string' && slug.trim() !== '') {
+          if (window.sveltiaEvents && typeof window.sveltiaEvents.contentSaved === 'function') {
+            window.sveltiaEvents.contentSaved(slug.trim(), true);
+          }
+        }
+      }
+    });
+    window.__sveltiaPostSaveRegistered = true;
+    return true;
+  }
+  var attempts = 0;
+  function tryRegister() {
+    if (register()) { return; }
+    attempts += 1;
+    if (attempts >= 20) { return; }
+    setTimeout(tryRegister, 500);
+  }
+  tryRegister();
+})();`;
+}
+
+/**
  * BrowserView Management IPC Handlers
  */
 class BrowserHandlers {
@@ -162,15 +222,19 @@ class BrowserHandlers {
     const handleLoad = () => {
       clearTimeout(loadingTimeout);
       const currentUrl = view.webContents.getURL();
-      
+
       // Broadcast to all windows for synchronization
       BrowserWindow.getAllWindows().forEach(w => {
         if (!w.isDestroyed()) {
           w.webContents.send('browser-view-loaded', { viewName, url: currentUrl });
         }
       });
-      
+
       this.logger.info(`✅ ${viewName} BrowserView loaded: ${currentUrl}`);
+
+      if (viewName === 'editor') {
+        this._injectPostSaveRegistrar(view);
+      }
     };
 
     const handleError = (error) => {
@@ -207,19 +271,48 @@ class BrowserHandlers {
     view.webContents.removeAllListeners('did-navigate-in-page');
     view.webContents.on('did-navigate-in-page', (event, url, isMainFrame) => {
       if (!isMainFrame) return;
-      
+
       BrowserWindow.getAllWindows().forEach(w => {
         if (!w.isDestroyed()) {
           w.webContents.send('browser-view-navigated', { viewName, url });
         }
       });
       this.logger.info(`🌐 ${viewName} navigated in-page to: ${url}`);
+
+      // In-page navigations reset nothing in the main world, but the
+      // registrar's own idempotence flag makes this re-injection cheap.
+      if (viewName === 'editor') {
+        this._injectPostSaveRegistrar(view);
+      }
     });
 
     // Set timeout for loading
     loadingTimeout = setTimeout(() => {
       handleError(new Error('Loading timeout after 8 seconds'));
     }, 8000);
+  }
+
+  /**
+   * Inject the main-world postSave registrar into the editor view.
+   * Best-effort: pages without a CMS (or a mid-teardown webContents) simply
+   * drop the injection — the registrar itself is idempotent and bounded.
+   * @param {BrowserView} view - Editor BrowserView
+   */
+  _injectPostSaveRegistrar(view) {
+    if (!view || !view.webContents) return;
+    const webContents = view.webContents;
+    if (typeof webContents.isDestroyed === 'function' && webContents.isDestroyed()) return;
+    if (typeof webContents.executeJavaScript !== 'function') return;
+
+    try {
+      Promise.resolve(webContents.executeJavaScript(buildPostSaveRegistrarScript()))
+        .catch(() => {
+          // Page without our preload / being torn down — best effort only.
+          this.logger.debug('[preview] postSave registrar injection skipped (page unavailable)');
+        });
+    } catch (_) {
+      // Synchronous execution errors are equally non-fatal.
+    }
   }
 
   /**
@@ -896,4 +989,4 @@ class BrowserHandlers {
   }
 }
 
-module.exports = { BrowserHandlers };
+module.exports = { BrowserHandlers, buildPostSaveRegistrarScript };

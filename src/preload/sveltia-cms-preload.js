@@ -472,4 +472,16 @@ contextBridge.exposeInMainWorld('sveltiaBridge', {
   isEditPage: () => isEditPage()
 });
 
+// Relay bridge for the MAIN-WORLD postSave registrar. The editor view runs
+// with contextIsolation: true, so this preload's world never sees the page's
+// window.CMS (Sveltia main world) and the postSave listener above is a
+// defense-in-depth net only. The main process injects a registrar via
+// webContents.executeJavaScript (main world) that calls this bridge, which
+// is the contextIsolation-safe way back to ipcRenderer.
+contextBridge.exposeInMainWorld('sveltiaEvents', {
+  contentSaved: (slug, isNew) => {
+    ipcRenderer.send('cms:content-saved', { slug, isNew });
+  }
+});
+
 log('Preload script initialized');
