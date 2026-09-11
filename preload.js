@@ -26,7 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProjectOnlyPreviewAndServer: (projectId, projectPath, githubUrl, repoFolderName) => ipcRenderer.invoke('open-project-only-preview-and-server', projectId, projectPath, githubUrl, repoFolderName),
   cancelProjectCreation: (projectId, projectPath, repoFolderName, shouldDeleteFiles = false) =>
     ipcRenderer.invoke('cancel-project-creation', projectId, projectPath, repoFolderName, shouldDeleteFiles),
-  closeProject: (projectId) => ipcRenderer.invoke('close-project', projectId),
+  // mode is additive: legacy callers omit it and keep the single-window
+  // semantics; 'this-window'/'all-windows' drive the multi-window variants.
+  closeProject: (projectId, mode) => ipcRenderer.invoke('close-project', projectId, mode),
+  // Live windows still using the project, INCLUDING this one (>= 2 means
+  // there are others): decides which close modal variant the renderer shows.
+  getProjectWindowCount: (projectId) => ipcRenderer.invoke('get-project-window-count', projectId),
 
   onCommandOutput: (callback) => ipcRenderer.on('command-output', (event, ...args) => callback(...args)),
   onCommandStatus: (callback) => ipcRenderer.on('command-status', (event, ...args) => callback(...args)),
