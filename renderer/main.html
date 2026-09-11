@@ -463,7 +463,8 @@ clearingCache: false,
                 commandOutput: truncatedCommandOutput,
                 consoleTabs: simplifiedConsoleTabs,
                 activeConsoleTab: this.activeConsoleTab,
-                nextTerminalId: this.nextTerminalId
+                nextTerminalId: this.nextTerminalId,
+                currentProjectId: sessionStorage.getItem('currentProjectId')
             };
             
             // Test if the object is serializable before sending
@@ -2126,6 +2127,13 @@ clearingCache: false,
         // Store devServerUrl in sessionStorage for persistence
         if (windowState.devServerUrl) {
             sessionStorage.setItem('devServerUrl', windowState.devServerUrl);
+        }
+        
+        // Secondary windows adopt the project from the captured state so the
+        // renderer and the main-process window→project map stay in sync.
+        // Only currentProjectId is restored (never wizard/open transient state).
+        if (windowState.currentProjectId) {
+            sessionStorage.setItem('currentProjectId', windowState.currentProjectId);
         }
         
         console.log('State applied. Current values:', {

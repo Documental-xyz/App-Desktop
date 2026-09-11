@@ -199,7 +199,16 @@ class SystemHandlers {
         this.logger.info(`🪟 Secondary window ${windowId} is closing`);
         // Don't prevent default - let it close normally
       });
-      
+
+      // Adopt the project captured in the window state: secondary windows
+      // never start a dev server themselves, so without this mapping the
+      // main process would not know they use the project. Idempotent by
+      // construction (Map.set on the same window id).
+      if (windowState && windowState.currentProjectId) {
+        this.processManager?.mapWindowToProject?.(windowId, String(windowState.currentProjectId));
+        this.logger.info(`🪟 Secondary window ${windowId} associated with project ${windowState.currentProjectId}`);
+      }
+
        const stateEncoded = Buffer.from(JSON.stringify(windowState)).toString('base64');
        const mainHtmlPath = path.join(app.getAppPath(), 'renderer', 'main.html');
       

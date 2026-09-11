@@ -105,6 +105,25 @@ function getWindowProject(windowId) {
 }
 
 /**
+ * Liveness probe for a mapped window. An entry counts as stale only when
+ * positively identified as dead (fromId returns null or a destroyed
+ * window); any probe failure (API unavailable, require error) keeps the
+ * entry so the map never drops live windows by accident.
+ * @param {number} windowId - BrowserWindow id
+ * @returns {boolean} true when the window is alive or liveness is unknown
+ */
+function isWindowAlive(windowId) {
+  try {
+    const { BrowserWindow } = require('electron');
+    const window = BrowserWindow.fromId(windowId);
+    return Boolean(window) && !window.isDestroyed();
+  } catch (error) {
+    // Best-effort probe — unknown liveness is treated as alive.
+    return true;
+  }
+}
+
+/**
  * @param {string|number} projectId
  * @returns {number[]} Ids of the windows still using the project
  */
@@ -113,6 +132,12 @@ function getWindowsUsingProject(projectId) {
   const windowIds = [];
   for (const [windowId, mappedProjectId] of windowProjectMap) {
     if (mappedProjectId === normalizedId) {
+      if (!isWindowAlive(windowId)) {
+        // Opportunistic cleanup: destroyed windows must not keep a
+        // project's processes alive (and vice versa).
+        windowProjectMap.delete(windowId);
+        continue;
+      }
       windowIds.push(windowId);
     }
   }
@@ -1131,6 +1156,10 @@ class ProcessManager {
    * cross-module require (which lands on a different module instance
    * under vitest's CJS bridge than the test-side import).
    */
+  mapWindowToProject(windowId, projectId) {
+    mapWindowToProject(windowId, projectId);
+  }
+
   dissociateWindow(windowId) {
     return dissociateWindow(windowId);
   }
