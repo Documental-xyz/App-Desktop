@@ -75,8 +75,14 @@ describe('renderer/main.html — confirmCloseProject', () => {
 
 describe('preload.js — bridge close-project', () => {
   it('expõe closeProject no padrão das bridges invoke existentes', () => {
+    // Exceção G1 (plano fechar-ambiente-multi-janela, Task 3): a Task 2
+    // tornou a bridge 2-arg (projectId, mode) — este assert acompanha o
+    // contrato novo com fortalecimento: mode é repassado SEM default,
+    // então a chamada legacy SEM mode (mode undefined) permanece válida
+    // (comportamento byte-idêntico coberto em tests/ipc/closeProject.test.js).
     expect(preloadSource).toMatch(
-      /closeProject: \(projectId\) => ipcRenderer\.invoke\('close-project', projectId\)/
+      /closeProject: \(projectId, mode\) => ipcRenderer\.invoke\('close-project', projectId, mode\)/
     );
+    expect(preloadSource).not.toMatch(/closeProject: \(projectId, mode = /);
   });
 });

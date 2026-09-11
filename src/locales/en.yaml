@@ -512,6 +512,13 @@ main:
   close_project_title: "Close Workspace"
   close_project_desc: "Are you sure you want to close the current workspace?\nYou will be redirected to the workspace selection screen."
   close_project_confirm: "Close Workspace"
+  # Close project modal — multi-window variant (rule 2)
+  close_project_multi_title: "Close Workspace"
+  close_project_multi_desc: "This workspace is open in more than one window. Choose how to close it."
+  close_project_here: "Close in this window"
+  close_project_here_desc: "The workspace services keep running for the other windows."
+  close_project_all: "Close all windows"
+  close_project_all_desc: "Closes the other windows of this workspace and stops the services."
   # Git operation modal
   git_op_updating: "Updating..."
   git_op_publishing: "Publishing..."

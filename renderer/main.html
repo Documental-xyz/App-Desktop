@@ -176,6 +176,7 @@ clearingCache: false,
     appVersion: '',
     exitModalOpen: false,
     closeProjectModalOpen: false,
+    closeProjectWindowCount: 1, // >=2 = variante de 3 opções (regra 2); fallback 1 (AC12)
     isNavigating: false,
     isExitingProgrammatically: false,
     exitConfirmationPending: false,
@@ -557,6 +558,22 @@ clearingCache: false,
     closeProject() {
         this.menuOpen = false;
         this.closeProjectModalOpen = true;
+        // Multi-janela (regra 2): consultar quantas janelas usam este projeto
+        // (CONTANDO a chamadora) para escolher a variante do modal. Fallback
+        // count=1 (variante de janela única) em qualquer falha — o modal
+        // precisa abrir sempre (AC12).
+        this.closeProjectWindowCount = 1;
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (projectId && window.electronAPI && window.electronAPI.getProjectWindowCount) {
+            window.electronAPI.getProjectWindowCount(projectId).then((response) => {
+                this.closeProjectWindowCount = (response && Number.isFinite(response.count))
+                    ? response.count
+                    : 1;
+            }).catch((error) => {
+                this.closeProjectWindowCount = 1;
+                console.warn('Falha ao consultar o número de janelas do projeto (assumindo janela única):', error);
+            });
+        }
     },
     confirmCloseProject() {
         this.closeProjectModalOpen = false;
@@ -622,6 +639,98 @@ clearingCache: false,
     },
     cancelCloseProject() {
         this.closeProjectModalOpen = false;
+    },
+    // Regra 2 (botão do meio): fecha o workspace SÓ nesta janela. A decisão
+    // de encerrar os serviços é do main (re-check server-side, E4): se esta
+    // vier a ser a última janela, o kill acontece lá e o status volta como
+    // becameLast (surfado como warn abaixo). A navegação NUNCA espera.
+    confirmCloseProjectHere() {
+        this.closeProjectModalOpen = false;
+
+        const projectId = sessionStorage.getItem('currentProjectId');
+        this.clearProjectSessionState(projectId);
+
+        if (projectId && window.electronAPI && window.electronAPI.closeProject) {
+            window.electronAPI.closeProject(projectId, 'this-window').then((response) => {
+                if (response && response.becameLast) {
+                    console.warn('Fechar Ambiente: esta era a última janela do workspace — os serviços foram encerrados pelo processo principal.');
+                }
+            }).catch((error) => {
+                console.error('Falha ao fechar o workspace nesta janela:', error);
+            });
+        }
+
+        this.navigateToSelectionGuarded();
+    },
+    // Regra 2 (botão da direita): encerra as outras janelas deste workspace e
+    // TODOS os seus serviços. A resposta do main já é ≤1500ms por contrato
+    // (kill decide antes de responder; fechamentos das outras janelas são
+    // assíncronos no main) — por isso a navegação acontece no .finally,
+    // SEMPRE, com ou sem resposta.
+    confirmCloseProjectAll() {
+        this.closeProjectModalOpen = false;
+
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (projectId && window.electronAPI && window.electronAPI.closeProject) {
+            window.electronAPI.closeProject(projectId, 'all-windows')
+                .catch((error) => {
+                    console.error('Falha ao encerrar todas as janelas do workspace:', error);
+                })
+                .finally(() => {
+                    this.clearProjectSessionState(projectId);
+                    this.navigateToSelectionGuarded();
+                });
+        }
+    },
+    // Limpa o sessionStorage do projeto (mesmo conjunto do confirmCloseProject
+    // original — extraído para as ações multi-janela).
+    clearProjectSessionState(projectId) {
+        if (projectId) {
+            sessionStorage.removeItem(`projectCreationState-${projectId}`);
+            sessionStorage.removeItem(`projectOpenState-${projectId}`);
+        }
+        sessionStorage.removeItem('currentProjectId');
+        sessionStorage.removeItem('devServerUrl');
+        sessionStorage.removeItem('appLogOutput');
+        sessionStorage.removeItem('serverOutput');
+        sessionStorage.removeItem('commandOutput');
+    },
+    // Navega para a tela de seleção na MESMA janela com a proteção do
+    // beforeunload armada (isNavigating) — mesmo contrato do bloco inline
+    // de confirmCloseProject, extraído para as ações multi-janela.
+    navigateToSelectionGuarded() {
+        if (!window.electronAPI || !window.electronAPI.navigateTo) return;
+
+        this.isNavigating = true;
+        window.isNavigating = true; // suprime o modal de saída no beforeunload durante a navegação
+
+        // navigateTo é fire-and-forget (ipcRenderer.send): observar o
+        // resultado para que uma falha nunca deixe as flags presas em
+        // `true` — elas silenciariam a confirmação de saída num X posterior.
+        const resetNavFlags = () => {
+            this.isNavigating = false;
+            window.isNavigating = false;
+        };
+        const safetyTimeout = setTimeout(() => {
+            // Sem evento do main em 10s — rearmar a proteção de saída.
+            resetNavFlags();
+        }, 10000);
+        const onNavComplete = () => clearTimeout(safetyTimeout);
+        const onNavFailed = (_page, errorMessage) => {
+            clearTimeout(safetyTimeout);
+            resetNavFlags();
+            console.error('Falha ao navegar para a tela de seleção:', errorMessage);
+            alert(__t('main.git_exec_error_generic'));
+        };
+
+        if (window.electronAPI.onceNavigateComplete) {
+            window.electronAPI.onceNavigateComplete(onNavComplete);
+        }
+        if (window.electronAPI.onceNavigateFailed) {
+            window.electronAPI.onceNavigateFailed(onNavFailed);
+        }
+
+        window.electronAPI.navigateTo('index.html');
     },
     addTerminalTab() {
         const newId = Date.now();
@@ -1252,7 +1361,12 @@ clearingCache: false,
             // Operation association (design documented in init): adopt the
             // first matching event's operationId, ignore foreign ones after.
             if (this.gitExecution.operationId === null) {
-                this.gitExecution.operationId = payload.operationId || null;
+                // R1 (multi-janela): janelas SECUNDÁRIAS nunca adotam a
+                // operação — o modal de progresso pertence à janela que a
+                // invocou (evita dual-render do git-progress na secundária).
+                if (!this.isSecondaryWindow) {
+                    this.gitExecution.operationId = payload.operationId || null;
+                }
             } else if (payload.operationId && payload.operationId !== this.gitExecution.operationId) {
                 return;
             }
@@ -1779,6 +1893,9 @@ clearingCache: false,
             if (event.key !== 'Escape') return;
             if (this.publishSetupModalOpen) { this.publishSetupModalOpen = false; return; }
             if (this.refreshConfirmModalOpen) { this.refreshConfirmModalOpen = false; return; }
+            // Fechar Ambiente (AC11): ESC = Cancelar em AMBAS as variantes
+            // (janela única e multi-janela) — a flag é única para o modal.
+            if (this.closeProjectModalOpen) { this.cancelCloseProject(); return; }
             if (this.gitExecution.modalOpen) { this.gitExecEscape(); return; }
             // conflictDecision.open is deliberately NOT handled above.
         };
@@ -3258,13 +3375,53 @@ clearingCache: false,
 </div>
 </div>
 
+<!-- Close project modal. Duas variantes compartilham o overlay (regras do
+     usuário): janela única (regra 1 — botões atuais) e multi-janela (regra 2
+     — 3 opções no molde conflictDecision). ESC e backdrop = Cancelar em
+     AMBAS as variantes (AC11). -->
 <div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="closeProjectModalOpen">
-  <div @click.outside="closeProjectModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+  <!-- Variante regra 1: janela única (count < 2 ou desconhecido) -->
+  <div x-show="closeProjectWindowCount < 2" @click.outside="cancelCloseProject()" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.close_project_title')"></h3>
     <p class="mt-2 text-sm text-muted-dark whitespace-pre-line" x-text="__t('main.close_project_desc')"></p>
     <div class="mt-4 flex justify-end space-x-2">
       <button @click="cancelCloseProject()" class="px-4 py-2 text-sm font-medium text-muted-dark bg-surface-secondary rounded-md hover:bg-muted-dark" x-text="__t('common.cancel')"></button>
       <button @click="confirmCloseProject()" class="px-4 py-2 text-sm font-medium text-white bg-orange-600 rounded-md hover:bg-orange-500" x-text="__t('main.close_project_confirm')"></button>
+    </div>
+  </div>
+  <!-- Variante regra 2: 2+ janelas do MESMO workspace (molde conflictDecision) -->
+  <div x-show="closeProjectWindowCount >= 2" style="display: none;" @click.outside="cancelCloseProject()" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center" style="background-color: color-mix(in srgb, var(--color-accent-orange) 20%, transparent);">
+        <span class="material-symbols-outlined text-accent-orange">meeting_room</span>
+      </div>
+      <div class="flex-1 min-w-0">
+        <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.close_project_multi_title')"></h3>
+        <p class="text-xs text-muted-dark" x-text="__t('main.close_project_multi_desc')"></p>
+      </div>
+    </div>
+
+    <div class="space-y-2 mb-4">
+      <button @click="confirmCloseProjectHere()"
+              class="w-full text-left p-3 bg-background-dark border border-border-default rounded-md flex items-start gap-3 transition-colors hover:border-primary">
+        <span class="material-symbols-outlined text-primary text-lg flex-shrink-0">web_asset</span>
+        <span>
+          <span class="block text-sm font-medium text-text-dark" x-text="__t('main.close_project_here')"></span>
+          <span class="block text-xs text-muted-dark mt-0.5" x-text="__t('main.close_project_here_desc')"></span>
+        </span>
+      </button>
+      <button @click="confirmCloseProjectAll()"
+              class="w-full text-left p-3 bg-background-dark border border-border-default rounded-md flex items-start gap-3 transition-colors hover:border-primary">
+        <span class="material-symbols-outlined text-primary text-lg flex-shrink-0">power_settings_new</span>
+        <span>
+          <span class="block text-sm font-medium text-text-dark" x-text="__t('main.close_project_all')"></span>
+          <span class="block text-xs text-muted-dark mt-0.5" x-text="__t('main.close_project_all_desc')"></span>
+        </span>
+      </button>
+    </div>
+
+    <div class="flex justify-end gap-2">
+      <button @click="cancelCloseProject()" class="px-4 py-2 bg-muted-dark hover:bg-muted text-white rounded-md text-sm font-medium" x-text="__t('common.cancel')"></button>
     </div>
   </div>
 </div>

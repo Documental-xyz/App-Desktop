@@ -518,6 +518,13 @@ main:
   close_project_title: "Fechar Ambiente"
   close_project_desc: "Tem certeza de que deseja fechar o ambiente atual?\nVocê será redirecionado para a tela de seleção de ambientes."
   close_project_confirm: "Fechar Ambiente"
+  # Close project modal — multi-window variant (regra 2)
+  close_project_multi_title: "Fechar Ambiente"
+  close_project_multi_desc: "Este ambiente está aberto em mais de uma janela. Escolha como fechá-lo."
+  close_project_here: "Fechar nessa janela"
+  close_project_here_desc: "Os serviços do ambiente continuam rodando para as demais janelas."
+  close_project_all: "Fechar todas janelas"
+  close_project_all_desc: "Fecha as outras janelas deste ambiente e encerra os serviços."
   # Git operation modal
   git_op_updating: "Atualizando..."
   git_op_publishing: "Publicando..."

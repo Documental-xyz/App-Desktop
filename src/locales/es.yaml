@@ -511,6 +511,13 @@ main:
   close_project_title: "Cerrar Entorno"
   close_project_desc: "¿Está seguro de que desea cerrar el entorno actual?\nSerá redirigido a la pantalla de selección de entornos."
   close_project_confirm: "Cerrar Entorno"
+  # Close project modal — multi-window variant (regla 2)
+  close_project_multi_title: "Cerrar Entorno"
+  close_project_multi_desc: "Este entorno está abierto en más de una ventana. Elige cómo cerrarlo."
+  close_project_here: "Cerrar en esta ventana"
+  close_project_here_desc: "Los servicios del entorno siguen ejecutándose para las demás ventanas."
+  close_project_all: "Cerrar todas las ventanas"
+  close_project_all_desc: "Cierra las otras ventanas de este entorno y detiene los servicios."
   # Git operation modal
   git_op_updating: "Actualizando..."
   git_op_publishing: "Publicando..."
