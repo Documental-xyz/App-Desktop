@@ -1002,24 +1002,36 @@ class GitHandlers {
       // Stage files em batches com tratamento de erro individual
       // 100 (Task 4): large publishes were bounded by 10-file batches;
       // 100 keeps the argv-limit guard while cutting batch count 10×.
+      // P-1: ONE `git add`/`git rm` PER LOT — the old Promise.all of
+      // per-file adds raced concurrent `git add`s on .git/index.lock
+      // (git has no lock retry) and losers died with "Unable to create
+      // '.git/index.lock': File exists.", leaving files unstaged and
+      // failing the publish (final-QA flake, 1/10 repro). One command
+      // per lot = one lock acquisition = zero race.
       const stageErrors = [];
       const BATCH_SIZE = 100;
       const signal = this.getAbortSignal();
       for (let i = 0; i < dirty.length; i += BATCH_SIZE) {
         const batch = dirty.slice(i, i + BATCH_SIZE);
-        await Promise.all(
-          batch.map(async ([filepath, , worktreeStatus]) => {
-            try {
-              if (worktreeStatus) {
-                await this.git.add(projectPath, filepath, { signal });
-              } else {
-                await this.git.remove(projectPath, filepath, { signal });
-              }
-            } catch (fileError) {
-              stageErrors.push({ filepath, error: fileError.message });
-            }
-          })
-        );
+        const present = [];
+        const deleted = [];
+        for (const [filepath, , worktreeStatus] of batch) {
+          (worktreeStatus ? present : deleted).push(filepath);
+        }
+        try {
+          if (present.length > 0) {
+            await this.git.add(projectPath, present, { signal });
+          }
+          if (deleted.length > 0) {
+            await this.git.remove(projectPath, deleted, { signal });
+          }
+        } catch (batchError) {
+          // Attribute the failure to every file of the lot so the
+          // "Erro ao preparar arquivo(s)" report keeps naming paths.
+          for (const [filepath] of batch) {
+            stageErrors.push({ filepath, error: batchError.message });
+          }
+        }
 
         // Reportar progresso após cada batch
         const progress = Math.round(((i + batch.length) / dirty.length) * 100);
