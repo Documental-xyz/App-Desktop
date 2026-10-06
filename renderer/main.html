@@ -308,6 +308,8 @@ clearingCache: false,
     viewerScreenshot: null,
     editorScreenshot: null,
     overlaySequence: 0,
+    overlayOpenCount: 0,
+    overlayChangeLocked: false,
     // Repository information
     repoInfo: {
         workingDirectory: '',
@@ -1351,7 +1353,11 @@ clearingCache: false,
     async openPublishSetupModal() {
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
-        await this.loadBranches();
+        try {
+            await this.loadBranches();
+        } catch (e) {
+            console.error('loadBranches failed in openPublishSetupModal:', e);
+        }
         // Ensure preview is first option, then main, then rest alphabetically.
         // Create a NEW sorted array and assign it — Alpine.js may not detect
         // in-place `.sort()` mutations reliably.
@@ -2370,21 +2376,42 @@ clearingCache: false,
     },
     async handleOverlayChange(isOpen) {
         if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do Fechar Ambiente)
-        const currentSeq = ++this.overlaySequence;
+        if (this.overlayChangeLocked) {
+            // Another overlay change is in progress; queue this one by retrying after a tick
+            await this.$nextTick();
+            return this.handleOverlayChange(isOpen);
+        }
 
-        if (isOpen) {
-            await window.electronAPI.setAllBrowserViewVisibility(false);
-            if (this.overlaySequence !== currentSeq) {
-                return;
+        this.overlayChangeLocked = true;
+        try {
+            if (isOpen) {
+                // Reference counting: only hide views on first open
+                this.overlayOpenCount++;
+                if (this.overlayOpenCount === 1) {
+                    await window.electronAPI.setAllBrowserViewVisibility(false);
+                }
+                await this.prepareOverlaySnapshots();
+            } else {
+                // Reference counting: only show views on last close
+                this.overlayOpenCount = Math.max(0, this.overlayOpenCount - 1);
+                if (this.overlayOpenCount === 0) {
+                    await window.electronAPI.setAllBrowserViewVisibility(true);
+                    this.clearOverlaySnapshots();
+                    this.$nextTick(() => this.updateBrowserViewBounds());
+                }
             }
-            await this.prepareOverlaySnapshots();
-        } else {
-            await window.electronAPI.setAllBrowserViewVisibility(true);
-            if (this.overlaySequence !== currentSeq) {
-                return;
+        } catch (error) {
+            console.error('handleOverlayChange error:', error);
+            // Ensure browser views are restored on error to prevent stuck state
+            try {
+                await window.electronAPI.setAllBrowserViewVisibility(true);
+            } catch (restoreError) {
+                console.error('Failed to restore browser views:', restoreError);
             }
             this.clearOverlaySnapshots();
-            this.$nextTick(() => this.updateBrowserViewBounds());
+            this.overlayOpenCount = 0;
+        } finally {
+            this.overlayChangeLocked = false;
         }
     }
 }">
@@ -2505,24 +2532,24 @@ clearingCache: false,
                 <div class="absolute inset-0 flex">
                     <div class="relative" :style="{ width: editorWidth + '%' }">
                         <template x-if="editorScreenshot">
-                            <img :src="editorScreenshot" class="w-full h-full object-cover" alt="Editor preview"/>
+                            <img :src="editorScreenshot" class="w-full h-full object-cover pointer-events-none" alt="Editor preview"/>
                         </template>
-                        <div class="absolute inset-0 bg-black bg-opacity-60"></div>
+                        <div class="absolute inset-0 bg-black bg-opacity-60 pointer-events-none"></div>
                     </div>
                     <div class="relative flex-1">
                         <template x-if="viewerScreenshot">
-                            <img :src="viewerScreenshot" class="w-full h-full object-cover" alt="Viewer preview"/>
+                            <img :src="viewerScreenshot" class="w-full h-full object-cover pointer-events-none" alt="Viewer preview"/>
                         </template>
-                        <div class="absolute inset-0 bg-black bg-opacity-60"></div>
+                        <div class="absolute inset-0 bg-black bg-opacity-60 pointer-events-none"></div>
                     </div>
                 </div>
             </template>
             <template x-if="activeTab !== 'split'">
                 <div class="absolute inset-0 relative">
                     <template x-if="(activeTab === 'view' ? viewerScreenshot : editorScreenshot)">
-                        <img :src="activeTab === 'view' ? viewerScreenshot : editorScreenshot" class="w-full h-full object-cover" alt="Browser preview"/>
+                        <img :src="activeTab === 'view' ? viewerScreenshot : editorScreenshot" class="w-full h-full object-cover pointer-events-none" alt="Browser preview"/>
                     </template>
-                    <div class="absolute inset-0 bg-black bg-opacity-60"></div>
+                    <div class="absolute inset-0 bg-black bg-opacity-60 pointer-events-none"></div>
                 </div>
             </template>
         </div>
@@ -2632,20 +2659,20 @@ clearingCache: false,
     </a>
   </li>
   <li>
-    <a @click.prevent="clearCacheModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; clearCacheModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">delete_sweep</span>
       <span x-text="__t('main.menu_clear_cache')"></span>
     </a>
   </li>
   <li>
-    <a @click.prevent="openNewWindow()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; openNewWindow()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">open_in_new</span>
       <span x-text="__t('main.menu_new_window')"></span>
     </a>
   </li>
 
   <li>
-    <a @click.prevent="closeProject()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; closeProject()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">folder_off</span>
       <span x-text="__t('main.menu_close_project')"></span>
     </a>
@@ -2659,20 +2686,20 @@ clearingCache: false,
     </a>
   </li>
   <li>
-    <a @click.prevent="helpModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; helpModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">help_outline</span>
       <span x-text="__t('main.menu_help')"></span>
     </a>
   </li>
   <li>
-    <a @click.prevent="aboutModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; aboutModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">info_outline</span>
       <span x-text="__t('main.menu_about')"></span>
     </a>
   </li>
   <li class="border-t border-border-subtle my-2"></li>
   <li>
-    <a @click.prevent="exitApp()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click.prevent="menuOpen = false; exitApp()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">exit_to_app</span>
       <span x-text="__t('main.menu_exit')"></span>
     </a>
@@ -2685,7 +2712,7 @@ clearingCache: false,
      [Modal Shell — Task 10] overlay z-50 → container → header (icon+title+X)
      → body → action footer. Same structure as the Conflict/Setup/Refresh
      modals. X follows the ESC matrix (running → cancel, terminal → close). -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="gitExecution.modalOpen" x-cloak>
   <!-- max-height + internal scroll (Task 11): the terminal state with the
        raw-log viewer expanded can exceed short viewports — the footer
        actions must stay reachable without resizing the window. -->
@@ -2986,7 +3013,7 @@ clearingCache: false,
      other modals. Deliberately NOT dismissable: no X button, no ESC, no
      click.outside — a merge conflict requires an explicit strategy
      decision (or Cancel, which consumes the resume token). -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="conflictDecision.open">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="conflictDecision.open" x-cloak>
   <div class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <!-- Shell header (no X — explicit decision required) -->
     <div class="flex items-center gap-3 mb-4">
@@ -3050,7 +3077,7 @@ clearingCache: false,
 <!-- Unified Publish Setup Modal (branch selector + commit message).
      [Modal Shell — Task 10] pre-operation modal: ESC and click.outside
      close it (no backend operation is running yet). -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="publishSetupModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="publishSetupModalOpen" x-cloak>
   <div @click.outside="publishSetupModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <!-- Shell header -->
     <div class="flex items-center gap-3 mb-4">
@@ -3110,7 +3137,7 @@ clearingCache: false,
 <!-- Refresh Confirmation Modal.
      [Modal Shell — Task 10] pre-operation modal: ESC and click.outside
      close it (no backend operation is running yet). -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="refreshConfirmModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm" style="display: none;" x-show="refreshConfirmModalOpen" x-cloak>
   <div @click.outside="refreshConfirmModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <!-- Shell header -->
     <div class="flex items-center gap-3 mb-4">
@@ -3135,7 +3162,7 @@ clearingCache: false,
   </div>
 </div>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="branchModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="branchModalOpen" x-cloak>
 <div @click.outside="branchModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-lg">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.branch_title')"></h3>
 <p class="mt-2 text-sm text-muted-dark" x-text="__t('main.branch_desc')"></p>
@@ -3189,7 +3216,7 @@ clearingCache: false,
 </div>
 </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="clearCacheModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="clearCacheModalOpen" x-cloak>
 <div @click.outside="clearCacheModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.clear_cache_title')"></h3>
 <p class="mt-2 text-sm text-muted-dark whitespace-pre-line" x-text="__t('main.clear_cache_desc')"></p>
@@ -3199,7 +3226,7 @@ clearingCache: false,
 </div>
 </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="helpModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="helpModalOpen" x-cloak>
 <div @click.outside="helpModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-lg">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.help_title')"></h3>
 <div class="mt-2 space-y-4 text-sm text-muted-dark">
@@ -3217,7 +3244,7 @@ clearingCache: false,
 </div>
 </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="aboutModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="aboutModalOpen" x-cloak>
 <div @click.outside="aboutModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md text-center">
 <div class="flex justify-center mb-4">
 <svg class="h-12 w-12 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -3232,7 +3259,7 @@ clearingCache: false,
 </div>
 </div>
 </div>
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="exitModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="exitModalOpen" x-cloak>
 <div @click.outside="exitModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
 <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.exit_title')"></h3>
 <p class="mt-2 text-sm text-muted-dark" x-text="__t('main.exit_desc')"></p>
@@ -3243,7 +3270,7 @@ clearingCache: false,
 </div>
 </div>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="closeProjectModalOpen">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" style="display: none;" x-show="closeProjectModalOpen" x-cloak>
   <div @click.outside="closeProjectModalOpen = false" class="bg-surface-dark rounded-lg shadow-xl p-6 w-full max-w-md">
     <h3 class="text-lg font-medium text-text-dark" x-text="__t('main.close_project_title')"></h3>
     <p class="mt-2 text-sm text-muted-dark whitespace-pre-line" x-text="__t('main.close_project_desc')"></p>
