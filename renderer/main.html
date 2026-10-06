@@ -1418,18 +1418,18 @@ clearingCache: false,
     },
     // Open refresh confirm modal — 100% synchronous flag set in NEXT TICK,
     // zero awaits. All async work (git status) runs in background with timeout.
+    // projectId check moved inside $nextTick (like Publicar) to avoid early
+    // return when sessionStorage is momentarily stale after clear-cache.
     onRefreshClick() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId || this.refreshConfirmModalOpen) return; // re-entry guard
-        this.pendingRefreshProjectId = projectId;
-        // Non-blocking informative notice: dirty tree is auto-committed as
-        // WIP by the backend — nothing is ever discarded (Task 7). Computed
-        // in background so the modal opens instantly even if the status
-        // IPC hangs.
+        if (this.refreshConfirmModalOpen) return; // re-entry guard
+        this.pendingRefreshProjectId = null;
         this.refreshDirtyNotice = false;
         // Open modal in NEXT TICK to avoid any same-tick close race
         // (e.g. click.outside on hidden modal, or layout flush after clear-cache).
         this.$nextTick(() => {
+            const projectId = sessionStorage.getItem('currentProjectId');
+            if (!projectId) return;
+            this.pendingRefreshProjectId = projectId;
             this.refreshConfirmModalOpen = true;
             Documental.invokeWithTimeout(
                 window.electronAPI.checkGitStatus(projectId), 3000
