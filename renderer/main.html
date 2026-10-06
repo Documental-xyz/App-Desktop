@@ -2460,41 +2460,39 @@ clearingCache: false,
 <button @click="openPublishSetupModal()"
         class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
         x-text="$store.i18n.t('main.nav_publish')"></button>
-<div class="relative" @click.outside="menuOpen = false">
+<div class="relative">
 <button @click="menuOpen = !menuOpen" class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary">
 <span class="material-icons text-muted-dark">menu</span>
 </button>
-<!-- Menu Dropdown -->
-<div x-show="menuOpen" x-transition:enter="transition ease-out duration-200" x-transition:enter-end="opacity-100 transform scale-100" x-transition:enter-start="opacity-0 transform scale-95" x-transition:leave="transition ease-in duration-75" x-transition:leave-end="opacity-0 transform scale-95" x-transition:leave-start="opacity-100 transform scale-100" class="absolute top-full right-0 z-10 mt-1" x-cloak>
+<!-- Menu Dropdown - SIMPLE VERSION FOR DEBUGGING -->
+<div x-show="menuOpen" class="absolute top-full right-0 z-10 mt-1">
 <div class="w-56 bg-surface-dark rounded-md shadow-lg border border-border-subtle">
 <nav class="p-2">
 <ul class="space-y-1">
   <li>
-    <a @click.prevent="consoleOpen = !consoleOpen; if(consoleOpen) mainHeight = 70; menuOpen = false" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; consoleOpen = !consoleOpen; if(consoleOpen) mainHeight = 70" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">terminal</span>
       <span x-text="__t('main.menu_console')"></span>
     </a>
   </li>
   <li>
-    <a @click.prevent="menuOpen = false; clearCacheModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; clearCacheModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">delete_sweep</span>
       <span x-text="__t('main.menu_clear_cache')"></span>
     </a>
   </li>
   <li>
-    <a @click.prevent="menuOpen = false; openNewWindow()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; openNewWindow()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">open_in_new</span>
       <span x-text="__t('main.menu_new_window')"></span>
     </a>
   </li>
-
   <li>
-    <a @click.prevent="menuOpen = false; closeProject()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; closeProject()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">folder_off</span>
       <span x-text="__t('main.menu_close_project')"></span>
     </a>
   </li>
-
   <li class="border-t border-border-subtle my-2"></li>
   <li style="display: none;">
     <a class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#" data-navigate="config.html">
@@ -2503,20 +2501,20 @@ clearingCache: false,
     </a>
   </li>
   <li>
-    <a @click.prevent="menuOpen = false; helpModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; helpModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">help_outline</span>
       <span x-text="__t('main.menu_help')"></span>
     </a>
   </li>
   <li>
-    <a @click.prevent="menuOpen = false; aboutModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; aboutModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">info_outline</span>
       <span x-text="__t('main.menu_about')"></span>
     </a>
   </li>
   <li class="border-t border-border-subtle my-2"></li>
   <li>
-    <a @click.prevent="menuOpen = false; exitApp()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
+    <a @click="menuOpen = false; exitApp()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
       <span class="material-icons mr-3">exit_to_app</span>
       <span x-text="__t('main.menu_exit')"></span>
     </a>
