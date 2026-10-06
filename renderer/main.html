@@ -2519,12 +2519,12 @@ async openPublishSetupModal() {
 </div>
 </div>
 <div class="flex items-center space-x-2">
-<button @click="onRefreshClick()"
+<button @click.stop="onRefreshClick()"
         class="px-4 py-2 text-sm font-semibold text-white bg-accent-orange rounded-md hover:bg-orange-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-accent-orange"
         x-text="$store.i18n.t('main.refresh_btn')"></button>
 
 <!-- Publicar button -->
-<button @click="openPublishSetupModal()"
+<button @click.stop="openPublishSetupModal()"
         class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
         x-text="$store.i18n.t('main.nav_publish')"></button>
 <div class="relative">
