@@ -1417,9 +1417,8 @@ clearingCache: false,
             : this.commitPrefix;
     },
     // Open refresh confirm modal — 100% synchronous flag set in NEXT TICK,
-    // zero awaits. All async work (git status) runs in background with timeout.
-    // projectId check moved inside $nextTick (like Publicar) to avoid early
-    // return when sessionStorage is momentarily stale after clear-cache.
+    // zero awaits. Mirrors openPublishSetupModal structure exactly:
+    // set flag + any required state, THEN background loads with timeout.
     onRefreshClick() {
         if (this.refreshConfirmModalOpen) return; // re-entry guard
         this.pendingRefreshProjectId = null;
@@ -1431,6 +1430,7 @@ clearingCache: false,
             if (!projectId) return;
             this.pendingRefreshProjectId = projectId;
             this.refreshConfirmModalOpen = true;
+            // Background: git status with 3s timeout (never blocks modal)
             Documental.invokeWithTimeout(
                 window.electronAPI.checkGitStatus(projectId), 3000
             ).then((status) => {
