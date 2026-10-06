@@ -1369,56 +1369,46 @@ clearingCache: false,
         if (err.includes('network') || err.includes('ECONNREFUSED') || err.includes('ETIMEDOUT')) return __t('main.git_exec_error_network');
         return err || __t('main.git_exec_error_generic');
     },
-async openPublishSetupModal() {
-        if (this.publishSetupModalOpen) return; // re-entry guard (double-click)
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) return;
-        // Open FIRST: a hung IPC must never leave the button dead.
-        // Do NOT await loadBranches/getUserInfo — background with timeout.
-        this.publishSetupModalOpen = true;
-        this.publishTargetBranch = 'preview';
-        this.userCommitSuffix = '';
-        this.precedenceError = '';
-        this.precedenceChecking = false;
-        // Safe defaults so the branch <select> is usable even if loading fails.
-        this.branches = [{ name: 'preview' }, { name: 'main' }];
-        this.commitPrefix = `Content update at ${new Date().toISOString()}`;
-        const seq = ++this._publishLoadSeq;
-        // Branches in background (loadBranches manages this.branchLoading).
-        // Even if loadBranches is already running from git:state-changed,
-        // our invokeWithTimeout bounds it. We don't await it here.
-        Documental.invokeWithTimeout(this.loadBranches(), 8000)
-            .then(() => {
-                if (seq !== this._publishLoadSeq) return;
-                // Ensure preview is first option, then main, then alphabetical.
-                // Create a NEW sorted array and assign it — Alpine.js may not detect
-                // in-place `.sort()` mutations reliably.
-                this.branches = [...this.branches].sort((a, b) => {
-                    if (a.name === 'preview') return -1;
-                    if (b.name === 'preview') return 1;
-                    if (a.name === 'main') return -1;
-                    if (b.name === 'main') return 1;
-                    return a.name.localeCompare(b.name);
-                });
-                this.publishTargetBranch = 'preview';
-            })
-            .catch(() => { /* keep fallback branch list */ })
-            .finally(() => {
-                if (seq === this._publishLoadSeq) this.branchLoading = false;
-            });
-        // Commit prefix from user info in background. Handler returns
-        // {success, user:{login}} — read both shapes ('user' was always
-        // undefined before).
-        Documental.invokeWithTimeout(window.electronAPI.getUserInfo(), 8000)
-            .then((userInfo) => {
-                if (seq !== this._publishLoadSeq) return;
-                const login = (userInfo && (userInfo.user?.login || userInfo.login)) || 'user';
-                this.commitPrefix = __t('main.commit_default_prefix', { login, date: new Date().toISOString() });
-            })
-            .catch(() => { /* keep default prefix */ });
-        // Re-assert preview after DOM renders (x-model re-render quirk).
+// Open publish modal — 100% synchronous flag set in NEXT TICK, zero awaits.
+    // All async work (branches, user info) runs in background with timeouts.
+    openPublishSetupModal() {
+        if (this.publishSetupModalOpen) return; // re-entry guard
+        // Open modal in NEXT TICK to avoid any same-tick close race
+        // (e.g. click.outside on hidden modal, or layout flush after clear-cache).
         this.$nextTick(() => {
+            this.publishSetupModalOpen = true;
             this.publishTargetBranch = 'preview';
+            this.userCommitSuffix = '';
+            this.precedenceError = '';
+            this.precedenceChecking = false;
+            this.branches = [{ name: 'preview' }, { name: 'main' }];
+            this.commitPrefix = `Content update at ${new Date().toISOString()}`;
+            const seq = ++this._publishLoadSeq;
+
+            // Background: branches with 8s timeout (never blocks modal)
+            Documental.invokeWithTimeout(this.loadBranches(), 8000)
+                .then(() => {
+                    if (seq !== this._publishLoadSeq) return;
+                    this.branches = [...this.branches].sort((a, b) => {
+                        if (a.name === 'preview') return -1;
+                        if (b.name === 'preview') return 1;
+                        if (a.name === 'main') return -1;
+                        if (b.name === 'main') return 1;
+                        return a.name.localeCompare(b.name);
+                    });
+                    this.publishTargetBranch = 'preview';
+                })
+                .catch(() => { /* keep fallback */ })
+                .finally(() => { if (seq === this._publishLoadSeq) this.branchLoading = false; });
+
+            // Background: user info for commit prefix
+            Documental.invokeWithTimeout(window.electronAPI.getUserInfo(), 8000)
+                .then((userInfo) => {
+                    if (seq !== this._publishLoadSeq) return;
+                    const login = (userInfo && (userInfo.user?.login || userInfo.login)) || 'user';
+                    this.commitPrefix = __t('main.commit_default_prefix', { login, date: new Date().toISOString() });
+                })
+                .catch(() => { /* keep default */ });
         });
     },
     get fullCommitMessage() {
