@@ -2461,11 +2461,11 @@ clearingCache: false,
         class="px-4 py-2 text-sm font-semibold text-white bg-primary rounded-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background-dark focus:ring-primary flex items-center gap-1"
         x-text="$store.i18n.t('main.nav_publish')"></button>
 <div class="relative">
-<button @click="menuOpen = !menuOpen" class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary">
+<button @click="menuOpen = !menuOpen; console.log('menu click, menuOpen:', !menuOpen)" class="p-2 rounded-full hover:bg-surface-secondary focus:outline-none focus:ring-2 focus:ring-primary">
 <span class="material-icons text-muted-dark">menu</span>
 </button>
 <!-- Menu Dropdown - SIMPLE VERSION FOR DEBUGGING -->
-<div x-show="menuOpen" class="absolute top-full right-0 z-10 mt-1">
+<div x-show="menuOpen" class="absolute top-full right-0 z-10 mt-1" style="background: red; min-width: 200px;">
 <div class="w-56 bg-surface-dark rounded-md shadow-lg border border-border-subtle">
 <nav class="p-2">
 <ul class="space-y-1">
