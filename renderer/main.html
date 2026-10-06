@@ -1369,11 +1369,12 @@ clearingCache: false,
         if (err.includes('network') || err.includes('ECONNREFUSED') || err.includes('ETIMEDOUT')) return __t('main.git_exec_error_network');
         return err || __t('main.git_exec_error_generic');
     },
-    async openPublishSetupModal() {
+async openPublishSetupModal() {
         if (this.publishSetupModalOpen) return; // re-entry guard (double-click)
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
         // Open FIRST: a hung IPC must never leave the button dead.
+        // Do NOT await loadBranches/getUserInfo — background with timeout.
         this.publishSetupModalOpen = true;
         this.publishTargetBranch = 'preview';
         this.userCommitSuffix = '';
@@ -1384,12 +1385,14 @@ clearingCache: false,
         this.commitPrefix = `Content update at ${new Date().toISOString()}`;
         const seq = ++this._publishLoadSeq;
         // Branches in background (loadBranches manages this.branchLoading).
-        // Ensure preview is first option, then main, then rest alphabetically.
-        // Create a NEW sorted array and assign it — Alpine.js may not detect
-        // in-place `.sort()` mutations reliably.
-        Documental.invokeWithTimeout(Promise.resolve().then(() => this.loadBranches()), 8000)
+        // Even if loadBranches is already running from git:state-changed,
+        // our invokeWithTimeout bounds it. We don't await it here.
+        Documental.invokeWithTimeout(this.loadBranches(), 8000)
             .then(() => {
                 if (seq !== this._publishLoadSeq) return;
+                // Ensure preview is first option, then main, then alphabetical.
+                // Create a NEW sorted array and assign it — Alpine.js may not detect
+                // in-place `.sort()` mutations reliably.
                 this.branches = [...this.branches].sort((a, b) => {
                     if (a.name === 'preview') return -1;
                     if (b.name === 'preview') return 1;
@@ -2138,11 +2141,15 @@ clearingCache: false,
             }
         }
 
-        // Load branches for the current project
-        await this.loadBranches();
+        // Load branches and repository info with timeout — a hung main
+        // process must not block secondary window initialization.
+        Documental.invokeWithTimeout(this.loadBranches(), 8000).catch(() => {});
+        Documental.invokeWithTimeout(this.loadRepositoryInfo(), 8000).catch(() => {});
         
-        // Load repository information
-        await this.loadRepositoryInfo();
+        // Load BrowserViews for this window (secondary windows don't
+        // receive dev-server-url event — they get URLs from passed state).
+        if (this.viewerUrl) this.loadViewer(this.viewerUrl, true);
+        if (this.editorUrl) this.loadEditor(this.editorUrl, true);
         
         // Set up periodic refresh for repository info (every 30 seconds)
         setInterval(async () => {
