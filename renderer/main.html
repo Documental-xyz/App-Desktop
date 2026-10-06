@@ -2465,9 +2465,8 @@ clearingCache: false,
 <span class="material-icons text-muted-dark">menu</span>
 </button>
 <!-- Menu Dropdown - SIMPLE VERSION FOR DEBUGGING -->
-<div x-show="menuOpen" class="absolute top-full right-0 z-10 mt-1" style="background: red; min-width: 200px;">
-<div class="w-56 bg-surface-dark rounded-md shadow-lg border border-border-subtle">
-<nav class="p-2">
+<div x-show="menuOpen" class="absolute top-full right-0 z-10 mt-1 w-56 bg-surface-dark rounded-md shadow-lg border-2 border-lime-500 p-2">
+<nav>
 <ul class="space-y-1">
   <li>
     <a @click="menuOpen = false; consoleOpen = !consoleOpen; if(consoleOpen) mainHeight = 70" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
@@ -2493,34 +2492,9 @@ clearingCache: false,
       <span x-text="__t('main.menu_close_project')"></span>
     </a>
   </li>
-  <li class="border-t border-border-subtle my-2"></li>
-  <li style="display: none;">
-    <a class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#" data-navigate="config.html">
-      <span class="material-icons mr-3">settings</span>
-      <span x-text="__t('main.menu_settings')"></span>
-    </a>
-  </li>
-  <li>
-    <a @click="menuOpen = false; helpModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
-      <span class="material-icons mr-3">help_outline</span>
-      <span x-text="__t('main.menu_help')"></span>
-    </a>
-  </li>
-  <li>
-    <a @click="menuOpen = false; aboutModalOpen = true" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
-      <span class="material-icons mr-3">info_outline</span>
-      <span x-text="__t('main.menu_about')"></span>
-    </a>
-  </li>
-  <li class="border-t border-border-subtle my-2"></li>
-  <li>
-    <a @click="menuOpen = false; exitApp()" class="flex items-center px-4 py-2 text-text-dark hover:bg-surface-secondary rounded-md" href="#">
-      <span class="material-icons mr-3">exit_to_app</span>
-      <span x-text="__t('main.menu_exit')"></span>
-    </a>
-  </li>
 </ul>
 </nav>
+</div>
 </div>
 </div>
 </div>
