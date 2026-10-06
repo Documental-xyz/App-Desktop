@@ -309,7 +309,6 @@ clearingCache: false,
     editorScreenshot: null,
     overlaySequence: 0,
     overlayOpenCount: 0,
-    overlayChangeLocked: false,
     // Repository information
     repoInfo: {
         workingDirectory: '',
@@ -326,6 +325,11 @@ clearingCache: false,
     },
     get isAnyOverlayOpen() {
         return this.menuOpen || this.publishSetupModalOpen || this.gitExecution.modalOpen || this.conflictDecision.open || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen;
+    },
+    // True only for FULL-SCREEN modals (z-50) that need screenshot overlay
+    // and BrowserView hiding. EXCLUDES menuOpen (dropdown at z-10).
+    get isAnyModalOpen() {
+        return this.publishSetupModalOpen || this.gitExecution.modalOpen || this.conflictDecision.open || this.branchModalOpen || this.clearCacheModalOpen || this.helpModalOpen || this.aboutModalOpen || this.exitModalOpen || this.closeProjectModalOpen || this.refreshConfirmModalOpen;
     },
     startResize(event) {
         this.isResizing = true;
@@ -1932,7 +1936,7 @@ clearingCache: false,
         });
 
         // Watch for overlay toggles to manage BrowserView visibility with previews
-        this.$watch('isAnyOverlayOpen', (isOpen) => {
+        this.$watch('isAnyModalOpen', (isOpen) => {
             this.handleOverlayChange(isOpen);
         });
 
@@ -2376,13 +2380,7 @@ clearingCache: false,
     },
     async handleOverlayChange(isOpen) {
         if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do Fechar Ambiente)
-        if (this.overlayChangeLocked) {
-            // Another overlay change is in progress; queue this one by retrying after a tick
-            await this.$nextTick();
-            return this.handleOverlayChange(isOpen);
-        }
 
-        this.overlayChangeLocked = true;
         try {
             if (isOpen) {
                 // Reference counting: only hide views on first open
@@ -2410,8 +2408,6 @@ clearingCache: false,
             }
             this.clearOverlaySnapshots();
             this.overlayOpenCount = 0;
-        } finally {
-            this.overlayChangeLocked = false;
         }
     }
 }">
@@ -2526,7 +2522,7 @@ clearingCache: false,
     </div>
 
     <!-- Screenshot overlays for modals/menus -->
-    <template x-if="isAnyOverlayOpen">
+    <template x-if="isAnyModalOpen">
         <div class="absolute inset-0 pointer-events-none">
             <template x-if="activeTab === 'split'">
                 <div class="absolute inset-0 flex">
