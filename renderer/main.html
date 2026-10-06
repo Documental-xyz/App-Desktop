@@ -402,8 +402,10 @@ clearingCache: false,
             // Clear cache using the new API with a hard timeout — a hung
             // clearStorageData (large profiles, session.lock contention)
             // must not leave clearingCache/initialLoading stuck forever.
+            // IMPORTANT: Use clearCacheOnly=true to PRESERVE localStorage/sessionStorage
+            // in BrowserViews (auth tokens, dev server state). Only clear HTTP cache.
             const result = await Documental.invokeWithTimeout(
-                window.electronAPI.clearBrowserCache(), 30000
+                window.electronAPI.clearBrowserCache(true), 30000
             ).catch(() => ({ success: false }));
             
             if (result && result.success) {
@@ -418,6 +420,9 @@ clearingCache: false,
                 this.contentReady = false;
                 this.viewerLoaded = false;
                 this.editorLoaded = false;
+                
+                // Small delay to let main process settle after cache clear
+                await new Promise(r => setTimeout(r, 500));
                 
                 this.loadViewer(devServerUrl, true);
                 this.loadEditor(`${devServerUrl}admin/index.html`, true);
@@ -1416,30 +1421,27 @@ clearingCache: false,
             ? `${this.commitPrefix}\n\n${this.userCommitSuffix.trim()}`
             : this.commitPrefix;
     },
-    // Open refresh directly into git execution modal — same robust pattern as
-    // onPublishMainClick. No intermediate confirm modal (which was fragile
-    // after clear-cache layout flush). Dirty-tree notice is now shown inside
-    // the execution modal as a non-blocking banner (backend auto-commits WIP).
-    async onRefreshClick() {
-        const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) return;
-        // Open execution modal immediately (robust, no intermediate modal).
-        this.openGitExecModal('refresh', 4);
-        try {
-            // Non-blocking dirty check for banner — fire and forget.
+    // Open refresh confirm modal — mirrors openPublishSetupModal robustness:
+    // open flag in $nextTick, ZERO sync guards, background load with timeout.
+    // Restored confirmation modal (UX) + git status shown as banner in exec modal.
+    onRefreshClick() {
+        if (this.refreshConfirmModalOpen) return; // re-entry guard
+        this.pendingRefreshProjectId = null;
+        this.refreshDirtyNotice = false;
+        // Open modal in NEXT TICK to avoid any same-tick close race
+        this.$nextTick(() => {
+            this.refreshConfirmModalOpen = true;
+            // Background: git status with 3s timeout (never blocks modal).
+            // If projectId is momentarily stale after clear-cache, the modal
+            // still opens; dirty notice just won't appear.
             Documental.invokeWithTimeout(
-                window.electronAPI.checkGitStatus(projectId), 3000
+                window.electronAPI.checkGitStatus(sessionStorage.getItem('currentProjectId')), 3000
             ).then((status) => {
-                if (status && status.isDirty) {
-                    this.gitExecution.warnings.push(__t('main.refresh_dirty_notice'));
-                }
-            }).catch(() => {});
-            // Run refresh (no force needed; backend auto-commits WIP, local-wins merge).
-            const result = await window.electronAPI.refreshProject(projectId);
-            this.finishGitExecModal(result);
-        } catch (e) {
-            this.finishGitExecModal({ success: false, error: e.message });
-        }
+                this.refreshDirtyNotice = !!(status && status.isDirty);
+            }).catch(() => {
+                this.refreshDirtyNotice = false;
+            });
+        });
     },
     async confirmRefresh() {
         this.refreshConfirmModalOpen = false;

@@ -392,9 +392,10 @@ class BrowserHandlers {
   /**
    * Clear browser cache and storage data
    * @param {Object} event - IPC event object
+   * @param {boolean} [clearCacheOnly=false] - If true, only clear HTTP cache, preserve localStorage/sessionStorage/cookies (auth state)
    * @returns {Promise<{success: boolean, error?: string}>}
    */
-  async clearBrowserCache(event) {
+  async clearBrowserCache(event, clearCacheOnly = false) {
     try {
       const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
 
@@ -407,12 +408,22 @@ class BrowserHandlers {
 
       const clearViewCache = async (view) => {
         if (view && !view.webContents.isDestroyed()) {
-          // Clear cache
+          // Clear HTTP cache (always)
           await view.webContents.session.clearCache();
-          // Clear storage data (cookies, localStorage, sessionStorage, etc.)
-          await view.webContents.session.clearStorageData({
-            storages: ['appcache', 'cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
-          });
+          
+          if (!clearCacheOnly) {
+            // Clear storage data (cookies, localStorage, sessionStorage, etc.)
+            // ONLY when explicitly requested (full clear). Default preserves auth/state.
+            await view.webContents.session.clearStorageData({
+              storages: ['appcache', 'cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
+            });
+          } else {
+            // Preserve localStorage/sessionStorage/cookies — only clear HTTP/app caches
+            await view.webContents.session.clearStorageData({
+              storages: ['appcache', 'filesystem', 'indexdb', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
+            });
+          }
+          
           // Clear navigation history
           view.webContents.clearHistory();
         }
@@ -424,7 +435,7 @@ class BrowserHandlers {
         clearViewCache(viewerView)
       ]);
 
-      this.logger.info('✅ Browser cache cleared successfully');
+      this.logger.info(`✅ Browser cache cleared successfully (clearCacheOnly=${clearCacheOnly})`);
       return { success: true };
     } catch (error) {
       this.logger.error('Error clearing browser cache:', error);
