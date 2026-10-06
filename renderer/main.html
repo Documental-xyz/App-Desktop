@@ -1416,7 +1416,9 @@ clearingCache: false,
             ? `${this.commitPrefix}\n\n${this.userCommitSuffix.trim()}`
             : this.commitPrefix;
     },
-    async onRefreshClick() {
+    // Open refresh confirm modal — 100% synchronous flag set in NEXT TICK,
+    // zero awaits. All async work (git status) runs in background with timeout.
+    onRefreshClick() {
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId || this.refreshConfirmModalOpen) return; // re-entry guard
         this.pendingRefreshProjectId = projectId;
@@ -1425,13 +1427,17 @@ clearingCache: false,
         // in background so the modal opens instantly even if the status
         // IPC hangs.
         this.refreshDirtyNotice = false;
-        this.refreshConfirmModalOpen = true;
-        Documental.invokeWithTimeout(
-            window.electronAPI.checkGitStatus(projectId), 3000
-        ).then((status) => {
-            this.refreshDirtyNotice = !!(status && status.isDirty);
-        }).catch(() => {
-            this.refreshDirtyNotice = false;
+        // Open modal in NEXT TICK to avoid any same-tick close race
+        // (e.g. click.outside on hidden modal, or layout flush after clear-cache).
+        this.$nextTick(() => {
+            this.refreshConfirmModalOpen = true;
+            Documental.invokeWithTimeout(
+                window.electronAPI.checkGitStatus(projectId), 3000
+            ).then((status) => {
+                this.refreshDirtyNotice = !!(status && status.isDirty);
+            }).catch(() => {
+                this.refreshDirtyNotice = false;
+            });
         });
     },
     async confirmRefresh() {
