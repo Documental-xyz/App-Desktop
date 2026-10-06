@@ -9,6 +9,7 @@
 <link href="./assets/css/theme-override.css" rel="stylesheet"/>
 <script src="./i18n.js"></script>
 <script src="./shared/i18n-apply.js"></script>
+<script src="./shared/modalGuards.js"></script>
 <script defer src="./assets/js/alpine.min.js"></script>
 <script src="script.js" defer></script>
 <style>
@@ -305,9 +306,12 @@ clearingCache: false,
       refreshDirtyNotice: false,
       pendingRefreshProjectId: null,
      devServerUrl: 'https://documental.xyz/', // Default fallback
-    viewerScreenshot: null,
-    editorScreenshot: null,
-    overlaySequence: 0,
+     viewerScreenshot: null,
+     editorScreenshot: null,
+     overlaySequence: 0,
+     // Publish-setup background loads are sequenced so a stale in-flight
+     // load can never clobber a newer modal open.
+     _publishLoadSeq: 0,
     // Repository information
     repoInfo: {
         workingDirectory: '',
@@ -1349,35 +1353,50 @@ clearingCache: false,
         return err || __t('main.git_exec_error_generic');
     },
     async openPublishSetupModal() {
+        if (this.publishSetupModalOpen) return; // re-entry guard (double-click)
         const projectId = sessionStorage.getItem('currentProjectId');
         if (!projectId) return;
-        await this.loadBranches();
-        // Ensure preview is first option, then main, then rest alphabetically.
-        // Create a NEW sorted array and assign it — Alpine.js may not detect
-        // in-place `.sort()` mutations reliably.
-        const sortedBranches = [...this.branches].sort((a, b) => {
-            if (a.name === 'preview') return -1;
-            if (b.name === 'preview') return 1;
-            if (a.name === 'main') return -1;
-            if (b.name === 'main') return 1;
-            return a.name.localeCompare(b.name);
-        });
-        this.branches = sortedBranches;
+        // Open FIRST: a hung IPC must never leave the button dead.
+        this.publishSetupModalOpen = true;
         this.publishTargetBranch = 'preview';
-        try {
-            const userInfo = await window.electronAPI.getUserInfo();
-            const iso = new Date().toISOString();
-            this.commitPrefix = __t('main.commit_default_prefix', { login: userInfo.login || 'user', date: iso });
-        } catch (e) {
-            this.commitPrefix = `Content update at ${new Date().toISOString()}`;
-        }
         this.userCommitSuffix = '';
         this.precedenceError = '';
         this.precedenceChecking = false;
-        this.publishSetupModalOpen = true;
-        // Force preview selection after DOM renders. Alpine may re-render the
-        // <select> when the branches array changes, resetting x-model's value.
-        // Re-asserting on $nextTick guarantees preview stays pre-selected.
+        // Safe defaults so the branch <select> is usable even if loading fails.
+        this.branches = [{ name: 'preview' }, { name: 'main' }];
+        this.commitPrefix = `Content update at ${new Date().toISOString()}`;
+        const seq = ++this._publishLoadSeq;
+        // Branches in background (loadBranches manages this.branchLoading).
+        // Ensure preview is first option, then main, then rest alphabetically.
+        // Create a NEW sorted array and assign it — Alpine.js may not detect
+        // in-place `.sort()` mutations reliably.
+        Documental.invokeWithTimeout(Promise.resolve().then(() => this.loadBranches()), 8000)
+            .then(() => {
+                if (seq !== this._publishLoadSeq) return;
+                this.branches = [...this.branches].sort((a, b) => {
+                    if (a.name === 'preview') return -1;
+                    if (b.name === 'preview') return 1;
+                    if (a.name === 'main') return -1;
+                    if (b.name === 'main') return 1;
+                    return a.name.localeCompare(b.name);
+                });
+                this.publishTargetBranch = 'preview';
+            })
+            .catch(() => { /* keep fallback branch list */ })
+            .finally(() => {
+                if (seq === this._publishLoadSeq) this.branchLoading = false;
+            });
+        // Commit prefix from user info in background. Handler returns
+        // {success, user:{login}} — read both shapes ('user' was always
+        // undefined before).
+        Documental.invokeWithTimeout(window.electronAPI.getUserInfo(), 8000)
+            .then((userInfo) => {
+                if (seq !== this._publishLoadSeq) return;
+                const login = (userInfo && (userInfo.user?.login || userInfo.login)) || 'user';
+                this.commitPrefix = __t('main.commit_default_prefix', { login, date: new Date().toISOString() });
+            })
+            .catch(() => { /* keep default prefix */ });
+        // Re-assert preview after DOM renders (x-model re-render quirk).
         this.$nextTick(() => {
             this.publishTargetBranch = 'preview';
         });
@@ -1389,18 +1408,21 @@ clearingCache: false,
     },
     async onRefreshClick() {
         const projectId = sessionStorage.getItem('currentProjectId');
-        if (!projectId) return;
+        if (!projectId || this.refreshConfirmModalOpen) return; // re-entry guard
         this.pendingRefreshProjectId = projectId;
         // Non-blocking informative notice: dirty tree is auto-committed as
-        // WIP by the backend — nothing is ever discarded anymore (Task 7).
+        // WIP by the backend — nothing is ever discarded (Task 7). Computed
+        // in background so the modal opens instantly even if the status
+        // IPC hangs.
         this.refreshDirtyNotice = false;
-        try {
-            const status = await window.electronAPI.checkGitStatus(projectId);
-            this.refreshDirtyNotice = !!(status && status.isDirty);
-        } catch (e) {
-            this.refreshDirtyNotice = false;
-        }
         this.refreshConfirmModalOpen = true;
+        Documental.invokeWithTimeout(
+            window.electronAPI.checkGitStatus(projectId), 3000
+        ).then((status) => {
+            this.refreshDirtyNotice = !!(status && status.isDirty);
+        }).catch(() => {
+            this.refreshDirtyNotice = false;
+        });
     },
     async confirmRefresh() {
         this.refreshConfirmModalOpen = false;
@@ -1474,7 +1496,7 @@ clearingCache: false,
         this.conflictDecision.open = false;
         this.openGitExecModal(opType, steps);
         try {
-            const result = await window.electronAPI.resolveGitConflict(token, strategy);
+            const result = await this.withOpWatchdog(window.electronAPI.resolveGitConflict(token, strategy));
             this.finishGitExecModal(result);
         } catch (e) {
             this.finishGitExecModal({ success: false, error: e.message });
@@ -1482,13 +1504,26 @@ clearingCache: false,
             this.conflictDecision.resolving = false;
         }
     },
+    // Watchdog: the backend lock auto-aborts at 120s (LOCK_TIMEOUT_MS) — but
+    // if the invoke itself hangs (main busy / reply lost), the exec modal
+    // must still reach a terminal state. 150s = backend timeout + margin.
+    async withOpWatchdog(promise) {
+        promise.catch(() => {}); // late settle after timeout must stay unhandled-safe
+        let timer;
+        return Promise.race([
+            promise,
+            new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('Operation watchdog timeout (150s)')), 150000);
+            }),
+        ]).finally(() => clearTimeout(timer));
+    },
     async executeRefresh(projectId) {
         this.openGitExecModal('refresh', 4);
         try {
             // No `force` anymore — refresh is always safe (Tasks 6-8):
             // uncommitted changes are auto-committed (WIP) and local commits
             // are preserved via the local-wins merge.
-            const result = await window.electronAPI.refreshProject(projectId);
+            const result = await this.withOpWatchdog(window.electronAPI.refreshProject(projectId));
             this.finishGitExecModal(result);
         } catch (e) { this.finishGitExecModal({ success: false, error: e.message }); }
     },
@@ -1543,7 +1578,7 @@ clearingCache: false,
             // Preflight already ran above: open straight at phase=running.
             this.openGitExecModal('publish-main', 5);
             try {
-                const result = await window.electronAPI.publishToMain(projectId);
+                const result = await this.withOpWatchdog(window.electronAPI.publishToMain(projectId));
                 this.finishGitExecModal(result);
             } catch (e) {
                 this.finishGitExecModal({ success: false, error: e.message });
@@ -1552,7 +1587,7 @@ clearingCache: false,
             this.publishSetupModalOpen = false;
             this.openGitExecModal('publish-preview', 5);
             try {
-                const result = await window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage);
+                const result = await this.withOpWatchdog(window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage));
                 this.finishGitExecModal(result);
             } catch (e) {
                 this.finishGitExecModal({ success: false, error: e.message });
@@ -1587,7 +1622,7 @@ clearingCache: false,
         }
         this.gitExecution.phase = 'running';
         try {
-            const result = await window.electronAPI.publishToMain(projectId);
+            const result = await this.withOpWatchdog(window.electronAPI.publishToMain(projectId));
             this.finishGitExecModal(result);
         } catch (e) {
             this.finishGitExecModal({ success: false, error: e.message });
@@ -1773,6 +1808,21 @@ clearingCache: false,
             if (this.refreshConfirmModalOpen) { this.refreshConfirmModalOpen = false; return; }
             if (this.gitExecution.modalOpen) { this.gitExecEscape(); return; }
             // conflictDecision.open is deliberately NOT handled above.
+            // Panic close: an unknown/stuck overlay flag would otherwise eat
+            // all clicks until restart. Reset every dismissable overlay;
+            // conflictDecision (explicit decision required) and exitModalOpen
+            // (main-process close handshake) are deliberately untouched.
+            if (this.isAnyOverlayOpen) {
+                this.menuOpen = false;
+                this.publishSetupModalOpen = false;
+                this.refreshConfirmModalOpen = false;
+                this.branchModalOpen = false;
+                this.clearCacheModalOpen = false;
+                this.helpModalOpen = false;
+                this.aboutModalOpen = false;
+                this.closeProjectModalOpen = false;
+                return;
+            }
         };
         window.addEventListener('keydown', this._modalEscHandler);
 
@@ -2342,7 +2392,11 @@ clearingCache: false,
     async prepareOverlaySnapshots() {
         const capture = async (viewName) => {
             try {
-                return await window.electronAPI.captureBrowserViewPage(viewName);
+                // Screenshots are cosmetic — never let a hung capturePage
+                // stall the overlay FSM (2s cap; null renders empty preview).
+                return await Documental.invokeWithTimeout(
+                    window.electronAPI.captureBrowserViewPage(viewName), 2000
+                ).catch(() => null);
             } catch (error) {
                 console.error(__t('main.error_capture') + ` ${viewName}:`, error);
                 return null;
@@ -2372,19 +2426,31 @@ clearingCache: false,
         if (this.isNavigating) { return; } // página saindo: nunca restaurar views (race do Fechar Ambiente)
         const currentSeq = ++this.overlaySequence;
 
-        if (isOpen) {
-            await window.electronAPI.setAllBrowserViewVisibility(false);
-            if (this.overlaySequence !== currentSeq) {
-                return;
+        try {
+            if (isOpen) {
+                await window.electronAPI.setAllBrowserViewVisibility(false);
+                if (this.overlaySequence !== currentSeq) {
+                    return;
+                }
+                await this.prepareOverlaySnapshots();
+            } else {
+                await window.electronAPI.setAllBrowserViewVisibility(true);
+                if (this.overlaySequence !== currentSeq) {
+                    return;
+                }
+                this.clearOverlaySnapshots();
+                this.$nextTick(() => this.updateBrowserViewBounds());
             }
-            await this.prepareOverlaySnapshots();
-        } else {
-            await window.electronAPI.setAllBrowserViewVisibility(true);
-            if (this.overlaySequence !== currentSeq) {
-                return;
+        } catch (error) {
+            // Self-heal: a rejected visibility IPC must never leave BrowserViews
+            // stuck on top of (or hidden behind) a modal. The main handler is
+            // idempotent — retry the same desired state once.
+            console.error('Overlay visibility IPC failed, retrying:', error);
+            try {
+                await window.electronAPI.setAllBrowserViewVisibility(isOpen ? false : true);
+            } catch (retryError) {
+                console.error('Overlay visibility retry failed:', retryError);
             }
-            this.clearOverlaySnapshots();
-            this.$nextTick(() => this.updateBrowserViewBounds());
         }
     }
 }">
@@ -3067,7 +3133,7 @@ clearingCache: false,
     </div>
 
     <label class="block text-sm font-medium text-text-dark mb-1" x-text="$store.i18n.t('main.push_branch_label')"></label>
-    <select x-model="publishTargetBranch"
+    <select x-model="publishTargetBranch" :disabled="branchLoading"
             class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-border-default bg-background-dark focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md text-text-dark mb-4">
       <template x-for="branch in branches" :key="branch.name">
         <option :value="branch.name" x-text="branch.name" :selected="branch.name === 'preview'"></option>

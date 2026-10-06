@@ -870,14 +870,14 @@ class GitHandlers {
    */
   async getProjectPath(projectId) {
     const db = await this.databaseManager.getDatabase();
-    
-    return new Promise((resolve, reject) => {
+
+    const lookup = new Promise((resolve, reject) => {
       db.get('SELECT * FROM projects WHERE id = ?', [projectId], (err, row) => {
         if (err) {
           reject(err);
           return;
         }
-        
+
         if (!row) {
           reject(new Error('Project not found'));
           return;
@@ -911,6 +911,13 @@ class GitHandlers {
         resolve(projectPath);
       });
     });
+    // A lost sqlite callback must not hang every dependent git IPC forever.
+    lookup.catch(() => {}); // late settle after timeout stays unobserved-safe
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Project path lookup timed out')), 5000);
+    });
+    return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
   }
 
   /**

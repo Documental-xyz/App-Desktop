@@ -1351,8 +1351,32 @@ class DugiteProvider {
    *   or `{stdout, exitCode}` when `allowedExitCodes` is provided
    * @private
    */
+  /**
+   * execFile timeout for a command (publish/update dead-buttons fix):
+   * local reads (no remote URL, no flow abort signal) get a hard 30s cap
+   * so a stalled git child (AV scan, index.lock contention) rejects
+   * instead of hanging the IPC invoke forever. Network/signal ops keep
+   * the existing signal/step-timeout regime. Explicit runOpts.timeoutMs
+   * always wins.
+   * ponytail: relies on dugite forwarding `timeout` to execFile; if a
+   * dugite version ever drops it, renderer-side invokeWithTimeout still
+   * bounds the UI.
+   * @param {{url?: string, signal?: AbortSignal}} ctx
+   * @param {{timeoutMs?: number}} [runOpts]
+   * @returns {number|undefined} timeout in ms, or undefined (no timeout)
+   * @private
+   */
+  _execTimeoutMs(ctx, runOpts = {}) {
+    if (Number.isFinite(runOpts.timeoutMs)) {
+      return runOpts.timeoutMs;
+    }
+    const { url, signal } = ctx || {};
+    return (!url && !signal) ? 30000 : undefined;
+  }
+
   async _run(operation, args, cwd, ctx, runOpts = {}) {
     const { url, repoPath, remote, auth, signal } = ctx;
+    const timeoutMs = this._execTimeoutMs(ctx, runOpts);
     // GIT_TERMINAL_PROMPT=0 always: network ops must fail, never hang
     // on an interactive prompt ('terminal prompts disabled' → 'auth').
     const env = { GIT_TERMINAL_PROMPT: '0' };
@@ -1380,6 +1404,7 @@ class DugiteProvider {
         result = await exec(args, cwd || os.tmpdir(), {
           env,
           ...(signal ? { signal } : {}),
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
         });
       } catch (err) {
         // dugite rejected: launch failures (ENOENT etc.) AND aborts.
