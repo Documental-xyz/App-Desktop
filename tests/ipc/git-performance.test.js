@@ -376,25 +376,28 @@ describe('Git performance optimizations', () => {
       expect(handlers.gitSafety._lastHeartbeat).toBeGreaterThan(Date.now() - 5000);
     });
 
-    it('does NOT auto-recover when heartbeat is recent (active operation)', () => {
+    it('FORCE releases lock even when heartbeat is recent (user ops have priority)', () => {
       handlers.gitOperationInProgress = true;
       handlers.gitSafety.startHeartbeat();
       expect(handlers.gitSafety.checkStaleHeartbeat()).toBe(false);
 
       const result = handlers.acquireGitLock();
 
-      expect(result).toBe(false);
-      expect(mockLogger.warn).toHaveBeenCalledWith('Git operation already in progress');
+      // NEW BEHAVIOR: user ops force release lock even with fresh heartbeat
+      expect(result).toBe(true);
+      expect(mockLogger.warn).toHaveBeenCalledWith('🔒 Lock forçado para liberação — operação do usuário tem prioridade');
     });
 
-    it('does NOT auto-recover when gitSafety is unavailable', () => {
+    it('FORCE releases lock even when gitSafety is unavailable (user ops have priority)', () => {
       const savedSafety = handlers.gitSafety;
       handlers.gitSafety = null;
       handlers.gitOperationInProgress = true;
 
       const result = handlers.acquireGitLock();
 
-      expect(result).toBe(false);
+      // NEW BEHAVIOR: force release even without gitSafety
+      expect(result).toBe(true);
+      expect(mockLogger.warn).toHaveBeenCalledWith('🔒 Lock forçado para liberação — operação do usuário tem prioridade');
 
       handlers.gitSafety = savedSafety;
       handlers.gitOperationInProgress = false;

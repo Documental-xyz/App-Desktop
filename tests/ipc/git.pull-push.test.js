@@ -74,10 +74,12 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
   });
 
   describe('Lock mechanism', () => {
-    it('acquireGitLock() returns false when operation already in progress', () => {
+    it('acquireGitLock() forces release and returns true when operation already in progress (user ops have priority)', () => {
       handlers.gitOperationInProgress = true;
+      const releaseSpy = vi.spyOn(handlers, 'releaseGitLock');
       const result = handlers.acquireGitLock();
-      expect(result).toBe(false);
+      expect(result).toBe(true); // agora força liberação e retorna true
+      expect(releaseSpy).toHaveBeenCalled(); // releaseGitLock foi chamado internamente
     });
 
     it('lock is released after successful pull', async () => {
@@ -246,19 +248,35 @@ describe('GitHandlers pull/push/listRemoteBranches', () => {
       vi.useRealTimers();
     });
 
-    it('concurrent pull returns lock error when operation already in progress', async () => {
+    it('concurrent pull proceeds (lock forcibly released for user ops)', async () => {
       handlers.acquireGitLock();
+      // Mock getGitHubToken to return a token so it doesn't fail on auth
+      vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('test-token');
+      git.currentBranch.mockResolvedValue('main');
+      git.fetch.mockResolvedValue({});
+      git.fastForward.mockResolvedValue(true);
       const result = await handlers.gitPullFromPreview('/test/path');
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('already in progress');
+      // Should succeed (lock forcibly released) not fail with "already in progress"
+      expect(result.success).toBe(true);
       handlers.releaseGitLock();
     });
 
-    it('concurrent push returns lock error when operation already in progress', async () => {
+    it('concurrent push proceeds (lock forcibly released for user ops)', async () => {
       handlers.acquireGitLock();
+      vi.spyOn(handlers.gitOps, 'getGitHubToken').mockResolvedValue('ghp_test_token');
+      vi.spyOn(handlers.gitOps, 'configureGitForUser').mockResolvedValue(true);
+      git.currentBranch.mockResolvedValue('main');
+      git.statusMatrix.mockResolvedValue([]);
+      git.resolveRef.mockResolvedValue('same-sha');
+      git.fetch.mockResolvedValue({});
+      git.push.mockResolvedValue({});
+      git.commit.mockResolvedValue('sha');
+      git.branch.mockResolvedValue(undefined);
+      git.merge.mockResolvedValue(undefined);
+      git.getConfig.mockResolvedValue('Test User');
       const result = await handlers.gitPushToBranch('/test/path', 'main');
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('already in progress');
+      // Should succeed (lock forcibly released) not fail with "already in progress"
+      expect(result.success).toBe(true);
       handlers.releaseGitLock();
     });
 

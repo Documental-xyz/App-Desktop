@@ -322,7 +322,7 @@ class GitHandlers {
    * Acquire the git operation lock
    * @returns {boolean} True if lock was acquired, false if already in progress
    */
-  acquireGitLock() {
+    acquireGitLock() {
     // Stale-lock auto-recovery: if a previous process crashed mid-operation,
     // the in-process heartbeat is stale. Only recovers on NEXT acquire attempt
     // — never interrupts an active operation.
@@ -332,9 +332,12 @@ class GitHandlers {
       if (this._lockTimeout) { clearTimeout(this._lockTimeout); this._lockTimeout = null; }
       this._abortController = null;
     }
+    // FORCE RELEASE: if there's already a lock (e.g., from dev server background ops),
+    // force release it — user-initiated operations (publish/refresh) have priority
+    // over background dev server git operations.
     if (this.gitOperationInProgress) {
-      this.logger.warn('Git operation already in progress');
-      return false;
+      this.logger.warn('🔒 Lock forçado para liberação — operação do usuário tem prioridade');
+      this.releaseGitLock();
     }
     this.gitOperationInProgress = true;
     this.cancelRequested = false;
@@ -350,9 +353,6 @@ class GitHandlers {
     return true;
   }
 
-  /**
-   * Release the git operation lock
-   */
   releaseGitLock() {
     if (this.gitSafety) {
       this.gitSafety.stopHeartbeat();
