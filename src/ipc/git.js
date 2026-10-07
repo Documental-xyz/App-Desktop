@@ -261,6 +261,8 @@ class GitHandlers {
     if (this.operationJournal && _dugiteSetCommandObserver) {
       _dugiteSetCommandObserver((entry) => this.operationJournal.recordCommand(null, entry));
     }
+    // Track child git processes for force-kill on lock release
+    this._childProcesses = new Set();
   }
 
   /**
@@ -367,6 +369,37 @@ class GitHandlers {
     // already completed (success or error). We only clear the reference.
     this._abortController = null;
     this.logger.info('Git operation lock released');
+  }
+
+  /**
+   * Clean stale git lock files (.git/index.lock, .git/shallow.lock, etc.)
+   * Called when force-releasing lock to clear filesystem locks from dev server.
+   * @param {string} repoPath - Repository path
+   * @returns {Promise<void>}
+   */
+  async _cleanupStaleGitLocks(repoPath) {
+    const fs = require('fs').promises;
+    const path = require('path');
+    const lockFiles = [
+      'index.lock',
+      'shallow.lock',
+      'HEAD.lock',
+      'config.lock',
+      'refs/heads.lock',
+      'packed-refs.lock'
+    ];
+    
+    for (const lockFile of lockFiles) {
+      const lockPath = path.join(repoPath, '.git', lockFile);
+      try {
+        await fs.unlink(lockPath);
+        this.logger.warn(`🔒 Removed stale git lock: ${lockPath}`);
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          this.logger.warn(`Could not remove git lock ${lockPath}:`, err.message);
+        }
+      }
+    }
   }
 
   /**
@@ -3870,11 +3903,39 @@ class GitHandlers {
       return { success: true, message: 'Cancellation requested' };
     });
 
-    // Force release git lock — used after clear-cache to free any stuck lock
-    ipcMain.handle('git:force-release-lock', async () => {
-      this.logger.info('Force release git lock requested via IPC');
+    // Force release git lock — kills child git processes + cleans stale locks
+    ipcMain.handle('git:force-release-lock', async (event, projectId) => {
+      this.logger.info('Force release git lock requested via IPC', { projectId });
+      
+      // 1. Release in-memory lock flags
       this.releaseGitLock();
-      return { success: true, message: 'Git lock force-released' };
+      
+      // 2. Kill any tracked child git processes
+      if (this._childProcesses && this._childProcesses.size > 0) {
+        this.logger.warn(`Force killing ${this._childProcesses.size} child git processes`);
+        for (const child of this._childProcesses) {
+          try {
+            if (child && !child.killed) {
+              child.kill('SIGKILL');
+            }
+          } catch (e) {
+            this.logger.warn('Error killing child process:', e.message);
+          }
+        }
+        this._childProcesses.clear();
+      }
+      
+      // 3. Clean stale git lock files if projectId provided
+      if (projectId) {
+        try {
+          const projectPath = await this.getProjectPath(projectId);
+          await this._cleanupStaleGitLocks(projectPath);
+        } catch (e) {
+          this.logger.warn('Could not clean stale locks:', e.message);
+        }
+      }
+      
+      return { success: true, message: 'Git lock force-released (flags + processes + locks)' };
     });
 
     this.logger.info('✅ Git operations IPC handlers registered');

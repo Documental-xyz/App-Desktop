@@ -399,43 +399,29 @@ clearingCache: false,
         this.menuOpen = false;
         
         try {
-            // Clear cache using the new API with a hard timeout — a hung
-            // clearStorageData (large profiles, session.lock contention)
-            // must not leave clearingCache/initialLoading stuck forever.
-            // IMPORTANT: Use clearCacheOnly=true to PRESERVE localStorage/sessionStorage
-            // in BrowserViews (auth tokens, dev server state). Only clear HTTP cache.
+            // Clear ONLY HTTP cache (preserves localStorage/sessionStorage/cookies = auth state)
             const result = await Documental.invokeWithTimeout(
                 window.electronAPI.clearBrowserCache(true), 30000
             ).catch(() => ({ success: false }));
             
             if (result && result.success) {
-                // Reload both BrowserViews with fresh content
+                // Reload both BrowserViews with fresh content (like initial load)
                 const devServerUrl = this.getDevServerUrl();
                 this.addressValue = devServerUrl;
                 this.baseURL = devServerUrl;
                 
-                // Show loading state during reload
+                // Reset loading state like initial load
                 this.initialLoading = true;
                 this.contentLoading = false;
                 this.contentReady = false;
                 this.viewerLoaded = false;
                 this.editorLoaded = false;
                 
-                // Small delay to let main process settle after cache clear
-                await new Promise(r => setTimeout(r, 500));
-                
+                // Reload views
                 this.loadViewer(devServerUrl, true);
                 this.loadEditor(`${devServerUrl}admin/index.html`, true);
                 
-                // Force release git lock AFTER views start loading (dev server restart happens here)
-                // Use setTimeout to run after the reload cycle starts
-                setTimeout(() => {
-                    window.electronAPI.forceReleaseGitLock?.().catch(() => {});
-                }, 1000);
-                
-                // Fallback: if views never fire did-finish-load (main hung,
-                // dev server down), the init-time 12s guard is one-shot —
-                // re-arm locally so initialLoading never stays stuck.
+                // Fallback: if views never fire did-finish-load, re-arm
                 setTimeout(() => {
                     if (this.initialLoading) {
                         console.warn('Loading fallback after clear cache (views never loaded)');
@@ -1455,8 +1441,6 @@ clearingCache: false,
         this.refreshDirtyNotice = false;
         const projectId = this.pendingRefreshProjectId;
         if (!projectId) return;
-        // Force release any stuck git lock before refresh (dev server may hold it)
-        await window.electronAPI.forceReleaseGitLock?.().catch(() => {});
         await this.executeRefresh(projectId);
         this.pendingRefreshProjectId = null;
     },
@@ -1613,8 +1597,6 @@ clearingCache: false,
             }
         } else {
             this.publishSetupModalOpen = false;
-            // Force release any stuck git lock before publish (dev server may hold it)
-            await window.electronAPI.forceReleaseGitLock?.().catch(() => {});
             this.openGitExecModal('publish-preview', 5);
             try {
                 const result = await this.withOpWatchdog(window.electronAPI.pushToBranch(projectId, this.publishTargetBranch, this.fullCommitMessage));
