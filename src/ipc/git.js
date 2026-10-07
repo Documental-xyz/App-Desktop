@@ -3870,6 +3870,13 @@ class GitHandlers {
       return { success: true, message: 'Cancellation requested' };
     });
 
+    // Force release git lock — used after clear-cache to free any stuck lock
+    ipcMain.handle('git:force-release-lock', async () => {
+      this.logger.info('Force release git lock requested via IPC');
+      this.releaseGitLock();
+      return { success: true, message: 'Git lock force-released' };
+    });
+
     this.logger.info('✅ Git operations IPC handlers registered');
   }
 
@@ -3895,6 +3902,7 @@ class GitHandlers {
     ipcMain.removeHandler('git:check-publish-main');
     ipcMain.removeHandler('git:list-remote-branches');
     ipcMain.removeHandler('git:cancel-operation');
+    ipcMain.removeHandler('git:force-release-lock');
     ipcMain.removeHandler('git:backup-list');
     ipcMain.removeHandler('git:backup-restore');
     ipcMain.removeHandler('git:backup-delete');

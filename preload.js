@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreBackup: (projectId, backupBranch) => ipcRenderer.invoke('git:backup-restore', projectId, backupBranch),
   deleteBackup: (projectId, backupBranch) => ipcRenderer.invoke('git:backup-delete', projectId, backupBranch),
   cancelGitOperation: () => ipcRenderer.invoke('git:cancel-operation'),
+  forceReleaseGitLock: () => ipcRenderer.invoke('git:force-release-lock'),
   /**
    * Raw (sanitized) git command journal of one operation — every git
    * command executed during the operation with its argv, exit code,

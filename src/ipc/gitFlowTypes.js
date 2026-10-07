@@ -18,7 +18,7 @@ const TEMP_PUBLISH_BRANCH = 'publish-preview';
 
 // ─── Timing / Lock Constants ──────────────────────────────────────────────────
 /** @type {number} Maximum time (ms) a git lock may be held before forced release */
-const LOCK_TIMEOUT_MS = 120000;
+const LOCK_TIMEOUT_MS = 30000; // reduzido de 120s para 30s
 
 /** @type {number} How long (ms) a permission check result is cached */
 const PERMISSION_CACHE_TTL_MS = 30 * 60 * 1000;

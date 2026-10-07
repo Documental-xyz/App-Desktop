@@ -225,8 +225,8 @@ describe('GitHandlers - Cancellation', () => {
       expect(first).not.toBe(second);
     });
 
-    it('should use a LOCK_TIMEOUT_MS of at least 120000 (raised from 60s)', () => {
-      expect(gitHandlers.LOCK_TIMEOUT_MS).toBeGreaterThanOrEqual(120000);
+    it('should use a LOCK_TIMEOUT_MS of at least 30000 (reduced from 120s to 30s)', () => {
+      expect(gitHandlers.LOCK_TIMEOUT_MS).toBeGreaterThanOrEqual(30000);
     });
   });
 });

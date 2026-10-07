@@ -409,6 +409,9 @@ clearingCache: false,
             ).catch(() => ({ success: false }));
             
             if (result && result.success) {
+                // Force release any stuck git lock from dev server restart
+                await window.electronAPI.forceReleaseGitLock?.().catch(() => {});
+                
                 // Reload both BrowserViews with fresh content
                 const devServerUrl = this.getDevServerUrl();
                 this.addressValue = devServerUrl;
