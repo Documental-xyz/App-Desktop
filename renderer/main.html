@@ -179,6 +179,7 @@ clearingCache: false,
     isNavigating: false,
     isExitingProgrammatically: false,
     exitConfirmationPending: false,
+    isReloading: false,
     selectedBranch: 'stage',
     newBranchName: '',
     currentBranch: 'stage',
@@ -399,6 +400,10 @@ clearingCache: false,
             const result = await window.electronAPI.clearBrowserCache();
             
             if (result && result.success) {
+                // Set reload flag to prevent beforeunload confirmation dialog
+                this.isReloading = true;
+                window.isReloading = true;
+                
                 // Full page reload to return to exact initial state
                 // This resets all Alpine.js state, re-runs init(), re-establishes listeners
                 window.location.reload();
@@ -1992,9 +1997,9 @@ clearingCache: false,
         // Only register for main window, secondary windows should close normally
         if (!this.isSecondaryWindow) {
             window.addEventListener('beforeunload', (e) => {
-            console.log('beforeunload event triggered, isExitingProgrammatically:', this.isExitingProgrammatically);
-                if (this.isExitingProgrammatically || this.isNavigating || window.isNavigating) {
-                    console.log('Programmatic exit or navigation detected - allowing window to close/navigate');
+            console.log('beforeunload event triggered, isExitingProgrammatically:', this.isExitingProgrammatically, 'isNavigating:', this.isNavigating, 'isReloading:', this.isReloading);
+                if (this.isExitingProgrammatically || this.isNavigating || window.isNavigating || this.isReloading) {
+                    console.log('Programmatic exit, navigation, or reload detected - allowing window to close/navigate');
                     return true;
                 }
             // Otherwise, prevent default and show confirmation dialog
