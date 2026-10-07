@@ -405,32 +405,9 @@ clearingCache: false,
             ).catch(() => ({ success: false }));
             
             if (result && result.success) {
-                // Reload both BrowserViews with fresh content (like initial load)
-                const devServerUrl = this.getDevServerUrl();
-                this.addressValue = devServerUrl;
-                this.baseURL = devServerUrl;
-                
-                // Reset loading state like initial load
-                this.initialLoading = true;
-                this.contentLoading = false;
-                this.contentReady = false;
-                this.viewerLoaded = false;
-                this.editorLoaded = false;
-                
-                // Reload views
-                this.loadViewer(devServerUrl, true);
-                this.loadEditor(`${devServerUrl}admin/index.html`, true);
-                
-                // Fallback: if views never fire did-finish-load, re-arm
-                setTimeout(() => {
-                    if (this.initialLoading) {
-                        console.warn('Loading fallback after clear cache (views never loaded)');
-                        this.initialLoading = false;
-                        this.contentLoading = false;
-                        this.viewerLoaded = true;
-                        this.editorLoaded = true;
-                    }
-                }, 15000);
+                // Nuclear option: full window reload (like initial load)
+                // Guarantees clean state - no git locks, no view reload issues
+                window.location.reload();
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }
