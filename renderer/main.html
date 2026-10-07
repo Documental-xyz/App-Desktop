@@ -396,8 +396,8 @@ clearingCache: false,
         this.menuOpen = false;
         
         try {
-            // Clear cache using the new API
-            const result = await window.electronAPI.clearBrowserCache();
+            // Full reset: clear BrowserView HTTP cache, destroy old views, create fresh views, load initial URLs
+            const result = await window.electronAPI.resetBrowserViews();
             
             if (result && result.success) {
                 // Set reload flag to prevent beforeunload confirmation dialog
@@ -406,12 +406,13 @@ clearingCache: false,
                 
                 // Full page reload to return to exact initial state
                 // This resets all Alpine.js state, re-runs init(), re-establishes listeners
+                // sessionStorage is preserved (project state, logs, etc.)
                 window.location.reload();
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }
         } catch (error) {
-            console.error('Error clearing cache:', error);
+            console.error('Error resetting BrowserViews:', error);
             console.error(__t('main.error_clear_cache', {error: error.message}));
         } finally {
             this.clearingCache = false;
