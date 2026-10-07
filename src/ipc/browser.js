@@ -390,7 +390,11 @@ class BrowserHandlers {
   }
 
   /**
-   * Clear browser cache and storage data
+   * Clear HTTP cache ONLY of the editor/viewer BrowserViews.
+   * Deliberately does NOT touch storage data (cookies, localStorage,
+   * IndexedDB, service workers) — BrowserViews share the default session
+   * with the app, so clearing storage here would wipe app-wide state
+   * (GitHub auth included).
    * @param {Object} event - IPC event object
    * @returns {Promise<{success: boolean, error?: string}>}
    */
@@ -405,91 +409,24 @@ class BrowserHandlers {
         return { success: true };
       }
 
-      const clearViewCache = async (view) => {
+      const clearViewHttpCache = async (view) => {
         if (view && !view.webContents.isDestroyed()) {
-          // Clear cache
+          // HTTP cache only — never storage data (shared session!)
           await view.webContents.session.clearCache();
-          // Clear storage data (cookies, localStorage, sessionStorage, etc.)
-          await view.webContents.session.clearStorageData({
-            storages: ['appcache', 'cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
-          });
-          // Clear navigation history
-          view.webContents.clearHistory();
         }
       };
 
-      // Clear cache for both BrowserViews of calling window
       await Promise.all([
-        clearViewCache(editorView),
-        clearViewCache(viewerView)
+        clearViewHttpCache(editorView),
+        clearViewHttpCache(viewerView)
       ]);
 
-      this.logger.info('✅ Browser cache cleared successfully');
-        return { success: true };
-      } catch (error) {
-        this.logger.error('Error clearing browser cache:', error);
-        return { success: false, error: error.message };
-      }
-  }
-
-    /**
-     * Reset BrowserViews for a window: clear cache, destroy old views,
-     * create fresh views, and load initial URLs.
-     * @param {Object} event - IPC event object
-     * @returns {Promise<{success: boolean, error?: string, devServerUrl?: string, editorUrl?: string}>}
-     */
-    async resetBrowserViews(event) {
-      try {
-        const window = BrowserWindow.fromWebContents(event.sender);
-        if (!window) {
-          this.logger.warn('resetBrowserViews: could not determine window');
-          return { success: false, error: 'Window not found' };
-        }
-
-        // Get dev server URL from processManager (dynamically captured from Astro server)
-        const devServerUrl = this.processManager?.getGlobalDevServerUrl() || 'http://localhost:4321';
-        const editorUrl = `${devServerUrl}admin/index.html`;
-
-        this.logger.info(`🔄 Resetting BrowserViews for window ${window.id} with devServerUrl: ${devServerUrl}`);
-
-        // 1. Clear cache of current views before destroying
-        const { editorView, viewerView } = this.lookupBrowserViewsForEvent(event);
-        const clearViewCache = async (view) => {
-          if (view && !view.webContents.isDestroyed()) {
-            await view.webContents.session.clearCache();
-            await view.webContents.session.clearStorageData({
-              storages: ['appcache', 'cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
-            });
-            view.webContents.clearHistory();
-          }
-        };
-        await Promise.all([
-          clearViewCache(editorView),
-          clearViewCache(viewerView)
-        ]);
-
-        // 2. Destroy current BrowserViews
-        this.cleanupWindowBrowserViews(window);
-
-        // 3. Create fresh BrowserViews
-        const { editorView: newEditorView, viewerView: newViewerView } = this.getOrCreateBrowserViews(window);
-
-        // 4. Load initial URLs
-        if (newViewerView) {
-          this.trackBrowserViewLoad(newViewerView, 'viewer', window);
-          newViewerView.webContents.loadURL(devServerUrl);
-        }
-        if (newEditorView) {
-          this.trackBrowserViewLoad(newEditorView, 'editor', window);
-          newEditorView.webContents.loadURL(editorUrl);
-        }
-
-        this.logger.info(`✅ BrowserViews reset complete for window ${window.id}`);
-        return { success: true, devServerUrl, editorUrl };
-      } catch (error) {
-        this.logger.error('Error resetting BrowserViews:', error);
-        return { success: false, error: error.message };
-      }
+      this.logger.info('✅ BrowserView HTTP cache cleared successfully');
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Error clearing browser cache:', error);
+      return { success: false, error: error.message };
+    }
   }
 
     /**
@@ -667,13 +604,6 @@ class BrowserHandlers {
       return await this.clearBrowserCache(event);
     });
 
-    /**
-     * Reset BrowserViews (clear cache + destroy + recreate + load initial URLs)
-     */
-    ipcMain.handle('reset-browser-views', async (event) => {
-      return await this.resetBrowserViews(event);
-    });
-
 
     /**
      * Handle CMS page loaded event from Sveltia preload script
@@ -810,8 +740,7 @@ class BrowserHandlers {
     ipcMain.removeHandler('browser-view-reload');
     ipcMain.removeHandler('get-browser-view-url');
     ipcMain.removeHandler('clear-browser-cache');
-    ipcMain.removeHandler('reset-browser-views');
-    
+
     // Remove CMS event listeners
     ipcMain.removeAllListeners('cms:page-loaded');
     ipcMain.removeAllListeners('cms:content-saved');

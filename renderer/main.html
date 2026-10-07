@@ -396,23 +396,27 @@ clearingCache: false,
         this.menuOpen = false;
         
         try {
-            // Full reset: clear BrowserView HTTP cache, destroy old views, create fresh views, load initial URLs
-            const result = await window.electronAPI.resetBrowserViews();
+            // Clear ONLY the HTTP cache of the editor/viewer BrowserViews.
+            // Storage data (cookies/localStorage/auth) is deliberately
+            // preserved — the views share the app's default session.
+            const result = await window.electronAPI.clearBrowserCache();
             
             if (result && result.success) {
-                // Set reload flag to prevent beforeunload confirmation dialog
+                // Suppress the beforeunload exit dialog for this programmatic reload
                 this.isReloading = true;
                 window.isReloading = true;
                 
-                // Full page reload to return to exact initial state
-                // This resets all Alpine.js state, re-runs init(), re-establishes listeners
-                // sessionStorage is preserved (project state, logs, etc.)
+                // Full page reload reproduces the first-time environment load:
+                // init() re-runs, re-subscribes git/console listeners, reloads
+                // both BrowserViews with force=true (fresh HTTP fetches, cache
+                // now empty). sessionStorage (projectId, devServerUrl, logs)
+                // survives the reload.
                 window.location.reload();
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }
         } catch (error) {
-            console.error('Error resetting BrowserViews:', error);
+            console.error('Error clearing cache:', error);
             console.error(__t('main.error_clear_cache', {error: error.message}));
         } finally {
             this.clearingCache = false;
