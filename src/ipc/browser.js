@@ -424,13 +424,13 @@ class BrowserHandlers {
         clearViewCache(viewerView)
       ]);
 
-this.logger.info('✅ Browser cache cleared successfully');
+      this.logger.info('✅ Browser cache cleared successfully');
         return { success: true };
       } catch (error) {
         this.logger.error('Error clearing browser cache:', error);
         return { success: false, error: error.message };
       }
-    },
+  }
 
     /**
      * Reset BrowserViews for a window: clear cache, destroy old views,
@@ -490,7 +490,7 @@ this.logger.info('✅ Browser cache cleared successfully');
         this.logger.error('Error resetting BrowserViews:', error);
         return { success: false, error: error.message };
       }
-    },
+  }
 
     /**
      * Clean up BrowserViews for a window
