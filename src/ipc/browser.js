@@ -390,7 +390,11 @@ class BrowserHandlers {
   }
 
   /**
-   * Clear browser cache and storage data
+   * Clear HTTP cache ONLY of the editor/viewer BrowserViews.
+   * Deliberately does NOT touch storage data (cookies, localStorage,
+   * IndexedDB, service workers) — BrowserViews share the default session
+   * with the app, so clearing storage here would wipe app-wide state
+   * (GitHub auth included).
    * @param {Object} event - IPC event object
    * @returns {Promise<{success: boolean, error?: string}>}
    */
@@ -405,26 +409,19 @@ class BrowserHandlers {
         return { success: true };
       }
 
-      const clearViewCache = async (view) => {
+      const clearViewHttpCache = async (view) => {
         if (view && !view.webContents.isDestroyed()) {
-          // Clear cache
+          // HTTP cache only — never storage data (shared session!)
           await view.webContents.session.clearCache();
-          // Clear storage data (cookies, localStorage, sessionStorage, etc.)
-          await view.webContents.session.clearStorageData({
-            storages: ['appcache', 'cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage']
-          });
-          // Clear navigation history
-          view.webContents.clearHistory();
         }
       };
 
-      // Clear cache for both BrowserViews of calling window
       await Promise.all([
-        clearViewCache(editorView),
-        clearViewCache(viewerView)
+        clearViewHttpCache(editorView),
+        clearViewHttpCache(viewerView)
       ]);
 
-      this.logger.info('✅ Browser cache cleared successfully');
+      this.logger.info('✅ BrowserView HTTP cache cleared successfully');
       return { success: true };
     } catch (error) {
       this.logger.error('Error clearing browser cache:', error);
@@ -432,8 +429,8 @@ class BrowserHandlers {
     }
   }
 
-  /**
-   * Clean up BrowserViews for a window
+    /**
+     * Clean up BrowserViews for a window
    * @param {BrowserWindow} window - Window to clean up
    */
   cleanupWindowBrowserViews(window) {
@@ -743,7 +740,7 @@ class BrowserHandlers {
     ipcMain.removeHandler('browser-view-reload');
     ipcMain.removeHandler('get-browser-view-url');
     ipcMain.removeHandler('clear-browser-cache');
-    
+
     // Remove CMS event listeners
     ipcMain.removeAllListeners('cms:page-loaded');
     ipcMain.removeAllListeners('cms:content-saved');

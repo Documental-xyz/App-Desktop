@@ -179,6 +179,7 @@ clearingCache: false,
     isNavigating: false,
     isExitingProgrammatically: false,
     exitConfirmationPending: false,
+    isReloading: false,
     selectedBranch: 'stage',
     newBranchName: '',
     currentBranch: 'stage',
@@ -395,24 +396,22 @@ clearingCache: false,
         this.menuOpen = false;
         
         try {
-            // Clear cache using the new API
+            // Clear ONLY the HTTP cache of the editor/viewer BrowserViews.
+            // Storage data (cookies/localStorage/auth) is deliberately
+            // preserved — the views share the app's default session.
             const result = await window.electronAPI.clearBrowserCache();
             
             if (result && result.success) {
-                // Reload both BrowserViews with fresh content
-                const devServerUrl = this.getDevServerUrl();
-                this.addressValue = devServerUrl;
-                this.baseURL = devServerUrl;
+                // Suppress the beforeunload exit dialog for this programmatic reload
+                this.isReloading = true;
+                window.isReloading = true;
                 
-                // Show loading state during reload
-                this.initialLoading = true;
-                this.contentLoading = false;
-                this.contentReady = false;
-                this.viewerLoaded = false;
-                this.editorLoaded = false;
-                
-                this.loadViewer(devServerUrl, true);
-                this.loadEditor(`${devServerUrl}admin/index.html`, true);
+                // Full page reload reproduces the first-time environment load:
+                // init() re-runs, re-subscribes git/console listeners, reloads
+                // both BrowserViews with force=true (fresh HTTP fetches, cache
+                // now empty). sessionStorage (projectId, devServerUrl, logs)
+                // survives the reload.
+                window.location.reload();
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }
@@ -2003,9 +2002,9 @@ clearingCache: false,
         // Only register for main window, secondary windows should close normally
         if (!this.isSecondaryWindow) {
             window.addEventListener('beforeunload', (e) => {
-            console.log('beforeunload event triggered, isExitingProgrammatically:', this.isExitingProgrammatically);
-                if (this.isExitingProgrammatically || this.isNavigating || window.isNavigating) {
-                    console.log('Programmatic exit or navigation detected - allowing window to close/navigate');
+            console.log('beforeunload event triggered, isExitingProgrammatically:', this.isExitingProgrammatically, 'isNavigating:', this.isNavigating, 'isReloading:', this.isReloading);
+                if (this.isExitingProgrammatically || this.isNavigating || window.isNavigating || this.isReloading) {
+                    console.log('Programmatic exit, navigation, or reload detected - allowing window to close/navigate');
                     return true;
                 }
             // Otherwise, prevent default and show confirmation dialog
