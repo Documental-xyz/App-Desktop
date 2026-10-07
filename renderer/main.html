@@ -399,20 +399,9 @@ clearingCache: false,
             const result = await window.electronAPI.clearBrowserCache();
             
             if (result && result.success) {
-                // Reload both BrowserViews with fresh content
-                const devServerUrl = this.getDevServerUrl();
-                this.addressValue = devServerUrl;
-                this.baseURL = devServerUrl;
-                
-                // Show loading state during reload
-                this.initialLoading = true;
-                this.contentLoading = false;
-                this.contentReady = false;
-                this.viewerLoaded = false;
-                this.editorLoaded = false;
-                
-                this.loadViewer(devServerUrl, true);
-                this.loadEditor(`${devServerUrl}admin/index.html`, true);
+                // Full page reload to return to exact initial state
+                // This resets all Alpine.js state, re-runs init(), re-establishes listeners
+                window.location.reload();
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }
