@@ -693,6 +693,19 @@ async getHomeDirectory() {
     });
 
     /**
+     * Reload main window (used after clear cache for clean state)
+     */
+    ipcMain.handle('reload-main-window', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (win && !win.isDestroyed()) {
+        this.logger.info('🔄 Reloading main window via IPC');
+        win.webContents.reload();
+        return { success: true };
+      }
+      return { success: false, error: 'Main window not found' };
+    });
+
+    /**
      * Create new window with state
      */
     ipcMain.handle('create-new-window-with-state', async (event, windowState) => {
@@ -866,6 +879,7 @@ async getHomeDirectory() {
     ipcMain.removeHandler('confirm-exit-app');
     ipcMain.removeHandler('open-file-explorer');
     ipcMain.removeHandler('create-new-window-with-state');
+    ipcMain.removeHandler('reload-main-window');
     ipcMain.removeHandler('set-theme-mode');
     ipcMain.removeHandler('get-os-dark-preference');
     ipcMain.removeHandler('get-theme-mode');

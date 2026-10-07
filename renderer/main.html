@@ -405,9 +405,14 @@ clearingCache: false,
             ).catch(() => ({ success: false }));
             
             if (result && result.success) {
-                // Nuclear option: full window reload (like initial load)
-                // Guarantees clean state - no git locks, no view reload issues
-                window.location.reload();
+                // Nuclear option: proper Electron main window reload
+                // Uses Electron's webContents.reload() via main process
+                if (window.electronAPI?.reloadMainWindow) {
+                    await window.electronAPI.reloadMainWindow();
+                } else {
+                    // Fallback for non-Electron contexts
+                    window.location.reload();
+                }
             } else {
                 console.error(__t('main.error_clear_cache', {error: result?.error || __t('main.error_clear_cache_unknown')}));
             }

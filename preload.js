@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   continueGitHubAuth: (deviceCode, interval) => ipcRenderer.invoke('continueGitHubAuth', deviceCode, interval),
   completeWelcomeSetup: () => ipcRenderer.invoke('completeWelcomeSetup'),
   logoutFromGitHub: () => ipcRenderer.invoke('logoutFromGitHub'),
+  reloadMainWindow: () => ipcRenderer.invoke('reload-main-window'),
   writeToClipboard: (text) => ipcRenderer.invoke('writeToClipboard', text),
   getUserInfo: () => ipcRenderer.invoke('user:get-info'),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
