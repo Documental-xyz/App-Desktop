@@ -1423,10 +1423,11 @@ clearingCache: false,
     },
     // Open refresh confirm modal — mirrors openPublishSetupModal robustness:
     // open flag in $nextTick, ZERO sync guards, background load with timeout.
-    // Restored confirmation modal (UX) + git status shown as banner in exec modal.
     onRefreshClick() {
         if (this.refreshConfirmModalOpen) return; // re-entry guard
-        this.pendingRefreshProjectId = null;
+        const projectId = sessionStorage.getItem('currentProjectId');
+        if (!projectId) return;
+        this.pendingRefreshProjectId = projectId; // SET for confirmRefresh
         this.refreshDirtyNotice = false;
         // Open modal in NEXT TICK to avoid any same-tick close race
         this.$nextTick(() => {
@@ -1435,7 +1436,7 @@ clearingCache: false,
             // If projectId is momentarily stale after clear-cache, the modal
             // still opens; dirty notice just won't appear.
             Documental.invokeWithTimeout(
-                window.electronAPI.checkGitStatus(sessionStorage.getItem('currentProjectId')), 3000
+                window.electronAPI.checkGitStatus(projectId), 3000
             ).then((status) => {
                 this.refreshDirtyNotice = !!(status && status.isDirty);
             }).catch(() => {
